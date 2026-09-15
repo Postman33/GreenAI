@@ -2,7 +2,7 @@
 
 The base stage applies restrictions that do not depend on a plant species::
 
-    base_allowed_area = work_boundary - hard_surfaces - buildings
+    base_allowed_area = work_boundary - hard_surfaces - road_area - buildings
 
 Network and object setbacks belong to the following, per-plant constraint
 stage because their distances come from placement rules.
@@ -18,7 +18,7 @@ from typing import Any, Iterable, TypeAlias
 
 from shapely import Polygon, MultiPolygon, MultiLineString, LineString
 from shapely.geometry import GeometryCollection, mapping, shape
-from shapely.ops import polygonize, polygonize_full, snap, unary_union
+from shapely.ops import polygonize, unary_union
 from shapely.validation import make_valid
 
 from normalizer import primitive_to_geometry
@@ -44,6 +44,30 @@ HARD_SURFACE_WORDS = (
 REFERENCE_WORDS = (
     "граница работ", "красные линии", "борт", "бордюр", "оград",
 )
+
+
+def is_road_surface_layer(layer_name: str) -> bool:
+    """Return True for an unambiguous carriageway surface layer.
+
+    Project layer names sometimes describe both sides of a boundary, for
+    example ``ПЧ за ТРОТ`` and ``ТРОТ за ПЧ``.  The first material in such a
+    name is the area represented by the HATCH, so its position matters.
+    """
+    normalized = layer_name.casefold()
+    if "пч" not in normalized and "проезж" not in normalized:
+        return False
+    if any(word in normalized for word in PLANTABLE_WORDS):
+        return False
+
+    road_position = normalized.find("пч")
+    sidewalk_positions = [
+        position
+        for word in ("тротуар", "трот")
+        if (position := normalized.find(word)) >= 0
+    ]
+    if not sidewalk_positions or road_position < 0:
+        return True
+    return road_position < min(sidewalk_positions)
 
 
 def read_object_geometry(
@@ -250,20 +274,85 @@ def read_hard_surface_area(
     return hard_surface_area, diagnostics
 
 
+def read_surface_area_by_predicate(
+        candidates_path: Path,
+        work_boundary: Polygon | MultiPolygon,
+        predicate: Any,
+        curve_tolerance: float = 0.1,
+        min_area: float = 0.01,
+) -> tuple[Polygon | MultiPolygon, dict[str, Any]]:
+    """Read and merge candidate polygons whose layer matches predicate."""
+    accepted_parts: list[Polygon] = []
+    accepted_by_layer: Counter[str] = Counter()
+    matched_records = 0
+    skipped_invalid = 0
+
+    with candidates_path.open(encoding="utf-8") as source:
+        for line_number, line in enumerate(source, start=1):
+            if not line.strip():
+                continue
+            try:
+                record: dict[str, Any] = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    f"Line {line_number}: invalid surface-candidate JSON"
+                ) from error
+
+            raw_layer = record.get("source_layer", "0")
+            layer = readable_layer_name(
+                record.get("source_layer_tail", raw_layer)
+            )
+            if not predicate(layer):
+                continue
+            matched_records += 1
+
+            polygonal = surface_record_polygon(record, curve_tolerance)
+            if polygonal is None:
+                skipped_invalid += 1
+                continue
+            clipped = as_polygonal(polygonal.intersection(work_boundary))
+            parts = [
+                part for part in polygon_parts(clipped)
+                if part.area >= min_area
+            ]
+            if parts:
+                accepted_parts.extend(parts)
+                accepted_by_layer[layer] += 1
+
+    area = (
+        as_polygonal(unary_union(accepted_parts))
+        if accepted_parts else Polygon()
+    )
+    return area, {
+        "matched_records": matched_records,
+        "accepted_records_by_layer": dict(sorted(accepted_by_layer.items())),
+        "skipped_records_without_polygon": skipped_invalid,
+        "area_in_dxf_square_units": area.area,
+    }
+
+
 def build_road_area(
         road_edges: LineString | MultiLineString,
         work_boundary: Polygon | MultiPolygon,
+        road_seed_area: Polygon | MultiPolygon,
         known_non_road_areas: Iterable[Polygon | MultiPolygon] = (),
-        snap_tolerance: float = 0.05,
-        max_non_road_overlap_ratio: float = 0.05,
+        stitch_tolerance: float = 0.30,
+        min_seed_overlap_area: float = 0.50,
         min_candidate_area_ratio: float = 0.001,
+        max_candidate_area_ratio: float = 0.65,
 ) -> tuple[Polygon | MultiPolygon, dict[str, Any]]:
-    """Build candidate road polygons from curb linework.
+    """Reconstruct a carriageway from dashed curb lines and road HATCH seeds.
 
-    The result is a geometric hypothesis. Curb lines also surround blocks,
-    islands and landscaping, so known buildings, sidewalks and vegetation are
-    used to reject faces that are likely not carriageway. The two tolerances
-    are technical heuristics in source DXF units, not regulatory distances.
+    The geobase represents curbs as short LINE strokes separated by roughly
+    0.5 source units. Buffering every stroke by ``stitch_tolerance`` closes
+    those gaps and turns the curb into a barrier. The work area minus those
+    barriers is split into cells; only cells touched by an explicit road HATCH
+    are retained. Known sidewalks, buildings and planting surfaces stop a cell
+    from leaking into a non-road area.
+
+    The tolerances are technical heuristics in source DXF units, not
+    regulatory distances. The result must therefore remain visible in debug
+    output and be confirmed in CAD.
     """
     if road_edges.geom_type not in {"LineString", "MultiLineString"}:
         raise ValueError(
@@ -275,55 +364,64 @@ def build_road_area(
             "work_boundary must be Polygon or MultiPolygon, "
             f"got {work_boundary.geom_type}"
         )
-    if snap_tolerance <= 0:
-        raise ValueError("snap_tolerance must be greater than zero")
-    if not 0 <= max_non_road_overlap_ratio <= 1:
-        raise ValueError("max_non_road_overlap_ratio must be between 0 and 1")
-    if not 0 <= min_candidate_area_ratio <= 1:
-        raise ValueError("min_candidate_area_ratio must be between 0 and 1")
+    if road_seed_area.is_empty:
+        raise ValueError("No explicit road-surface HATCH is available as a seed")
+    if stitch_tolerance <= 0:
+        raise ValueError("stitch_tolerance must be greater than zero")
+    if min_seed_overlap_area <= 0:
+        raise ValueError("min_seed_overlap_area must be greater than zero")
+    if not 0 <= min_candidate_area_ratio <= max_candidate_area_ratio <= 1:
+        raise ValueError("Road candidate area ratios are invalid")
 
-    # Keep nearby outside segments: a curb just beyond the work boundary can
-    # still be needed to close a face at the edge of the project territory.
     clipped_edges = road_edges.intersection(
-        work_boundary.buffer(snap_tolerance)
+        work_boundary.buffer(stitch_tolerance)
     )
-    linework = unary_union([
-        clipped_edges,
-        work_boundary.boundary,
-    ])
-    linework = snap(linework, linework, snap_tolerance)
-    linework = unary_union(linework)
+    edge_barrier = as_polygonal(
+        clipped_edges.buffer(
+            stitch_tolerance,
+            cap_style="square",
+            join_style="round",
+            quad_segs=4,
+        ).intersection(work_boundary)
+    )
 
-    polygons, cuts, dangles, invalid_rings = polygonize_full(linework)
-    non_road_geometries = [
+    non_road_parts = [
         geometry.intersection(work_boundary)
         for geometry in known_non_road_areas
         if not geometry.is_empty
     ]
-    known_non_road = (
-        unary_union(non_road_geometries)
-        if non_road_geometries
-        else None
-    )
+    known_non_road = as_polygonal(unary_union(non_road_parts)) \
+        if non_road_parts else Polygon()
 
-    accepted_faces = []
+    blocked_area = as_polygonal(unary_union([edge_barrier, known_non_road]))
+    cells = as_polygonal(work_boundary.difference(blocked_area))
+    accepted_faces: list[Polygon] = []
     rejected_faces = 0
-    for face in polygons.geoms:
-        face = face.intersection(work_boundary)
-        if face.is_empty or face.area == 0:
-            continue
-        overlap_ratio = 0.0
-        if known_non_road is not None:
-            overlap_ratio = face.intersection(known_non_road).area / face.area
-        if overlap_ratio > max_non_road_overlap_ratio:
+    seed_overlap_area = 0.0
+    clipped_seed = as_polygonal(road_seed_area.intersection(work_boundary))
+    for face in polygon_parts(cells):
+        overlap_area = face.intersection(clipped_seed).area
+        if overlap_area < min_seed_overlap_area:
             rejected_faces += 1
             continue
         accepted_faces.append(face)
+        seed_overlap_area += overlap_area
 
     if not accepted_faces:
         raise ValueError("Could not build any candidate road polygons")
 
-    road_area = make_valid(unary_union(accepted_faces))
+    inferred_core = as_polygonal(unary_union(accepted_faces))
+    # Restore the narrow strip occupied by the artificial curb barrier. The
+    # explicit seed is authoritative and is retained even where CAD surfaces
+    # overlap slightly at their boundaries.
+    inferred_to_curb = as_polygonal(
+        inferred_core.buffer(
+            stitch_tolerance,
+            join_style="round",
+            quad_segs=4,
+        ).intersection(work_boundary).difference(known_non_road)
+    )
+    road_area = make_valid(unary_union([inferred_to_curb, clipped_seed]))
     if road_area.geom_type not in {"Polygon", "MultiPolygon"}:
         raise ValueError(
             "Road reconstruction produced unsupported geometry type "
@@ -331,22 +429,29 @@ def build_road_area(
         )
 
     diagnostics = {
-        "candidate_faces": len(accepted_faces),
-        "rejected_non_road_faces": rejected_faces,
-        "cuts": len(cuts.geoms),
-        "dangles": len(dangles.geoms),
-        "invalid_rings": len(invalid_rings.geoms),
-        "snap_tolerance_in_dxf_units": snap_tolerance,
-        "max_non_road_overlap_ratio": max_non_road_overlap_ratio,
+        "method": "curb_barrier_cells_selected_by_road_hatch",
+        "all_cells": sum(1 for _ in polygon_parts(cells)),
+        "accepted_cells": len(accepted_faces),
+        "rejected_cells_without_seed": rejected_faces,
+        "curb_barrier_area_in_dxf_square_units": edge_barrier.area,
+        "road_seed_area_in_dxf_square_units": clipped_seed.area,
+        "road_seed_overlap_with_selected_cells": seed_overlap_area,
+        "known_non_road_area_in_dxf_square_units": known_non_road.area,
+        "stitch_tolerance_in_dxf_units": stitch_tolerance,
+        "min_seed_overlap_area_in_dxf_square_units": min_seed_overlap_area,
         "candidate_area_ratio": road_area.area / work_boundary.area,
         "min_candidate_area_ratio": min_candidate_area_ratio,
+        "max_candidate_area_ratio": max_candidate_area_ratio,
         "requires_visual_confirmation": True,
     }
-    if diagnostics["candidate_area_ratio"] < min_candidate_area_ratio:
+    if not (
+        min_candidate_area_ratio
+        <= diagnostics["candidate_area_ratio"]
+        <= max_candidate_area_ratio
+    ):
         raise ValueError(
-            "Curb linework did not produce a plausible road area: "
-            f"{diagnostics['candidate_area_ratio']:.6f} of work area, "
-            f"{diagnostics['dangles']} dangling line fragments"
+            "Road reconstruction produced an implausible area ratio: "
+            f"{diagnostics['candidate_area_ratio']:.6f}"
         )
     return road_area, diagnostics
 
@@ -376,6 +481,8 @@ def build(
     report_path: Path,
     curve_tolerance: float = 0.1,
     min_area: float = 0.01,
+    road_stitch_tolerance: float = 0.30,
+    road_min_seed_overlap_area: float = 0.50,
 ) -> None:
     """Calculate and persist the common base area for all plant types."""
     work_boundary = as_polygonal(
@@ -397,15 +504,77 @@ def build(
         min_area,
     )
 
+    road_seed_area, road_seed_diagnostics = read_surface_area_by_predicate(
+        surface_candidates_path,
+        work_boundary,
+        is_road_surface_layer,
+        curve_tolerance,
+        min_area,
+    )
+    plantable_surface_area, plantable_surface_diagnostics = (
+        read_surface_area_by_predicate(
+            surface_candidates_path,
+            work_boundary,
+            lambda layer: classify_surface_layer(layer) == "plantable_candidate",
+            curve_tolerance,
+            min_area,
+        )
+    )
+
+    road_area: Polygon | MultiPolygon = Polygon()
+    road_reconstruction: dict[str, Any]
+    try:
+        road_edges = read_object_geometry(normalized_path, "road_edge")
+        try:
+            sidewalks = as_polygonal(
+                read_object_geometry(normalized_path, "sidewalk").intersection(
+                    work_boundary
+                )
+            )
+        except ValueError:
+            sidewalks = Polygon()
+        road_area, road_reconstruction = build_road_area(
+            road_edges,
+            work_boundary,
+            road_seed_area,
+            known_non_road_areas=(
+                buildings_in_work_area,
+                sidewalks,
+                plantable_surface_area,
+            ),
+            stitch_tolerance=road_stitch_tolerance,
+            min_seed_overlap_area=road_min_seed_overlap_area,
+        )
+        road_reconstruction["status"] = "reconstructed"
+        road_reconstruction["non_road_inputs"] = [
+            "building",
+            "sidewalk",
+            "unambiguous_plantable_surface",
+        ]
+    except ValueError as error:
+        # Explicit road HATCH polygons still remain part of hard_surface_area.
+        # Reconstruction is an enhancement and must not make the base stage
+        # unusable for a DXF that lacks suitable curb or seed geometry.
+        road_reconstruction = {
+            "status": "unavailable",
+            "reason": str(error),
+            "requires_visual_confirmation": True,
+        }
+
     absolute_exclusions = as_polygonal(
-        unary_union([hard_surface_area, buildings_in_work_area])
+        unary_union([
+            hard_surface_area,
+            road_area,
+            buildings_in_work_area,
+        ])
     )
     base_allowed_area = as_polygonal(
         work_boundary.difference(absolute_exclusions)
     )
     if base_allowed_area.is_empty:
         raise ValueError(
-            "work_boundary - hard_surface_area - buildings produced an empty geometry"
+            "work_boundary - hard_surface_area - road_area - buildings "
+            "produced an empty geometry"
         )
 
     output_features = [
@@ -415,10 +584,12 @@ def build(
             {
                 "stage": "base_constraint_builder",
                 "formula": (
-                    "work_boundary - hard_surface_area - buildings_in_work_area"
+                    "work_boundary - hard_surface_area - road_area - "
+                    "buildings_in_work_area"
                 ),
                 "applied_restrictions": [
                     "hard_surface_area",
+                    "reconstructed_road_area",
                     "building_footprints",
                 ],
             },
@@ -433,6 +604,20 @@ def build(
             },
         ),
     ]
+    if not road_area.is_empty:
+        output_features.append(
+            geometry_feature(
+                "road_area",
+                road_area,
+                {
+                    "stage": "base_constraint_builder",
+                    "source_object_type": "road_edge",
+                    "road_seed_source": str(surface_candidates_path),
+                    "reconstruction_method": road_reconstruction.get("method"),
+                    "requires_visual_confirmation": True,
+                },
+            )
+        )
     if not buildings_in_work_area.is_empty:
         output_features.append(
             geometry_feature(
@@ -465,6 +650,17 @@ def build(
             "Building footprints therefore did not reduce the base area; "
             "later setback buffers may still reach into it."
         )
+    if road_reconstruction["status"] != "reconstructed":
+        warnings.append(
+            "Road reconstruction was unavailable: "
+            f"{road_reconstruction.get('reason', 'unknown reason')}. "
+            "Only explicit road-surface polygons remain excluded."
+        )
+    else:
+        warnings.append(
+            "Road area was reconstructed heuristically from dashed curb lines "
+            "and must be visually confirmed in CAD."
+        )
 
     excluded_area = as_polygonal(
         absolute_exclusions.intersection(work_boundary)
@@ -478,10 +674,16 @@ def build(
         "output": str(output_path),
         "coordinate_reference": "local_dxf_coordinates",
         "units_confirmed_as_metres": False,
-        "formula": "work_boundary - hard_surface_area - buildings_in_work_area",
+        "formula": (
+            "work_boundary - hard_surface_area - road_area - "
+            "buildings_in_work_area"
+        ),
         "areas_in_dxf_square_units": {
             "work_boundary": work_boundary.area,
             "hard_surface_area": hard_surface_area.area,
+            "road_seed_area": road_seed_area.area,
+            "reconstructed_road_area": road_area.area,
+            "unambiguous_plantable_surface_area": plantable_surface_area.area,
             "all_normalized_buildings": all_buildings.area,
             "buildings_in_work_area": buildings_in_work_area.area,
             "absolute_exclusions": excluded_area,
@@ -489,8 +691,12 @@ def build(
             "area_balance_error": area_balance_error,
         },
         "surface_detection": surface_diagnostics,
+        "road_seed_detection": road_seed_diagnostics,
+        "plantable_surface_detection": plantable_surface_diagnostics,
+        "road_reconstruction": road_reconstruction,
         "applied_restrictions": [
             "hard_surface_area",
+            "reconstructed_road_area",
             "building_footprints",
         ],
         "deferred_restrictions": [
@@ -512,6 +718,8 @@ def build(
     print(f"Report: {report_path}")
     print(f"Work boundary area: {work_boundary.area:.3f} square DXF units")
     print(f"Hard surface area: {hard_surface_area.area:.3f} square DXF units")
+    print(f"Road seed area: {road_seed_area.area:.3f} square DXF units")
+    print(f"Road area: {road_area.area:.3f} square DXF units")
     print(
         "Buildings in work area: "
         f"{buildings_in_work_area.area:.3f} square DXF units"
@@ -537,8 +745,25 @@ def main() -> None:
     )
     parser.add_argument("--curve-tolerance", type=float, default=0.1)
     parser.add_argument("--min-area", type=float, default=0.01)
+    parser.add_argument(
+        "--road-stitch-tolerance",
+        type=float,
+        default=0.30,
+        help="Half-width used to connect dashed curb strokes in DXF units",
+    )
+    parser.add_argument(
+        "--road-min-seed-overlap-area",
+        type=float,
+        default=0.50,
+        help="Minimum road-HATCH overlap required to classify a cell",
+    )
     args = parser.parse_args()
-    if args.curve_tolerance <= 0 or args.min_area < 0:
+    if (
+        args.curve_tolerance <= 0
+        or args.min_area < 0
+        or args.road_stitch_tolerance <= 0
+        or args.road_min_seed_overlap_area <= 0
+    ):
         raise SystemExit("Tolerance must be positive and minimum area non-negative")
     try:
         build(
@@ -548,6 +773,8 @@ def main() -> None:
             args.report,
             args.curve_tolerance,
             args.min_area,
+            args.road_stitch_tolerance,
+            args.road_min_seed_overlap_area,
         )
     except (OSError, ValueError, json.JSONDecodeError) as error:
         raise SystemExit(f"Constraint builder error: {error}") from error

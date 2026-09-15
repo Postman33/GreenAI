@@ -21,6 +21,7 @@ ZONE_LAYERS = {
     "herbaceous": ("GREEN_AI_ZONE_HERBACEOUS", 4),
     "groundcover": ("GREEN_AI_ZONE_GROUNDCOVER", 6),
 }
+ROAD_LAYER = ("GREEN_AI_RECONSTRUCTED_ROAD", 8)
 
 
 def polygon_parts(geometry: Any) -> Iterable[Polygon]:
@@ -61,6 +62,27 @@ def load_plant_zones(path: Path) -> dict[str, Polygonal]:
         plant_type: unary_union(parts)
         for plant_type, parts in grouped.items()
     }
+
+
+def load_constraint_geometry(path: Path, object_type: str) -> Polygonal:
+    """Read and merge one polygonal object type from a GeoJSONL map."""
+    parts: list[Polygon] = []
+    with path.open(encoding="utf-8") as source:
+        for line_number, line in enumerate(source, start=1):
+            if not line.strip():
+                continue
+            try:
+                feature: dict[str, Any] = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    f"Line {line_number}: invalid constraint GeoJSON"
+                ) from error
+            if feature.get("properties", {}).get("object_type") != object_type:
+                continue
+            parts.extend(polygon_parts(make_valid(shape(feature["geometry"]))))
+    if not parts:
+        raise ValueError(f"No {object_type} geometry found in {path}")
+    return unary_union(parts)
 
 
 def ensure_layer(document: ezdxf.document.Drawing, name: str, color: int) -> None:
@@ -139,6 +161,7 @@ def export_zones(
     zones_path: Path,
     output_dxf: Path,
     transparency: float,
+    constraint_map_path: Path | None = None,
 ) -> None:
     if input_dxf.resolve() == output_dxf.resolve():
         raise ValueError("Output DXF must differ from the original input DXF")
@@ -147,6 +170,28 @@ def export_zones(
     modelspace = document.modelspace()
     original_entity_count = len(modelspace)
     exported: dict[str, dict[str, Any]] = {}
+
+    if constraint_map_path is not None:
+        road_area = load_constraint_geometry(constraint_map_path, "road_area")
+        road_layer_name, road_color = ROAD_LAYER
+        ensure_layer(document, road_layer_name, road_color)
+        removed = remove_previous_entities(modelspace, road_layer_name)
+        road_polygon_count = sum(
+            add_zone_polygon(
+                modelspace,
+                polygon,
+                road_layer_name,
+                road_color,
+                min(0.82, max(transparency, 0.72)),
+            )
+            for polygon in polygon_parts(road_area)
+        )
+        exported["reconstructed_road"] = {
+            "layer": road_layer_name,
+            "polygons": road_polygon_count,
+            "area_in_dxf_square_units": road_area.area,
+            "previous_entities_removed": removed,
+        }
 
     # Add larger shrub zones first so tree zones remain visible above them.
     order = ["shrub", "tree", "herbaceous", "groundcover"]
@@ -181,6 +226,8 @@ def export_zones(
     document.saveas(output_dxf)
     print(f"Original DXF: {input_dxf}")
     print(f"Plant zones: {zones_path}")
+    if constraint_map_path is not None:
+        print(f"Constraint map: {constraint_map_path}")
     print(f"Output DXF: {output_dxf}")
     print(f"Original modelspace entities: {original_entity_count}")
     for plant_type, result in exported.items():
@@ -203,6 +250,11 @@ def main() -> None:
         default=Path("result_with_plant_allow_zones.dxf"),
     )
     parser.add_argument(
+        "--constraint-map",
+        type=Path,
+        help="Optional constraint GeoJSONL; adds reconstructed road layer.",
+    )
+    parser.add_argument(
         "--transparency",
         type=float,
         default=0.65,
@@ -217,6 +269,7 @@ def main() -> None:
             args.plant_allow_zones_geojsonl,
             args.output,
             args.transparency,
+            args.constraint_map,
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
         raise SystemExit(f"DXF export error: {error}") from error

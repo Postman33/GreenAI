@@ -98,6 +98,7 @@ def export_dxf(
     output_path: Path,
     work_boundary: Polygonal,
     hard_surfaces: Polygonal,
+    road_area: Polygonal,
     road_edges: Lineal,
     zones: dict[str, Polygonal],
 ) -> None:
@@ -106,6 +107,7 @@ def export_dxf(
     layer_colors = {
         "DEBUG_WORK_BOUNDARY": 5,
         "DEBUG_HARD_SURFACES": 1,
+        "DEBUG_ROAD_AREA": 8,
         "DEBUG_ROAD_EDGES": 7,
         "DEBUG_ALLOW_TREE": 3,
         "DEBUG_ALLOW_SHRUB": 2,
@@ -117,6 +119,7 @@ def export_dxf(
 
     modelspace = document.modelspace()
     add_polygons(modelspace, work_boundary, "DEBUG_WORK_BOUNDARY")
+    add_polygons(modelspace, road_area, "DEBUG_ROAD_AREA")
     add_polygons(modelspace, hard_surfaces, "DEBUG_HARD_SURFACES")
     add_lines(modelspace, road_edges, "DEBUG_ROAD_EDGES")
     for plant_type, geometry in zones.items():
@@ -131,8 +134,20 @@ def draw_context(
     axis,
     work_boundary: Polygonal,
     hard_surfaces: Polygonal,
+    road_area: Polygonal,
     road_edges: Lineal,
 ) -> None:
+    if not road_area.is_empty:
+        plot_polygon(
+            road_area,
+            axis,
+            add_points=False,
+            facecolor="#757575",
+            edgecolor="#424242",
+            linewidth=0.35,
+            alpha=0.72,
+            zorder=2,
+        )
     if not hard_surfaces.is_empty:
         plot_polygon(
             hard_surfaces,
@@ -142,7 +157,7 @@ def draw_context(
             edgecolor="#B71C1C",
             linewidth=0.35,
             alpha=0.70,
-            zorder=2,
+            zorder=3,
         )
     if not road_edges.is_empty:
         plot_line(
@@ -152,7 +167,7 @@ def draw_context(
             color="#212121",
             linewidth=0.35,
             alpha=0.85,
-            zorder=3,
+            zorder=4,
         )
     plot_polygon(
         work_boundary,
@@ -161,7 +176,7 @@ def draw_context(
         facecolor="none",
         edgecolor="#1565C0",
         linewidth=1.5,
-        zorder=4,
+        zorder=5,
     )
 
 
@@ -169,6 +184,7 @@ def export_png(
     output_path: Path,
     work_boundary: Polygonal,
     hard_surfaces: Polygonal,
+    road_area: Polygonal,
     road_edges: Lineal,
     zones: dict[str, Polygonal],
     dpi: int,
@@ -201,7 +217,13 @@ def export_png(
             alpha=0.58,
             zorder=1,
         )
-        draw_context(axis, work_boundary, hard_surfaces, road_edges)
+        draw_context(
+            axis,
+            work_boundary,
+            hard_surfaces,
+            road_area,
+            road_edges,
+        )
         axis.set_aspect("equal", adjustable="box")
         axis.set_title(f"Allow zone: {plant_type}")
         axis.set_xlabel("DXF X coordinate")
@@ -212,6 +234,7 @@ def export_png(
             Patch(facecolor="#66BB6A", edgecolor="#1B5E20", alpha=0.58, label="Tree allow zone"),
             Patch(facecolor="#FFCA28", edgecolor="#E65100", alpha=0.58, label="Shrub allow zone"),
             Patch(facecolor="#EF5350", edgecolor="#B71C1C", alpha=0.70, label="Hard surfaces"),
+            Patch(facecolor="#757575", edgecolor="#424242", alpha=0.72, label="Reconstructed road"),
             Line2D([0], [0], color="#212121", linewidth=1, label="Road edges"),
             Line2D([0], [0], color="#1565C0", linewidth=2, label="Work boundary"),
         ],
@@ -239,21 +262,40 @@ def build_debug_export(
     hard_surfaces = as_polygonal(
         read_object_geometry(constraint_map_path, "hard_surface_area")
     )
+    road_area = as_polygonal(
+        read_object_geometry(constraint_map_path, "road_area")
+    )
     road_edges = read_object_geometry(normalized_path, "road_edge").intersection(
         work_boundary.buffer(2.0)
     )
 
-    export_dxf(dxf_output, work_boundary, hard_surfaces, road_edges, zones)
-    export_png(png_output, work_boundary, hard_surfaces, road_edges, zones, dpi)
+    export_dxf(
+        dxf_output,
+        work_boundary,
+        hard_surfaces,
+        road_area,
+        road_edges,
+        zones,
+    )
+    export_png(
+        png_output,
+        work_boundary,
+        hard_surfaces,
+        road_area,
+        road_edges,
+        zones,
+        dpi,
+    )
 
     print(f"Plant zones: {plant_zones_path}")
     print(f"DXF: {dxf_output}")
     print(f"PNG: {png_output}")
+    print(f"Reconstructed road: {road_area.area:.3f} square DXF units")
     for plant_type, geometry in sorted(zones.items()):
         print(f"  {plant_type}: {geometry.area:.3f} square DXF units")
     print(
-        "WARNING: a zone crossing the space between road edges indicates "
-        "that a complete road polygon is still missing"
+        "WARNING: reconstructed road geometry is heuristic and must be "
+        "visually confirmed in CAD"
     )
 
 
