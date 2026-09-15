@@ -228,3 +228,16 @@ layer_mapping:
     geometry: point
     conversion: insert_point
     note: "Маркер люка не является трассой инженерной сети."
+
+  utility_well:
+    # Существующие колодцы и люки геоподосновы. Их центры нужны прежде всего
+    # для визуальной проверки результата; отдельный нормативный отступ от них
+    # применяется только после появления соответствующего placement_rule.
+    semantic_type: utility_well
+    source: geobase_blocks
+    required: false
+    layer_tail_in: ["Топо_Колодцы", "Колодцы", "Топо_Люки", "Люки"]
+    dxf_types: [ARC, CIRCLE, LINE, LWPOLYLINE]
+    geometry: point
+    conversion: symbol_center
+    note: "Компоненты условного знака сводятся к точкам для debug-визуализации."

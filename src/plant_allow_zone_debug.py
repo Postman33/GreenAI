@@ -19,7 +19,9 @@ from shapely.geometry import (
     GeometryCollection,
     LineString,
     MultiLineString,
+    MultiPoint,
     MultiPolygon,
+    Point,
     Polygon,
     shape,
 )
@@ -27,10 +29,29 @@ from shapely.plotting import plot_line, plot_polygon
 from shapely.validation import make_valid
 
 from constraint_builder import as_polygonal, read_object_geometry
+from plant_allow_zone import load_normalized_objects
 
 
 Polygonal = Polygon | MultiPolygon
 Lineal = LineString | MultiLineString
+
+
+DEBUG_CONTEXT_LAYERS = {
+    "building": ("DEBUG_BUILDINGS", 8),
+    "existing_tree": ("DEBUG_EXISTING_TREES", 94),
+    "existing_tree_belt": ("DEBUG_EXISTING_TREE_BELTS", 92),
+    "vegetation_boundary": ("DEBUG_VEGETATION", 82),
+    "water_pipe": ("DEBUG_WATER_PIPE", 5),
+    "storm_drain": ("DEBUG_STORM_DRAIN", 4),
+    "gas_pipe": ("DEBUG_GAS_PIPE", 2),
+    "heat_pipe": ("DEBUG_HEAT_PIPE", 1),
+    "sewer_pipe": ("DEBUG_SEWER_PIPE", 6),
+    "power_cable": ("DEBUG_POWER_CABLE", 30),
+    "telecom_cable": ("DEBUG_TELECOM_CABLE", 3),
+    "overhead_power_line": ("DEBUG_OVERHEAD_POWER", 7),
+    "utility_marker": ("DEBUG_UTILITY_MARKERS", 200),
+    "utility_well": ("DEBUG_UTILITY_WELLS", 210),
+}
 
 
 def polygon_parts(geometry: Any) -> Iterable[Polygon]:
@@ -51,6 +72,16 @@ def line_parts(geometry: Any) -> Iterable[LineString]:
     elif isinstance(geometry, GeometryCollection):
         for part in geometry.geoms:
             yield from line_parts(part)
+
+
+def point_parts(geometry: Any) -> Iterable[Point]:
+    if isinstance(geometry, Point):
+        yield geometry
+    elif isinstance(geometry, MultiPoint):
+        yield from geometry.geoms
+    elif isinstance(geometry, GeometryCollection):
+        for part in geometry.geoms:
+            yield from point_parts(part)
 
 
 def load_plant_zones(path: Path) -> dict[str, Polygonal]:
@@ -94,12 +125,29 @@ def add_lines(modelspace, geometry: Lineal, layer: str) -> None:
             modelspace.add_lwpolyline(coordinates, dxfattribs={"layer": layer})
 
 
+def add_points(modelspace, geometry: Any, layer: str, radius: float = 0.35) -> None:
+    for point in point_parts(geometry):
+        modelspace.add_circle(
+            (point.x, point.y),
+            radius=radius,
+            dxfattribs={"layer": layer},
+        )
+
+
+def add_context_geometry(modelspace, geometry: Any, layer: str) -> None:
+    add_polygons(modelspace, geometry, layer)
+    add_lines(modelspace, geometry, layer)
+    add_points(modelspace, geometry, layer)
+
+
 def export_dxf(
     output_path: Path,
     work_boundary: Polygonal,
     hard_surfaces: Polygonal,
     road_area: Polygonal,
+    sidewalks: Polygonal,
     road_edges: Lineal,
+    context_geometries: dict[str, Any],
     zones: dict[str, Polygonal],
 ) -> None:
     document = ezdxf.new("R2018")
@@ -109,6 +157,7 @@ def export_dxf(
         "DEBUG_HARD_SURFACES": 1,
         "DEBUG_ROAD_AREA": 8,
         "DEBUG_ROAD_EDGES": 7,
+        "DEBUG_SIDEWALKS": 4,
         "DEBUG_ALLOW_TREE": 3,
         "DEBUG_ALLOW_SHRUB": 2,
         "DEBUG_ALLOW_HERBACEOUS": 4,
@@ -116,12 +165,18 @@ def export_dxf(
     }
     for layer, color in layer_colors.items():
         document.layers.add(layer, color=color)
+    for layer, color in DEBUG_CONTEXT_LAYERS.values():
+        document.layers.add(layer, color=color)
 
     modelspace = document.modelspace()
     add_polygons(modelspace, work_boundary, "DEBUG_WORK_BOUNDARY")
     add_polygons(modelspace, road_area, "DEBUG_ROAD_AREA")
     add_polygons(modelspace, hard_surfaces, "DEBUG_HARD_SURFACES")
+    add_polygons(modelspace, sidewalks, "DEBUG_SIDEWALKS")
     add_lines(modelspace, road_edges, "DEBUG_ROAD_EDGES")
+    for object_type, geometry in context_geometries.items():
+        layer, _ = DEBUG_CONTEXT_LAYERS[object_type]
+        add_context_geometry(modelspace, geometry, layer)
     for plant_type, geometry in zones.items():
         layer = f"DEBUG_ALLOW_{plant_type.upper()}"
         if layer not in document.layers:
@@ -135,6 +190,7 @@ def draw_context(
     work_boundary: Polygonal,
     hard_surfaces: Polygonal,
     road_area: Polygonal,
+    sidewalks: Polygonal,
     road_edges: Lineal,
 ) -> None:
     if not road_area.is_empty:
@@ -159,6 +215,17 @@ def draw_context(
             alpha=0.70,
             zorder=3,
         )
+    if not sidewalks.is_empty:
+        plot_polygon(
+            sidewalks,
+            axis,
+            add_points=False,
+            facecolor="none",
+            edgecolor="#00BCD4",
+            linewidth=0.8,
+            alpha=0.95,
+            zorder=4,
+        )
     if not road_edges.is_empty:
         plot_line(
             road_edges,
@@ -167,7 +234,7 @@ def draw_context(
             color="#212121",
             linewidth=0.35,
             alpha=0.85,
-            zorder=4,
+            zorder=5,
         )
     plot_polygon(
         work_boundary,
@@ -176,7 +243,7 @@ def draw_context(
         facecolor="none",
         edgecolor="#1565C0",
         linewidth=1.5,
-        zorder=5,
+        zorder=6,
     )
 
 
@@ -185,6 +252,7 @@ def export_png(
     work_boundary: Polygonal,
     hard_surfaces: Polygonal,
     road_area: Polygonal,
+    sidewalks: Polygonal,
     road_edges: Lineal,
     zones: dict[str, Polygonal],
     dpi: int,
@@ -222,6 +290,7 @@ def export_png(
             work_boundary,
             hard_surfaces,
             road_area,
+            sidewalks,
             road_edges,
         )
         axis.set_aspect("equal", adjustable="box")
@@ -235,6 +304,7 @@ def export_png(
             Patch(facecolor="#FFCA28", edgecolor="#E65100", alpha=0.58, label="Shrub allow zone"),
             Patch(facecolor="#EF5350", edgecolor="#B71C1C", alpha=0.70, label="Hard surfaces"),
             Patch(facecolor="#757575", edgecolor="#424242", alpha=0.72, label="Reconstructed road"),
+            Patch(facecolor="none", edgecolor="#00BCD4", label="Sidewalks"),
             Line2D([0], [0], color="#212121", linewidth=1, label="Road edges"),
             Line2D([0], [0], color="#1565C0", linewidth=2, label="Work boundary"),
         ],
@@ -256,25 +326,45 @@ def build_debug_export(
     dpi: int,
 ) -> None:
     zones = load_plant_zones(plant_zones_path)
-    work_boundary = as_polygonal(
-        read_object_geometry(normalized_path, "work_boundary")
-    )
+    normalized_objects = load_normalized_objects(normalized_path)
+    work_boundary_geometry = normalized_objects.get("work_boundary")
+    if work_boundary_geometry is None or work_boundary_geometry.is_empty:
+        raise ValueError("No work_boundary geometry found in normalized input")
+    work_boundary = as_polygonal(work_boundary_geometry)
     hard_surfaces = as_polygonal(
         read_object_geometry(constraint_map_path, "hard_surface_area")
     )
     road_area = as_polygonal(
         read_object_geometry(constraint_map_path, "road_area")
     )
-    road_edges = read_object_geometry(normalized_path, "road_edge").intersection(
-        work_boundary.buffer(2.0)
+    sidewalk_geometry = normalized_objects.get("sidewalk")
+    sidewalks = (
+        as_polygonal(sidewalk_geometry.intersection(work_boundary))
+        if sidewalk_geometry is not None and not sidewalk_geometry.is_empty
+        else Polygon()
     )
+    context_clip = work_boundary.buffer(2.0)
+    road_edge_geometry = normalized_objects.get("road_edge")
+    road_edges = (
+        road_edge_geometry.intersection(context_clip)
+        if road_edge_geometry is not None and not road_edge_geometry.is_empty
+        else MultiLineString([])
+    )
+    context_geometries = {
+        object_type: geometry.intersection(context_clip)
+        for object_type in DEBUG_CONTEXT_LAYERS
+        if (geometry := normalized_objects.get(object_type)) is not None
+        and not geometry.is_empty
+    }
 
     export_dxf(
         dxf_output,
         work_boundary,
         hard_surfaces,
         road_area,
+        sidewalks,
         road_edges,
+        context_geometries,
         zones,
     )
     export_png(
@@ -282,6 +372,7 @@ def build_debug_export(
         work_boundary,
         hard_surfaces,
         road_area,
+        sidewalks,
         road_edges,
         zones,
         dpi,
@@ -291,6 +382,11 @@ def build_debug_export(
     print(f"DXF: {dxf_output}")
     print(f"PNG: {png_output}")
     print(f"Reconstructed road: {road_area.area:.3f} square DXF units")
+    print(f"Sidewalks: {sidewalks.area:.3f} square DXF units")
+    for object_type, geometry in context_geometries.items():
+        layer, _ = DEBUG_CONTEXT_LAYERS[object_type]
+        part_count = len(geometry.geoms) if hasattr(geometry, "geoms") else 1
+        print(f"  {object_type}: {layer} | {part_count} part(s)")
     for plant_type, geometry in sorted(zones.items()):
         print(f"  {plant_type}: {geometry.area:.3f} square DXF units")
     print(

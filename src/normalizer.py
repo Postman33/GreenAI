@@ -37,7 +37,7 @@ POLYGON_TYPES = {
     "existing_tree_belt",
     "vegetation_boundary",
 }
-POINT_TYPES = {"existing_tree", "utility_marker"}
+POINT_TYPES = {"existing_tree", "utility_marker", "utility_well"}
 
 
 def xy(point: list[float] | tuple[float, ...]) -> tuple[float, float]:
