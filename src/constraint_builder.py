@@ -574,69 +574,93 @@ def recover_outer_terminal_road(
         terminal_depth: float = 60.0,
         endpoint_tolerance: float = 1.0,
         min_extension_area_ratio: float = 0.001,
-        max_extension_area_ratio: float = 0.02,
+        max_extension_area_ratio: float = 0.20,
 ) -> tuple[Polygon | MultiPolygon, dict[str, Any]]:
     """Recover road pieces hidden by a soft surface-partition barrier.
 
     Some project HATCH boundaries create false filled faces when used as a
     topological partition. A second, relaxed reconstruction omits that soft
-    barrier. Only pieces reaching an outer end of the complete work extent,
-    touching the strict road and having a controlled area are restored. This
-    prevents relaxed cells from leaking into internal lawns and sidewalks.
+    barrier. Each disconnected work-boundary polygon has its own terminal
+    ends. Only pieces reaching one of those local ends, touching the strict
+    road in the same component and having a controlled area are restored.
+    This prevents a gap between work components from hiding a real road end.
     """
     if terminal_depth <= 0 or endpoint_tolerance < 0:
         raise ValueError("Terminal recovery tolerances are invalid")
     if not 0 <= min_extension_area_ratio <= max_extension_area_ratio <= 1:
         raise ValueError("Terminal extension area ratios are invalid")
 
-    minx, miny, maxx, maxy = work_boundary.bounds
-    vertical = (maxy - miny) >= (maxx - minx)
-    overall_length = (maxy - miny) if vertical else (maxx - minx)
-    depth = min(terminal_depth, overall_length * 0.15)
-    if vertical:
-        terminal_bands = (
-            box(minx - 1, miny - 1, maxx + 1, miny + depth),
-            box(minx - 1, maxy - depth, maxx + 1, maxy + 1),
-        )
-    else:
-        terminal_bands = (
-            box(minx - 1, miny - 1, minx + depth, maxy + 1),
-            box(maxx - depth, miny - 1, maxx + 1, maxy + 1),
-        )
-
     extensions: list[Polygon] = []
     extension_details: list[dict[str, Any]] = []
     relaxed_only = as_polygonal(relaxed_road.difference(strict_road))
-    for candidate in polygon_parts(relaxed_only):
-        area_ratio = candidate.area / work_boundary.area
-        if not min_extension_area_ratio <= area_ratio <= max_extension_area_ratio:
-            continue
-        if candidate.distance(strict_road) > 1e-6:
-            continue
-        if not any(candidate.intersects(band) for band in terminal_bands):
-            continue
-        bounds = candidate.bounds
-        reaches_outer_endpoint = (
-            bounds[1] <= miny + endpoint_tolerance
-            or bounds[3] >= maxy - endpoint_tolerance
-        ) if vertical else (
-            bounds[0] <= minx + endpoint_tolerance
-            or bounds[2] >= maxx - endpoint_tolerance
+    component_details: list[dict[str, Any]] = []
+    for component_index, component in enumerate(
+        polygon_parts(work_boundary), start=1
+    ):
+        minx, miny, maxx, maxy = component.bounds
+        vertical = (maxy - miny) >= (maxx - minx)
+        component_length = (maxy - miny) if vertical else (maxx - minx)
+        depth = min(terminal_depth, component_length * 0.15)
+        if vertical:
+            terminal_bands = (
+                box(minx - 1, miny - 1, maxx + 1, miny + depth),
+                box(minx - 1, maxy - depth, maxx + 1, maxy + 1),
+            )
+        else:
+            terminal_bands = (
+                box(minx - 1, miny - 1, minx + depth, maxy + 1),
+                box(maxx - depth, miny - 1, maxx + 1, maxy + 1),
+            )
+
+        strict_component = strict_road.intersection(component)
+        selected_for_component = 0
+        component_relaxed_only = as_polygonal(
+            relaxed_only.intersection(component)
         )
-        if not reaches_outer_endpoint:
-            continue
-        extensions.append(candidate)
-        extension_details.append({
-            "area_in_dxf_square_units": candidate.area,
-            "area_ratio": area_ratio,
-            "bounds": list(bounds),
+        for candidate in polygon_parts(component_relaxed_only):
+            area_ratio = candidate.area / component.area
+            if not (
+                min_extension_area_ratio
+                <= area_ratio
+                <= max_extension_area_ratio
+            ):
+                continue
+            if candidate.distance(strict_component) > 1e-6:
+                continue
+            if not any(candidate.intersects(band) for band in terminal_bands):
+                continue
+            bounds = candidate.bounds
+            reaches_outer_endpoint = (
+                bounds[1] <= miny + endpoint_tolerance
+                or bounds[3] >= maxy - endpoint_tolerance
+            ) if vertical else (
+                bounds[0] <= minx + endpoint_tolerance
+                or bounds[2] >= maxx - endpoint_tolerance
+            )
+            if not reaches_outer_endpoint:
+                continue
+            extensions.append(candidate)
+            selected_for_component += 1
+            extension_details.append({
+                "work_component_index": component_index,
+                "orientation": "vertical" if vertical else "horizontal",
+                "area_in_dxf_square_units": candidate.area,
+                "area_ratio_of_work_component": area_ratio,
+                "bounds": list(bounds),
+            })
+        component_details.append({
+            "work_component_index": component_index,
+            "orientation": "vertical" if vertical else "horizontal",
+            "bounds": list(component.bounds),
+            "terminal_depth_in_dxf_units": depth,
+            "selected_extension_count": selected_for_component,
         })
 
     recovered = as_polygonal(unary_union([strict_road, *extensions]))
     return recovered, {
         "method": "outer_terminal_extension_from_relaxed_partition",
-        "orientation": "vertical" if vertical else "horizontal",
-        "terminal_depth_in_dxf_units": depth,
+        "orientation": "per_work_component",
+        "work_components": component_details,
         "endpoint_tolerance_in_dxf_units": endpoint_tolerance,
         "strict_road_area_in_dxf_square_units": strict_road.area,
         "relaxed_road_area_in_dxf_square_units": relaxed_road.area,
