@@ -1,0 +1,222 @@
+# Сопоставление CAD-слоёв с объектами алгоритма.
+# После Bind имя слоя имеет вид "<имя блока>$0$<исходный слой>".
+# Парсер сравнивает имена без учёта регистра и использует layer_tail — часть
+# после последнего "$0$". Например: "3_ДЖКХ...$0$Сущ_сети_Водопровод"
+# становится "Сущ_сети_Водопровод".
+
+geobase_blocks:
+  # Какие блоки считаются геоподосновой. Внутри них находятся исходные
+  # топографические объекты: сети, здания, бордюры и существующее озеленение.
+  # В Bound DXF геоподосновы остаются вставленными блоками. Перебирать все
+  # INSERT нельзя: это захватит штампы, размеры и условные знаки.
+  name_regex:
+    - "^3_ДЖКХ"
+    - "^3ДЖКХ"
+    - "^Заводский_пр_3_ДЖКХ"
+    - "^Гео[._]"
+  # Предельная вложенность блоков при обходе. Защищает от зацикливания
+  # и случайного разбора глубоко вложенных служебных блоков.
+  max_depth: 12
+
+# Словарь: ключ — внутренний тип объекта алгоритма, значение — правило,
+# по которому этот объект извлекается из DXF. Новый вид объекта добавляется
+# отдельным блоком по тому же шаблону.
+layer_mapping:
+  work_boundary:
+    # Замкнутая граница территории, в пределах которой разрешено предлагать
+    # посадки. Её используют для обрезки всех объектов геоподосновы.
+    semantic_type: work_boundary
+    source: modelspace
+    required: true
+    layer_tail_in:
+      - "ДВ_ГП_П_Граница работ"
+      - "ДВ_ПО_Граница работ"
+    dxf_types: [LWPOLYLINE]
+    geometry: polygon
+    conversion: closed_polyline_to_polygon
+
+  building:
+    # Контуры зданий. После сборки в полигоны от них строятся запретные зоны
+    # согласно правилам посадки.
+    semantic_type: building
+    source: geobase_blocks
+    required: true
+    layer_tail_in: ["Топо_Части зданий", "Части зданий"]
+    dxf_types: [LINE, LWPOLYLINE, ARC, CIRCLE, HATCH]
+    geometry: polygon
+    conversion: polygonize_boundaries
+
+  road_edge:
+    # Бортовой камень — надёжная линия края проезжей части. Нужен для
+    # исключения проезжей части и проверки отступов от дороги.
+    semantic_type: road_edge
+    source: geobase_blocks
+    required: true
+    layer_tail_in: ["Топо_Бортовой камень", "Бортовой камень"]
+    dxf_types: [LINE, LWPOLYLINE, ARC]
+    geometry: multiline
+    conversion: merge_linework
+
+  street_boundary:
+    # Топографическая граница улицы. В MVP служит дополнительным контекстом;
+    # без неё расчёт можно выполнить по границе работ и бордюрам.
+    semantic_type: street_boundary
+    source: geobase_blocks
+    required: false
+    layer_tail_in: ["Топо_Граница улицы", "Граница улицы"]
+    dxf_types: [LINE, LWPOLYLINE, ARC, CIRCLE]
+    geometry: multiline
+    conversion: merge_linework
+
+  sidewalk:
+    # Проектный контур тротуара. Он помогает исключить поверхность прохода,
+    # но его соответствие фактическому тротуару нужно подтвердить в CAD.
+    semantic_type: sidewalk
+    source: modelspace
+    required: false
+    layer_regex: "^ДВ_ДО_Тип.*ТРОТ"
+    dxf_types: [HATCH, LWPOLYLINE]
+    geometry: polygon
+    conversion: hatch_boundary_to_polygon
+    note: "Перед расчётом слой надо визуально подтвердить как фактическую границу прохода."
+
+  existing_tree:
+    # Условные знаки отдельно стоящих существующих деревьев. Из контура
+    # символа вычисляется центральная точка, чтобы не предложить посадку
+    # вплотную к уже существующему дереву.
+    semantic_type: existing_tree
+    source: geobase_blocks
+    required: false
+    layer_tail_in: ["Топо_Отдельно стоящее дерево", "Отдельно стоящее дерево"]
+    dxf_types: [ARC, ELLIPSE, CIRCLE, LINE]
+    geometry: point
+    conversion: tree_symbol_center
+
+  existing_tree_belt:
+    # Полосы существующих деревьев. Контур или линия полосы превращается
+    # в площадь/буфер существующего озеленения.
+    semantic_type: existing_tree_belt
+    source: geobase_blocks
+    required: false
+    layer_tail_in: ["Топо_Полоса деревьев", "Полоса деревьев"]
+    dxf_types: [LINE, LWPOLYLINE, ARC, CIRCLE]
+    geometry: polygon_or_multiline
+    conversion: polygonize_or_buffer_linework
+
+  vegetation_boundary:
+    # Границы существующих газонов, грунта и растительности. Это кандидаты
+    # на озеленение после исключения сетей, дорог и прочих ограничений.
+    semantic_type: vegetation_boundary
+    source: geobase_blocks
+    required: false
+    layer_tail_in: ["Топо_Граница растительности и грунта", "Граница растительности и грунта"]
+    dxf_types: [LINE, LWPOLYLINE, ARC, CIRCLE]
+    geometry: polygon
+    conversion: polygonize_boundaries
+
+  water_pipe:
+    # Трассы существующего водопровода. По ним строится запретный буфер
+    # с расстоянием из placement_rules для каждого типа растения.
+    semantic_type: water_pipe
+    source: geobase_blocks
+    required: false
+    layer_tail_in: ["Сущ_сети_Водопровод", "Водопровод"]
+    exclude_layer_contains: ["проектн"]
+    dxf_types: [LINE, LWPOLYLINE, ARC]
+    geometry: multiline
+    conversion: merge_linework
+
+  storm_drain:
+    # Трассы существующего водостока. Учитываются так же, как прочие
+    # подземные коммуникации, по нормативному отступу.
+    semantic_type: storm_drain
+    source: geobase_blocks
+    required: false
+    layer_tail_in: ["Сущ_сети_Водосток", "Водосток"]
+    exclude_layer_contains: ["проектн"]
+    dxf_types: [LINE, LWPOLYLINE, ARC]
+    geometry: multiline
+    conversion: merge_linework
+
+  gas_pipe:
+    # Трассы существующего газопровода. Для них применяются отдельные,
+    # обычно более строгие правила размещения растений.
+    semantic_type: gas_pipe
+    source: geobase_blocks
+    required: false
+    layer_tail_in: ["Сущ_сети_Газопровод", "Газопровод"]
+    exclude_layer_contains: ["проектн"]
+    dxf_types: [LINE, LWPOLYLINE, ARC]
+    geometry: multiline
+    conversion: merge_linework
+
+  heat_pipe:
+    # Трассы существующей теплосети. Люки и проектные обозначения не входят
+    # в этот блок: здесь остаётся только линейная геометрия сети.
+    semantic_type: heat_pipe
+    source: geobase_blocks
+    required: false
+    layer_tail_in: ["Сущ_сети_Теплосеть", "Теплосеть"]
+    exclude_layer_contains: ["проектн"]
+    dxf_types: [LINE, LWPOLYLINE, ARC]
+    geometry: multiline
+    conversion: merge_linework
+
+  sewer_pipe:
+    # Трассы самотечной канализации. Используются при построении запретных
+    # зон для точки посадки.
+    semantic_type: sewer_pipe
+    source: geobase_blocks
+    required: false
+    layer_tail_in: ["Сущ_сети_Канализация самотёчная", "Канализация самотёчная"]
+    dxf_types: [LINE, LWPOLYLINE, ARC]
+    geometry: multiline
+    conversion: merge_linework
+
+  power_cable:
+    # Трассы подземного электрического кабеля. Проектные кабели исключаются,
+    # чтобы не смешивать исходную ситуацию с проектными решениями.
+    semantic_type: power_cable
+    source: geobase_blocks
+    required: false
+    layer_tail_in: ["Сущ_сети_Кабель электрический", "Кабель электрический"]
+    exclude_layer_contains: ["проектн"]
+    dxf_types: [LINE, LWPOLYLINE, ARC]
+    geometry: multiline
+    conversion: merge_linework
+
+  telecom_cable:
+    # Трассы кабелей связи. Это отдельный вид сети, чтобы назначать ему
+    # собственный нормативный отступ.
+    semantic_type: telecom_cable
+    source: geobase_blocks
+    required: false
+    layer_tail_in: ["Сущ_сети_Кабель связи", "Кабель связи"]
+    exclude_layer_contains: ["проектн"]
+    dxf_types: [LINE, LWPOLYLINE, ARC]
+    geometry: multiline
+    conversion: merge_linework
+
+  overhead_power_line:
+    # Ось воздушной линии электропередачи. Класс напряжения в DXF не указан,
+    # поэтому ширину охранной зоны нельзя определить автоматически.
+    semantic_type: overhead_power_line
+    source: geobase_blocks
+    required: false
+    layer_tail_in: ["Топо_ЛЭП", "ЛЭП"]
+    dxf_types: [LINE, LWPOLYLINE]
+    geometry: multiline
+    conversion: merge_linework
+    note: "Класс напряжения отсутствует; охранную зону автоматически не рассчитывать."
+
+  utility_marker:
+    # Проектные вставки, обозначающие замену люка. Извлекаются для отчёта
+    # и визуальной проверки, но не считаются трассами инженерных сетей.
+    semantic_type: utility_marker
+    source: modelspace
+    required: false
+    layer_regex: "^ДВ_ГП_П_Замена_Люк_(Водопровод|Водосток|ГАЗ|Кабели|Канализация|Теплосети)$"
+    dxf_types: [INSERT]
+    geometry: point
+    conversion: insert_point
+    note: "Маркер люка не является трассой инженерной сети."
