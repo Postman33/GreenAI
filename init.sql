@@ -16,11 +16,11 @@ CREATE TABLE plant_catalog (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     plant_type TEXT NOT NULL CHECK (plant_type IN ('tree', 'shrub', 'herbaceous', 'groundcover')),
-    min_spacing_m NUMERIC(5,2) NOT NULL CHECK (min_spacing_m >= 0),
+    min_spacing_m NUMERIC(5,2) CHECK (min_spacing_m >= 0),
     selection_priority SMALLINT NOT NULL DEFAULT 100 CHECK (selection_priority >= 0),
     is_invasive BOOLEAN NOT NULL DEFAULT FALSE,
-    is_toxic BOOLEAN NOT NULL DEFAULT FALSE,
-    is_thorny BOOLEAN NOT NULL DEFAULT FALSE
+    is_toxic BOOLEAN,
+    is_thorny BOOLEAN
 );
 
 COMMENT ON TABLE plant_catalog IS
@@ -36,7 +36,7 @@ COMMENT ON COLUMN plant_catalog.plant_type IS
     'Класс посадки: tree, shrub, herbaceous или groundcover.';
 
 COMMENT ON COLUMN plant_catalog.min_spacing_m IS
-    'Минимальное расстояние в метрах до другой новой посадки.';
+    'Минимальное расстояние в метрах до другой новой посадки; NULL, если значение ещё не подтверждено.';
 
 COMMENT ON COLUMN plant_catalog.selection_priority IS
     'Приоритет выбора: меньшее число означает более предпочтительный вид.';
@@ -45,27 +45,41 @@ COMMENT ON COLUMN plant_catalog.is_invasive IS
     'Признак инвазивного вида; такие растения не рекомендуются.';
 
 COMMENT ON COLUMN plant_catalog.is_toxic IS
-    'Признак ядовитого растения; применяется при проверке ограничений точки.';
+    'Признак ядовитого растения; NULL означает, что свойство ещё не проверено.';
 
 COMMENT ON COLUMN plant_catalog.is_thorny IS
-    'Признак колючего растения; применяется при проверке расстояния до прохода.';
+    'Признак колючего растения; NULL означает, что свойство ещё не проверено.';
 
 CREATE TABLE placement_rules (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     rule_code TEXT NOT NULL UNIQUE,
     norm_document_id BIGINT REFERENCES norm_documents(id),
-    source_plant_from TEXT CHECK,
+    source_plant_from TEXT NOT NULL CHECK (
+        source_plant_from IN ('tree', 'shrub', 'herbaceous', 'groundcover')
+    ),
     target_object_to TEXT NOT NULL,
     conditions JSONB NOT NULL DEFAULT '{}'::JSONB,
     norm_reference TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-/*
- conditions:
- [min_distance] - расстояние между объектов, не менее чем X метров
- [
 
- */
+COMMENT ON TABLE placement_rules IS
+    'Нормативные проверки между классом растения и объектом подосновы.';
+
+COMMENT ON COLUMN placement_rules.rule_code IS
+    'Стабильный уникальный код правила, используемый идемпотентным seed-скриптом.';
+
+COMMENT ON COLUMN placement_rules.source_plant_from IS
+    'Класс проверяемой посадки: tree, shrub, herbaceous или groundcover.';
+
+COMMENT ON COLUMN placement_rules.target_object_to IS
+    'Семантический object_type препятствия из нормализованного DXF.';
+
+COMMENT ON COLUMN placement_rules.conditions IS
+    'Параметры проверки: check=min_distance и min_distance_m либо check=manual_review.';
+
+COMMENT ON COLUMN placement_rules.norm_reference IS
+    'Точный пункт или таблица нормативного документа для объяснимого отчёта.';
 
 
 -- С индексами разберемся позже. todo

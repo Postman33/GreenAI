@@ -10,13 +10,13 @@ import argparse
 import json
 import logging
 import re
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterator
 
 import ezdxf
 import yaml
-
+from ezdxf.path import from_hatch
 
 DEFAULT_CONFIG = Path(__file__).parent / "core" / "config.yaml"
 
@@ -90,13 +90,21 @@ def geometry(entity: Any) -> dict[str, Any] | None:
             "block_name": entity.dxf.name,
         }
     if entity_type == "HATCH":
-        # Hatch loops will be converted to polygons in the geometry module.
-        # Saving basic attributes preserves traceability without pretending the
-        # hatch is already a usable polygon.
+        boundary_paths = []
+        for boundary in from_hatch(entity):
+            coordinates = [
+                [vertex.x, vertex.y]
+                for vertex in boundary.flattening(distance=0.1, segments=8)
+            ]
+            if len(coordinates) >= 3:
+                if coordinates[0] != coordinates[-1]:
+                    coordinates.append(coordinates[0])
+                boundary_paths.append(coordinates)
         return {
             "kind": "hatch",
             "solid_fill": entity.dxf.get("solid_fill", 0),
             "pattern_name": entity.dxf.get("pattern_name", None),
+            "boundary_paths": boundary_paths,
         }
     return None
 
@@ -191,30 +199,31 @@ def extract(
     """Extract modelspace and selected geobase-block objects to JSONL."""
     mappings = config["layer_mapping"]
     block_rules = config.get("geobase_blocks", {})
-    block_patterns = [re.compile(item, flags=re.IGNORECASE) for item in block_rules["name_regex"]]
+    block_patterns = [
+        re.compile(item, flags=re.IGNORECASE)
+        for item in block_rules["name_regex"]
+    ]
     max_depth = int(block_rules.get("max_depth", 12))
 
-    # ezdxf warns while copying unsupported AutoCAD FIELD/DIMASSOC objects
-    # during virtual block expansion. They are not requested by the config and
-    # do not affect the extracted geometry.
+    # FIELD and DIMASSOC objects are irrelevant to configured geometry.
     logging.getLogger("ezdxf").setLevel(logging.ERROR)
 
-    doc = ezdxf.readfile(input_path)
-    modelspace = doc.modelspace()
+    document = ezdxf.readfile(input_path)
+    modelspace = document.modelspace()
     counts: Counter[str] = Counter()
     dxf_counts: Counter[str] = Counter()
     selected_roots: set[str] = set()
 
-    def write_matches(entity: Any, source: str, path: list[str]) -> None:
-        for object_name, mapping in match_mappings(mappings, entity, source):
-            item = record(object_name, mapping, entity, path)
-            if item["geometry"] is None:
-                continue
-            output.write(json.dumps(item, ensure_ascii=False) + "\n")
-            counts[object_name] += 1
-            dxf_counts[entity.dxftype()] += 1
-
     with output_path.open("w", encoding="utf-8") as output:
+        def write_matches(entity: Any, source: str, path: list[str]) -> None:
+            for object_name, mapping in match_mappings(mappings, entity, source):
+                item = record(object_name, mapping, entity, path)
+                if item["geometry"] is None:
+                    continue
+                output.write(json.dumps(item, ensure_ascii=False) + "\n")
+                counts[object_name] += 1
+                dxf_counts[entity.dxftype()] += 1
+
         for entity in modelspace:
             write_matches(entity, "modelspace", [])
 
@@ -224,7 +233,9 @@ def extract(
             if not any(pattern.search(block_name) for pattern in block_patterns):
                 continue
             selected_roots.add(block_name)
-            for child, path in walk_virtual_entities(entity, [block_name], max_depth):
+            for child, path in walk_virtual_entities(
+                entity, [block_name], max_depth
+            ):
                 if child.dxftype() != "INSERT":
                     write_matches(child, "geobase_blocks", path)
 

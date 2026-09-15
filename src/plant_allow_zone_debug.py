@@ -1,0 +1,291 @@
+"""Export per-plant allow zones to a diagnostic PNG and DXF."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+from typing import Any, Iterable
+
+import ezdxf
+import matplotlib
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
+from shapely.geometry import (
+    GeometryCollection,
+    LineString,
+    MultiLineString,
+    MultiPolygon,
+    Polygon,
+    shape,
+)
+from shapely.plotting import plot_line, plot_polygon
+from shapely.validation import make_valid
+
+from constraint_builder import as_polygonal, read_object_geometry
+
+
+Polygonal = Polygon | MultiPolygon
+Lineal = LineString | MultiLineString
+
+
+def polygon_parts(geometry: Any) -> Iterable[Polygon]:
+    if isinstance(geometry, Polygon):
+        yield geometry
+    elif isinstance(geometry, MultiPolygon):
+        yield from geometry.geoms
+    elif isinstance(geometry, GeometryCollection):
+        for part in geometry.geoms:
+            yield from polygon_parts(part)
+
+
+def line_parts(geometry: Any) -> Iterable[LineString]:
+    if isinstance(geometry, LineString):
+        yield geometry
+    elif isinstance(geometry, MultiLineString):
+        yield from geometry.geoms
+    elif isinstance(geometry, GeometryCollection):
+        for part in geometry.geoms:
+            yield from line_parts(part)
+
+
+def load_plant_zones(path: Path) -> dict[str, Polygonal]:
+    zones: dict[str, list[Polygon]] = {}
+    with path.open(encoding="utf-8") as source:
+        for line_number, line in enumerate(source, start=1):
+            if not line.strip():
+                continue
+            feature = json.loads(line)
+            properties = feature.get("properties", {})
+            if properties.get("object_type") != "plant_allow_zone":
+                continue
+            plant_type = properties.get("plant_type")
+            if not plant_type:
+                raise ValueError(f"Line {line_number}: plant_type is missing")
+            geometry = as_polygonal(make_valid(shape(feature["geometry"])))
+            zones.setdefault(plant_type, []).extend(polygon_parts(geometry))
+    if not zones:
+        raise ValueError("No plant_allow_zone features were found")
+    return {
+        plant_type: as_polygonal(MultiPolygon(parts))
+        for plant_type, parts in zones.items()
+    }
+
+
+def add_polygons(modelspace, geometry: Polygonal, layer: str) -> None:
+    for polygon in polygon_parts(geometry):
+        modelspace.add_lwpolyline(
+            list(polygon.exterior.coords), close=True, dxfattribs={"layer": layer}
+        )
+        for interior in polygon.interiors:
+            modelspace.add_lwpolyline(
+                list(interior.coords), close=True, dxfattribs={"layer": layer}
+            )
+
+
+def add_lines(modelspace, geometry: Lineal, layer: str) -> None:
+    for line in line_parts(geometry):
+        coordinates = list(line.coords)
+        if len(coordinates) >= 2:
+            modelspace.add_lwpolyline(coordinates, dxfattribs={"layer": layer})
+
+
+def export_dxf(
+    output_path: Path,
+    work_boundary: Polygonal,
+    hard_surfaces: Polygonal,
+    road_edges: Lineal,
+    zones: dict[str, Polygonal],
+) -> None:
+    document = ezdxf.new("R2018")
+    document.header["$INSUNITS"] = 0
+    layer_colors = {
+        "DEBUG_WORK_BOUNDARY": 5,
+        "DEBUG_HARD_SURFACES": 1,
+        "DEBUG_ROAD_EDGES": 7,
+        "DEBUG_ALLOW_TREE": 3,
+        "DEBUG_ALLOW_SHRUB": 2,
+        "DEBUG_ALLOW_HERBACEOUS": 4,
+        "DEBUG_ALLOW_GROUNDCOVER": 6,
+    }
+    for layer, color in layer_colors.items():
+        document.layers.add(layer, color=color)
+
+    modelspace = document.modelspace()
+    add_polygons(modelspace, work_boundary, "DEBUG_WORK_BOUNDARY")
+    add_polygons(modelspace, hard_surfaces, "DEBUG_HARD_SURFACES")
+    add_lines(modelspace, road_edges, "DEBUG_ROAD_EDGES")
+    for plant_type, geometry in zones.items():
+        layer = f"DEBUG_ALLOW_{plant_type.upper()}"
+        if layer not in document.layers:
+            document.layers.add(layer, color=3)
+        add_polygons(modelspace, geometry, layer)
+    document.saveas(output_path)
+
+
+def draw_context(
+    axis,
+    work_boundary: Polygonal,
+    hard_surfaces: Polygonal,
+    road_edges: Lineal,
+) -> None:
+    if not hard_surfaces.is_empty:
+        plot_polygon(
+            hard_surfaces,
+            axis,
+            add_points=False,
+            facecolor="#EF5350",
+            edgecolor="#B71C1C",
+            linewidth=0.35,
+            alpha=0.70,
+            zorder=2,
+        )
+    if not road_edges.is_empty:
+        plot_line(
+            road_edges,
+            axis,
+            add_points=False,
+            color="#212121",
+            linewidth=0.35,
+            alpha=0.85,
+            zorder=3,
+        )
+    plot_polygon(
+        work_boundary,
+        axis,
+        add_points=False,
+        facecolor="none",
+        edgecolor="#1565C0",
+        linewidth=1.5,
+        zorder=4,
+    )
+
+
+def export_png(
+    output_path: Path,
+    work_boundary: Polygonal,
+    hard_surfaces: Polygonal,
+    road_edges: Lineal,
+    zones: dict[str, Polygonal],
+    dpi: int,
+) -> None:
+    ordered_types = [item for item in ("tree", "shrub") if item in zones]
+    ordered_types.extend(sorted(set(zones) - set(ordered_types)))
+    figure, axes = plt.subplots(
+        1,
+        len(ordered_types),
+        figsize=(8 * len(ordered_types), 12),
+        squeeze=False,
+        sharex=True,
+        sharey=True,
+    )
+    colors = {
+        "tree": ("#66BB6A", "#1B5E20"),
+        "shrub": ("#FFCA28", "#E65100"),
+        "herbaceous": ("#42A5F5", "#0D47A1"),
+        "groundcover": ("#AB47BC", "#4A148C"),
+    }
+    for axis, plant_type in zip(axes[0], ordered_types):
+        fill, edge = colors.get(plant_type, ("#66BB6A", "#1B5E20"))
+        plot_polygon(
+            zones[plant_type],
+            axis,
+            add_points=False,
+            facecolor=fill,
+            edgecolor=edge,
+            linewidth=0.45,
+            alpha=0.58,
+            zorder=1,
+        )
+        draw_context(axis, work_boundary, hard_surfaces, road_edges)
+        axis.set_aspect("equal", adjustable="box")
+        axis.set_title(f"Allow zone: {plant_type}")
+        axis.set_xlabel("DXF X coordinate")
+        axis.grid(True, linewidth=0.25, alpha=0.3)
+    axes[0][0].set_ylabel("DXF Y coordinate")
+    figure.legend(
+        handles=[
+            Patch(facecolor="#66BB6A", edgecolor="#1B5E20", alpha=0.58, label="Tree allow zone"),
+            Patch(facecolor="#FFCA28", edgecolor="#E65100", alpha=0.58, label="Shrub allow zone"),
+            Patch(facecolor="#EF5350", edgecolor="#B71C1C", alpha=0.70, label="Hard surfaces"),
+            Line2D([0], [0], color="#212121", linewidth=1, label="Road edges"),
+            Line2D([0], [0], color="#1565C0", linewidth=2, label="Work boundary"),
+        ],
+        loc="upper center",
+        ncol=3,
+    )
+    figure.suptitle("Plant allow zones and road geometry", y=0.98)
+    figure.tight_layout(rect=(0, 0, 1, 0.94))
+    figure.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(figure)
+
+
+def build_debug_export(
+    plant_zones_path: Path,
+    constraint_map_path: Path,
+    normalized_path: Path,
+    dxf_output: Path,
+    png_output: Path,
+    dpi: int,
+) -> None:
+    zones = load_plant_zones(plant_zones_path)
+    work_boundary = as_polygonal(
+        read_object_geometry(normalized_path, "work_boundary")
+    )
+    hard_surfaces = as_polygonal(
+        read_object_geometry(constraint_map_path, "hard_surface_area")
+    )
+    road_edges = read_object_geometry(normalized_path, "road_edge").intersection(
+        work_boundary.buffer(2.0)
+    )
+
+    export_dxf(dxf_output, work_boundary, hard_surfaces, road_edges, zones)
+    export_png(png_output, work_boundary, hard_surfaces, road_edges, zones, dpi)
+
+    print(f"Plant zones: {plant_zones_path}")
+    print(f"DXF: {dxf_output}")
+    print(f"PNG: {png_output}")
+    for plant_type, geometry in sorted(zones.items()):
+        print(f"  {plant_type}: {geometry.area:.3f} square DXF units")
+    print(
+        "WARNING: a zone crossing the space between road edges indicates "
+        "that a complete road polygon is still missing"
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Export plant allow zones with roads to DXF and PNG."
+    )
+    parser.add_argument("plant_allow_zones_geojsonl", type=Path)
+    parser.add_argument("constraint_map_geojsonl", type=Path)
+    parser.add_argument("normalized_objects_geojsonl", type=Path)
+    parser.add_argument(
+        "--dxf-output", type=Path, default=Path("plant_allow_zones_debug.dxf")
+    )
+    parser.add_argument(
+        "--png-output", type=Path, default=Path("plant_allow_zones_debug.png")
+    )
+    parser.add_argument("--dpi", type=int, default=180)
+    args = parser.parse_args()
+    if args.dpi <= 0:
+        raise SystemExit("--dpi must be greater than zero")
+    try:
+        build_debug_export(
+            args.plant_allow_zones_geojsonl,
+            args.constraint_map_geojsonl,
+            args.normalized_objects_geojsonl,
+            args.dxf_output,
+            args.png_output,
+            args.dpi,
+        )
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
+        raise SystemExit(f"Plant-zone debug export error: {error}") from error
+
+
+if __name__ == "__main__":
+    main()

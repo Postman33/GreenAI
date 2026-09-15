@@ -1,0 +1,527 @@
+"""Build a provisional planting zone for every configured plant class.
+
+The module applies database rules with ``check=min_distance`` to the common
+``base_allowed_area``. Rules that require manual review or missing DXF data
+are recorded in the report and make the result provisional.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+from collections import defaultdict
+from pathlib import Path
+from typing import Any
+
+import psycopg
+from shapely import buffer as buffer_geometries
+from shapely import union_all
+from shapely.geometry import mapping, shape
+from shapely.ops import clip_by_rect, unary_union
+from shapely.validation import make_valid
+
+from constraint_builder import as_polygonal, read_object_geometry
+
+
+DEFAULT_DSN = "postgresql://admin:admin@localhost:5432/admin"
+
+
+def load_normalized_objects(path: Path) -> dict[str, Any]:
+    """Read normalized GeoJSONL and merge features by semantic object type."""
+    grouped: dict[str, list[Any]] = defaultdict(list)
+    with path.open(encoding="utf-8") as source:
+        for line_number, line in enumerate(source, start=1):
+            if not line.strip():
+                continue
+            try:
+                feature: dict[str, Any] = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    f"Line {line_number}: invalid normalized GeoJSON"
+                ) from error
+            if feature.get("type") != "Feature":
+                raise ValueError(
+                    f"Line {line_number}: expected GeoJSON Feature"
+                )
+            object_type = feature.get("properties", {}).get("object_type")
+            if not object_type:
+                raise ValueError(
+                    f"Line {line_number}: object_type is missing"
+                )
+            geometry_data = feature.get("geometry")
+            if not geometry_data:
+                continue
+            geometry = make_valid(shape(geometry_data))
+            if not geometry.is_empty:
+                grouped[object_type].append(geometry)
+
+    return {
+        object_type: unary_union(geometries)
+        for object_type, geometries in grouped.items()
+    }
+
+
+def load_rules(
+    dsn: str,
+    requested_plant_types: set[str] | None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Load placement rules with their normative source from PostgreSQL."""
+    query = """
+        SELECT
+            rule.rule_code,
+            rule.source_plant_from,
+            rule.target_object_to,
+            rule.conditions,
+            rule.norm_reference,
+            document.code,
+            document.title,
+            document.edition,
+            document.source_url
+        FROM placement_rules AS rule
+        LEFT JOIN norm_documents AS document
+          ON document.id = rule.norm_document_id
+        ORDER BY rule.source_plant_from, rule.rule_code
+    """
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    try:
+        with psycopg.connect(dsn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(query)
+                rows = cursor.fetchall()
+    except psycopg.Error as error:
+        raise RuntimeError(f"could not load placement rules: {error}") from error
+
+    for row in rows:
+        plant_type = row[1]
+        if requested_plant_types is not None and plant_type not in requested_plant_types:
+            continue
+        conditions = row[3]
+        if isinstance(conditions, str):
+            conditions = json.loads(conditions)
+        grouped[plant_type].append(
+            {
+                "rule_code": row[0],
+                "plant_type": plant_type,
+                "target_object_type": row[2],
+                "conditions": conditions,
+                "norm_reference": row[4],
+                "norm_document": {
+                    "code": row[5],
+                    "title": row[6],
+                    "edition": row[7],
+                    "source_url": row[8],
+                },
+            }
+        )
+
+    if requested_plant_types:
+        missing = requested_plant_types - set(grouped)
+        if missing:
+            raise ValueError(
+                "No placement rules found for plant types: "
+                + ", ".join(sorted(missing))
+            )
+    if not grouped:
+        raise ValueError("No placement rules found in the database")
+    return dict(grouped)
+
+
+def load_plants(
+    dsn: str,
+    requested_plant_types: set[str] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Load catalog plants, including flags needed by the selector."""
+    query = """
+        SELECT
+            id,
+            name,
+            plant_type,
+            min_spacing_m,
+            selection_priority,
+            is_invasive,
+            is_toxic,
+            is_thorny
+        FROM plant_catalog
+        ORDER BY plant_type, selection_priority, name
+    """
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    try:
+        with psycopg.connect(dsn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(query)
+                rows = cursor.fetchall()
+    except psycopg.Error as error:
+        raise RuntimeError(f"could not load plant catalog: {error}") from error
+
+    for row in rows:
+        plant_type = row[2]
+        if requested_plant_types is not None and plant_type not in requested_plant_types:
+            continue
+        grouped[plant_type].append(
+            {
+                "id": row[0],
+                "name": row[1],
+                "plant_type": plant_type,
+                "min_spacing_m": float(row[3]) if row[3] is not None else None,
+                "selection_priority": row[4],
+                "is_invasive": row[5],
+                "is_toxic": row[6],
+                "is_thorny": row[7],
+            }
+        )
+    return dict(grouped)
+
+
+def validate_distance_rule(rule: dict[str, Any]) -> float:
+    value = rule["conditions"].get("min_distance_m")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(
+            f"Rule {rule['rule_code']}: min_distance_m must be a number"
+        )
+    distance = float(value)
+    if not math.isfinite(distance) or distance < 0:
+        raise ValueError(
+            f"Rule {rule['rule_code']}: min_distance_m must be finite and non-negative"
+        )
+    return distance
+
+
+def apply_rules(
+    plant_type: str,
+    base_allowed_area: Any,
+    normalized_objects: dict[str, Any],
+    rules: list[dict[str, Any]],
+    dxf_units_per_meter: float,
+    exclusion_cache: dict[tuple[str, float], Any],
+) -> tuple[Any, list[dict[str, Any]], list[str]]:
+    """Apply computable rules and return zone, rule results and warnings."""
+    allowed_area = base_allowed_area
+    evaluations: list[dict[str, Any]] = []
+    warnings: list[str] = []
+
+    for rule in rules:
+        conditions = rule["conditions"] or {}
+        check = conditions.get("check")
+        target_type = rule["target_object_type"]
+        target_geometry = normalized_objects.get(target_type)
+        evaluation = {
+            "rule_code": rule["rule_code"],
+            "target_object_type": target_type,
+            "check": check,
+            "norm_reference": rule["norm_reference"],
+            "norm_document": rule["norm_document"],
+        }
+
+        if target_geometry is None or target_geometry.is_empty:
+            evaluation.update(
+                status="unavailable",
+                reason=f"No {target_type} geometry was found in normalized input",
+            )
+            warnings.append(
+                f"{plant_type}/{rule['rule_code']}: missing {target_type} geometry"
+            )
+            evaluations.append(evaluation)
+            continue
+
+        if check == "manual_review":
+            evaluation.update(
+                status="manual_review",
+                reason=conditions.get("reason", "Manual review is required"),
+                source_geometry_type=target_geometry.geom_type,
+            )
+            warnings.append(
+                f"{plant_type}/{rule['rule_code']}: manual review required"
+            )
+            evaluations.append(evaluation)
+            continue
+
+        if check != "min_distance":
+            evaluation.update(
+                status="unsupported",
+                reason=f"Unsupported rule check: {check!r}",
+            )
+            warnings.append(
+                f"{plant_type}/{rule['rule_code']}: unsupported check {check!r}"
+            )
+            evaluations.append(evaluation)
+            continue
+
+        distance_m = validate_distance_rule(rule)
+        buffer_distance = distance_m * dxf_units_per_meter
+        print(
+            f"  applying {plant_type}/{rule['rule_code']} "
+            f"({distance_m:g} m from {target_type})...",
+            flush=True,
+        )
+        area_before = allowed_area.area
+        cache_key = (target_type, buffer_distance)
+        exclusion = exclusion_cache.get(cache_key)
+        if exclusion is None:
+            min_x, min_y, max_x, max_y = base_allowed_area.bounds
+            relevant_geometry = clip_by_rect(
+                target_geometry,
+                min_x - buffer_distance,
+                min_y - buffer_distance,
+                max_x + buffer_distance,
+                max_y + buffer_distance,
+            )
+            component_count = (
+                len(relevant_geometry.geoms)
+                if hasattr(relevant_geometry, "geoms")
+                else 1
+            )
+            print(
+                f"    relevant source: {relevant_geometry.geom_type}, "
+                f"{component_count} component(s)",
+                flush=True,
+            )
+            components = (
+                list(relevant_geometry.geoms)
+                if hasattr(relevant_geometry, "geoms")
+                else [relevant_geometry]
+            )
+            buffered_components = buffer_geometries(
+                components,
+                buffer_distance,
+                quad_segs=8,
+            )
+            exclusion = union_all(buffered_components)
+            exclusion_cache[cache_key] = exclusion
+        excluded_from_current_area = allowed_area.intersection(exclusion).area
+        allowed_area = as_polygonal(allowed_area.difference(exclusion))
+        evaluation.update(
+            status="applied",
+            min_distance_m=distance_m,
+            buffer_distance_in_dxf_units=buffer_distance,
+            source_geometry_type=target_geometry.geom_type,
+            area_before_in_dxf_square_units=area_before,
+            excluded_area_in_dxf_square_units=excluded_from_current_area,
+            area_after_in_dxf_square_units=allowed_area.area,
+        )
+        evaluations.append(evaluation)
+        print(
+            f"    area: {area_before:.3f} -> {allowed_area.area:.3f}",
+            flush=True,
+        )
+
+    return allowed_area, evaluations, warnings
+
+
+def build_plant_allow_zones(
+    constraint_map_path: Path,
+    normalized_path: Path,
+    output_path: Path,
+    report_path: Path,
+    dsn: str,
+    plant_types: set[str] | None,
+    dxf_units_per_meter: float,
+) -> None:
+    """Build and write one provisional allow-zone feature per plant class."""
+    base_allowed_area = as_polygonal(
+        read_object_geometry(constraint_map_path, "base_allowed_area")
+    )
+    if base_allowed_area.is_empty:
+        raise ValueError("base_allowed_area is empty")
+
+    normalized_objects = load_normalized_objects(normalized_path)
+    rules_by_plant_type = load_rules(dsn, plant_types)
+    plants_by_plant_type = load_plants(dsn, set(rules_by_plant_type))
+    report: dict[str, Any] = {
+        "constraint_map_input": str(constraint_map_path),
+        "normalized_input": str(normalized_path),
+        "output": str(output_path),
+        "coordinate_reference": "local_dxf_coordinates",
+        "dxf_units_per_meter": dxf_units_per_meter,
+        "unit_assumption_requires_confirmation": True,
+        "base_allowed_area_in_dxf_square_units": base_allowed_area.area,
+        "plant_types": {},
+    }
+
+    features = []
+    exclusion_cache: dict[tuple[str, float], Any] = {}
+    for plant_type in sorted(rules_by_plant_type):
+        catalog_plants = plants_by_plant_type.get(plant_type, [])
+        selectable_plants = [
+            plant for plant in catalog_plants if not plant["is_invasive"]
+        ]
+        invasive_plants = [
+            plant for plant in catalog_plants if plant["is_invasive"]
+        ]
+        catalog_warnings = []
+        if not selectable_plants:
+            catalog_warnings.append(
+                f"{plant_type}: no non-invasive catalog plants are available"
+            )
+        missing_spacing = sum(
+            plant["min_spacing_m"] is None for plant in selectable_plants
+        )
+        missing_toxicity = sum(
+            plant["is_toxic"] is None for plant in selectable_plants
+        )
+        missing_thorniness = sum(
+            plant["is_thorny"] is None for plant in selectable_plants
+        )
+        if missing_spacing:
+            catalog_warnings.append(
+                f"{plant_type}: {missing_spacing} selectable plant(s) have "
+                "unverified min_spacing_m"
+            )
+        if missing_toxicity:
+            catalog_warnings.append(
+                f"{plant_type}: {missing_toxicity} selectable plant(s) have "
+                "unverified toxicity"
+            )
+        if missing_thorniness:
+            catalog_warnings.append(
+                f"{plant_type}: {missing_thorniness} selectable plant(s) have "
+                "unverified thorniness"
+            )
+
+        allowed_area, evaluations, warnings = apply_rules(
+            plant_type,
+            base_allowed_area,
+            normalized_objects,
+            rules_by_plant_type[plant_type],
+            dxf_units_per_meter,
+            exclusion_cache,
+        )
+        unresolved = [
+            item["rule_code"]
+            for item in evaluations
+            if item["status"] != "applied"
+        ]
+        applied = [
+            item["rule_code"]
+            for item in evaluations
+            if item["status"] == "applied"
+        ]
+        verification_status = (
+            "requires_manual_review" if unresolved else "verified_by_available_rules"
+        )
+        features.append(
+            {
+                "type": "Feature",
+                "id": f"plant_allow_zone_{plant_type}",
+                "properties": {
+                    "object_type": "plant_allow_zone",
+                    "plant_type": plant_type,
+                    "verification_status": verification_status,
+                    "coordinate_reference": "local_dxf_coordinates",
+                    "dxf_units_per_meter": dxf_units_per_meter,
+                    "area_in_dxf_square_units": allowed_area.area,
+                    "applied_rules": applied,
+                    "unresolved_rules": unresolved,
+                    "selectable_plants": selectable_plants,
+                    "excluded_invasive_plants": [
+                        plant["name"] for plant in invasive_plants
+                    ],
+                    "catalog_warnings": catalog_warnings,
+                },
+                "geometry": mapping(allowed_area),
+            }
+        )
+        report["plant_types"][plant_type] = {
+            "verification_status": verification_status,
+            "geometry_type": allowed_area.geom_type,
+            "base_area_in_dxf_square_units": base_allowed_area.area,
+            "allowed_area_in_dxf_square_units": allowed_area.area,
+            "excluded_area_in_dxf_square_units": (
+                base_allowed_area.area - allowed_area.area
+            ),
+            "rules": evaluations,
+            "warnings": warnings,
+            "plant_catalog": {
+                "total": len(catalog_plants),
+                "selectable": selectable_plants,
+                "excluded_invasive": invasive_plants,
+                "missing_min_spacing_count": missing_spacing,
+                "missing_toxicity_count": missing_toxicity,
+                "missing_thorniness_count": missing_thorniness,
+                "warnings": catalog_warnings,
+            },
+        }
+
+    output_path.write_text(
+        "".join(
+            json.dumps(feature, ensure_ascii=False) + "\n"
+            for feature in features
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    print(f"Constraint map: {constraint_map_path}")
+    print(f"Normalized objects: {normalized_path}")
+    print(f"Output: {output_path}")
+    print(f"Report: {report_path}")
+    print(f"Base allowed area: {base_allowed_area.area:.3f} square DXF units")
+    for plant_type, result in report["plant_types"].items():
+        print(
+            f"  {plant_type}: {result['allowed_area_in_dxf_square_units']:.3f} "
+            f"| {result['verification_status']} "
+            f"| {result['plant_catalog']['total']} plant(s), "
+            f"{len(result['plant_catalog']['excluded_invasive'])} invasive excluded "
+            f"| {len(result['warnings'])} rule warning(s)"
+        )
+    print(
+        "WARNING: one metre is assumed to equal "
+        f"{dxf_units_per_meter:g} DXF unit(s); confirm the drawing scale"
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Build per-plant-class allow zones using PostGIS rules."
+    )
+    parser.add_argument("constraint_map_geojsonl", type=Path)
+    parser.add_argument("normalized_objects_geojsonl", type=Path)
+    parser.add_argument(
+        "--output", type=Path, default=Path("plant_allow_zones.geojsonl")
+    )
+    parser.add_argument(
+        "--report", type=Path, default=Path("plant_allow_zones_report.json")
+    )
+    parser.add_argument(
+        "--plant-types",
+        help="Comma-separated plant classes. Defaults to every class with rules.",
+    )
+    parser.add_argument(
+        "--dxf-units-per-meter",
+        type=float,
+        default=1.0,
+        help="Scale for converting normative metres to drawing units (default: 1).",
+    )
+    parser.add_argument(
+        "--dsn",
+        default=os.getenv("DATABASE_URL", DEFAULT_DSN),
+        help="PostgreSQL DSN; defaults to DATABASE_URL or local Docker Compose.",
+    )
+    args = parser.parse_args()
+    if not math.isfinite(args.dxf_units_per_meter) or args.dxf_units_per_meter <= 0:
+        raise SystemExit("--dxf-units-per-meter must be finite and greater than zero")
+    plant_types = (
+        {item.strip() for item in args.plant_types.split(",") if item.strip()}
+        if args.plant_types
+        else None
+    )
+    try:
+        build_plant_allow_zones(
+            args.constraint_map_geojsonl,
+            args.normalized_objects_geojsonl,
+            args.output,
+            args.report,
+            args.dsn,
+            plant_types,
+            args.dxf_units_per_meter,
+        )
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
+        raise SystemExit(f"Plant allow-zone error: {error}") from error
+
+
+if __name__ == "__main__":
+    main()
