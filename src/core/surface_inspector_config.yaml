@@ -1,0 +1,29 @@
+# Отдельный диагностический профиль. Он намеренно выбирает все HATCH и
+# LWPOLYLINE, чтобы найти площадные покрытия, ещё не описанные в config.yaml.
+
+geobase_blocks:
+  name_regex:
+    - "^3_ДЖКХ"
+    - "^3ДЖКХ"
+    - "^Заводский_пр_3_ДЖКХ"
+    - "^Гео[._]"
+  max_depth: 12
+
+layer_mapping:
+  surface_candidate_modelspace:
+    semantic_type: surface_candidate
+    source: modelspace
+    required: false
+    layer_regex: ".*"
+    dxf_types: [HATCH, LWPOLYLINE]
+    geometry: polygon_candidate
+    conversion: inspect_closed_surface
+
+  surface_candidate_geobase:
+    semantic_type: surface_candidate
+    source: geobase_blocks
+    required: false
+    layer_regex: ".*"
+    dxf_types: [HATCH, LWPOLYLINE]
+    geometry: polygon_candidate
+    conversion: inspect_closed_surface

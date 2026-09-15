@@ -30,10 +30,14 @@ layer_mapping:
     required: true
     layer_tail_in:
       - "ДВ_ГП_П_Граница работ"
-      - "ДВ_ПО_Граница работ"
     dxf_types: [LWPOLYLINE]
     geometry: polygon
     conversion: closed_polyline_to_polygon
+    note: >-
+      ДВ_ПО_Граница работ не объединять автоматически: в проверочном чертеже
+      это отдельный локальный контур площадью около 16 884 м², из-за которого
+      общая площадь расходится с ТЭП проекта. Альтернативное имя границы для
+      другого объекта должно выбираться отдельным профилем конфигурации.
 
   building:
     # Контуры зданий. После сборки в полигоны от них строятся запретные зоны
@@ -132,7 +136,11 @@ layer_mapping:
     semantic_type: storm_drain
     source: geobase_blocks
     required: false
-    layer_tail_in: ["Сущ_сети_Водосток", "Водосток"]
+    layer_tail_in:
+      - "Сущ_сети_Водосток"
+      - "Водосток"
+      - "Сущ_сети_Дренаж"
+      - "Дренаж"
     exclude_layer_contains: ["проектн"]
     dxf_types: [LINE, LWPOLYLINE, ARC]
     geometry: multiline

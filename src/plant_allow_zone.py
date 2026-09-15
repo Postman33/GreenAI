@@ -187,7 +187,7 @@ def validate_distance_rule(rule: dict[str, Any]) -> float:
         )
     return distance
 
-
+# TODO: min_distance не работает.
 def apply_rules(
     plant_type: str,
     base_allowed_area: Any,
@@ -305,7 +305,6 @@ def apply_rules(
             f"    area: {area_before:.3f} -> {allowed_area.area:.3f}",
             flush=True,
         )
-
     return allowed_area, evaluations, warnings
 
 

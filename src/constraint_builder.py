@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, TypeAlias
 
-from shapely import Polygon, MultiPolygon, MultiLineString, LineString
+from shapely import Polygon, MultiPolygon, MultiLineString, LineString, box
 from shapely.geometry import GeometryCollection, mapping, shape
 from shapely.ops import polygonize, unary_union
 from shapely.validation import make_valid
@@ -68,6 +69,11 @@ def is_road_surface_layer(layer_name: str) -> bool:
     if not sidewalk_positions or road_position < 0:
         return True
     return road_position < min(sidewalk_positions)
+
+
+def is_sidewalk_partition_layer(layer_name: str) -> bool:
+    """Match project HATCH layers whose rings partition sidewalk/road space."""
+    return bool(re.search(r"^дв_до_тип.*трот", layer_name.casefold()))
 
 
 def read_object_geometry(
@@ -331,6 +337,53 @@ def read_surface_area_by_predicate(
     }
 
 
+def read_surface_partition_area(
+        candidates_path: Path,
+        work_boundary: Polygon | MultiPolygon,
+        predicate: Any,
+        curve_tolerance: float = 0.1,
+) -> tuple[Polygon | MultiPolygon, dict[str, Any]]:
+    """Build topological faces from all rings of matching surface records.
+
+    This geometry is only a barrier for road-region propagation. It must not
+    be interpreted as the actual area of the named surface: intersecting HATCH
+    boundaries can create additional faces when polygonized together.
+    """
+    linework = []
+    matched_by_layer: Counter[str] = Counter()
+    with candidates_path.open(encoding="utf-8") as source:
+        for line_number, line in enumerate(source, start=1):
+            if not line.strip():
+                continue
+            try:
+                record: dict[str, Any] = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    f"Line {line_number}: invalid surface-candidate JSON"
+                ) from error
+            raw_layer = record.get("source_layer", "0")
+            layer = readable_layer_name(
+                record.get("source_layer_tail", raw_layer)
+            )
+            if not predicate(layer):
+                continue
+            geometry = primitive_to_geometry(record, curve_tolerance)
+            if geometry is None or geometry.is_empty:
+                continue
+            linework.append(geometry)
+            matched_by_layer[layer] += 1
+
+    faces = list(polygonize(unary_union(linework))) if linework else []
+    area = as_polygonal(unary_union(faces).intersection(work_boundary)) \
+        if faces else Polygon()
+    return area, {
+        "purpose": "topological_barrier_only",
+        "matched_records_by_layer": dict(sorted(matched_by_layer.items())),
+        "polygonized_faces": len(faces),
+        "area_in_dxf_square_units": area.area,
+    }
+
+
 def build_road_area(
         road_edges: LineString | MultiLineString,
         work_boundary: Polygon | MultiPolygon,
@@ -340,6 +393,9 @@ def build_road_area(
         min_seed_overlap_area: float = 0.50,
         min_candidate_area_ratio: float = 0.001,
         max_candidate_area_ratio: float = 0.65,
+        fallback_max_component_coverage: float = 0.10,
+        fallback_min_face_area_ratio: float = 0.05,
+        fallback_seed_distance_factor: float = 1.10,
 ) -> tuple[Polygon | MultiPolygon, dict[str, Any]]:
     """Reconstruct a carriageway from dashed curb lines and road HATCH seeds.
 
@@ -348,7 +404,9 @@ def build_road_area(
     those gaps and turns the curb into a barrier. The work area minus those
     barriers is split into cells; only cells touched by an explicit road HATCH
     are retained. Known sidewalks, buildings and planting surfaces stop a cell
-    from leaking into a non-road area.
+    from leaking into a non-road area. If an artificial curb buffer separates
+    a road HATCH from the main road cell, a conservative fallback may attach
+    one large adjacent cell in an otherwise under-covered work component.
 
     The tolerances are technical heuristics in source DXF units, not
     regulatory distances. The result must therefore remain visible in debug
@@ -372,6 +430,12 @@ def build_road_area(
         raise ValueError("min_seed_overlap_area must be greater than zero")
     if not 0 <= min_candidate_area_ratio <= max_candidate_area_ratio <= 1:
         raise ValueError("Road candidate area ratios are invalid")
+    if not 0 <= fallback_max_component_coverage <= 1:
+        raise ValueError("fallback_max_component_coverage must be between 0 and 1")
+    if not 0 <= fallback_min_face_area_ratio <= 1:
+        raise ValueError("fallback_min_face_area_ratio must be between 0 and 1")
+    if fallback_seed_distance_factor <= 0:
+        raise ValueError("fallback_seed_distance_factor must be greater than zero")
 
     clipped_edges = road_edges.intersection(
         work_boundary.buffer(stitch_tolerance)
@@ -410,6 +474,47 @@ def build_road_area(
     if not accepted_faces:
         raise ValueError("Could not build any candidate road polygons")
 
+    fallback_faces: list[Polygon] = []
+    fallback_components: list[dict[str, Any]] = []
+    initially_selected = as_polygonal(unary_union(accepted_faces))
+    max_seed_distance = stitch_tolerance * fallback_seed_distance_factor
+    for component_index, component in enumerate(
+        polygon_parts(work_boundary), start=1
+    ):
+        component_seed = clipped_seed.intersection(component)
+        if component_seed.area < min_seed_overlap_area:
+            continue
+        initial_coverage = initially_selected.intersection(component).area / component.area
+        if initial_coverage >= fallback_max_component_coverage:
+            continue
+
+        candidates: list[tuple[float, float, Polygon]] = []
+        for face in polygon_parts(cells):
+            candidate_geometry = as_polygonal(face.intersection(component))
+            for candidate in polygon_parts(candidate_geometry):
+                if candidate.intersection(component_seed).area >= min_seed_overlap_area:
+                    continue
+                face_area_ratio = candidate.area / component.area
+                if face_area_ratio < fallback_min_face_area_ratio:
+                    continue
+                seed_distance = candidate.distance(component_seed)
+                if seed_distance <= max_seed_distance:
+                    candidates.append((candidate.area, seed_distance, candidate))
+
+        if not candidates:
+            continue
+        area, seed_distance, fallback_face = max(candidates, key=lambda item: item[0])
+        fallback_faces.append(fallback_face)
+        accepted_faces.append(fallback_face)
+        fallback_components.append({
+            "component_index": component_index,
+            "work_component_area_in_dxf_square_units": component.area,
+            "initial_road_coverage_ratio": initial_coverage,
+            "selected_face_area_in_dxf_square_units": area,
+            "selected_face_area_ratio": area / component.area,
+            "distance_to_road_seed_in_dxf_units": seed_distance,
+        })
+
     inferred_core = as_polygonal(unary_union(accepted_faces))
     # Restore the narrow strip occupied by the artificial curb barrier. The
     # explicit seed is authoritative and is retained even where CAD surfaces
@@ -432,13 +537,19 @@ def build_road_area(
         "method": "curb_barrier_cells_selected_by_road_hatch",
         "all_cells": sum(1 for _ in polygon_parts(cells)),
         "accepted_cells": len(accepted_faces),
-        "rejected_cells_without_seed": rejected_faces,
+        "seed_intersecting_cells": len(accepted_faces) - len(fallback_faces),
+        "fallback_cells": len(fallback_faces),
+        "fallback_components": fallback_components,
+        "rejected_cells_without_seed": rejected_faces - len(fallback_faces),
         "curb_barrier_area_in_dxf_square_units": edge_barrier.area,
         "road_seed_area_in_dxf_square_units": clipped_seed.area,
         "road_seed_overlap_with_selected_cells": seed_overlap_area,
         "known_non_road_area_in_dxf_square_units": known_non_road.area,
         "stitch_tolerance_in_dxf_units": stitch_tolerance,
         "min_seed_overlap_area_in_dxf_square_units": min_seed_overlap_area,
+        "fallback_max_component_coverage": fallback_max_component_coverage,
+        "fallback_min_face_area_ratio": fallback_min_face_area_ratio,
+        "fallback_max_seed_distance_in_dxf_units": max_seed_distance,
         "candidate_area_ratio": road_area.area / work_boundary.area,
         "min_candidate_area_ratio": min_candidate_area_ratio,
         "max_candidate_area_ratio": max_candidate_area_ratio,
@@ -454,6 +565,86 @@ def build_road_area(
             f"{diagnostics['candidate_area_ratio']:.6f}"
         )
     return road_area, diagnostics
+
+
+def recover_outer_terminal_road(
+        strict_road: Polygon | MultiPolygon,
+        relaxed_road: Polygon | MultiPolygon,
+        work_boundary: Polygon | MultiPolygon,
+        terminal_depth: float = 60.0,
+        endpoint_tolerance: float = 1.0,
+        min_extension_area_ratio: float = 0.001,
+        max_extension_area_ratio: float = 0.02,
+) -> tuple[Polygon | MultiPolygon, dict[str, Any]]:
+    """Recover road pieces hidden by a soft surface-partition barrier.
+
+    Some project HATCH boundaries create false filled faces when used as a
+    topological partition. A second, relaxed reconstruction omits that soft
+    barrier. Only pieces reaching an outer end of the complete work extent,
+    touching the strict road and having a controlled area are restored. This
+    prevents relaxed cells from leaking into internal lawns and sidewalks.
+    """
+    if terminal_depth <= 0 or endpoint_tolerance < 0:
+        raise ValueError("Terminal recovery tolerances are invalid")
+    if not 0 <= min_extension_area_ratio <= max_extension_area_ratio <= 1:
+        raise ValueError("Terminal extension area ratios are invalid")
+
+    minx, miny, maxx, maxy = work_boundary.bounds
+    vertical = (maxy - miny) >= (maxx - minx)
+    overall_length = (maxy - miny) if vertical else (maxx - minx)
+    depth = min(terminal_depth, overall_length * 0.15)
+    if vertical:
+        terminal_bands = (
+            box(minx - 1, miny - 1, maxx + 1, miny + depth),
+            box(minx - 1, maxy - depth, maxx + 1, maxy + 1),
+        )
+    else:
+        terminal_bands = (
+            box(minx - 1, miny - 1, minx + depth, maxy + 1),
+            box(maxx - depth, miny - 1, maxx + 1, maxy + 1),
+        )
+
+    extensions: list[Polygon] = []
+    extension_details: list[dict[str, Any]] = []
+    relaxed_only = as_polygonal(relaxed_road.difference(strict_road))
+    for candidate in polygon_parts(relaxed_only):
+        area_ratio = candidate.area / work_boundary.area
+        if not min_extension_area_ratio <= area_ratio <= max_extension_area_ratio:
+            continue
+        if candidate.distance(strict_road) > 1e-6:
+            continue
+        if not any(candidate.intersects(band) for band in terminal_bands):
+            continue
+        bounds = candidate.bounds
+        reaches_outer_endpoint = (
+            bounds[1] <= miny + endpoint_tolerance
+            or bounds[3] >= maxy - endpoint_tolerance
+        ) if vertical else (
+            bounds[0] <= minx + endpoint_tolerance
+            or bounds[2] >= maxx - endpoint_tolerance
+        )
+        if not reaches_outer_endpoint:
+            continue
+        extensions.append(candidate)
+        extension_details.append({
+            "area_in_dxf_square_units": candidate.area,
+            "area_ratio": area_ratio,
+            "bounds": list(bounds),
+        })
+
+    recovered = as_polygonal(unary_union([strict_road, *extensions]))
+    return recovered, {
+        "method": "outer_terminal_extension_from_relaxed_partition",
+        "orientation": "vertical" if vertical else "horizontal",
+        "terminal_depth_in_dxf_units": depth,
+        "endpoint_tolerance_in_dxf_units": endpoint_tolerance,
+        "strict_road_area_in_dxf_square_units": strict_road.area,
+        "relaxed_road_area_in_dxf_square_units": relaxed_road.area,
+        "selected_extensions": extension_details,
+        "selected_extension_count": len(extensions),
+        "added_area_in_dxf_square_units": recovered.difference(strict_road).area,
+        "result_area_in_dxf_square_units": recovered.area,
+    }
 
 
 def geometry_feature(
@@ -520,8 +711,17 @@ def build(
             min_area,
         )
     )
+    sidewalk_partition_area, sidewalk_partition_diagnostics = (
+        read_surface_partition_area(
+            surface_candidates_path,
+            work_boundary,
+            is_sidewalk_partition_layer,
+            curve_tolerance,
+        )
+    )
 
     road_area: Polygon | MultiPolygon = Polygon()
+    sidewalks: Polygon | MultiPolygon = Polygon()
     road_reconstruction: dict[str, Any]
     try:
         road_edges = read_object_geometry(normalized_path, "road_edge")
@@ -540,15 +740,38 @@ def build(
             known_non_road_areas=(
                 buildings_in_work_area,
                 sidewalks,
+                sidewalk_partition_area,
                 plantable_surface_area,
             ),
             stitch_tolerance=road_stitch_tolerance,
             min_seed_overlap_area=road_min_seed_overlap_area,
         )
+        relaxed_road_area, _relaxed_diagnostics = build_road_area(
+            road_edges,
+            work_boundary,
+            road_seed_area,
+            known_non_road_areas=(
+                buildings_in_work_area,
+                sidewalks,
+                plantable_surface_area,
+            ),
+            stitch_tolerance=road_stitch_tolerance,
+            min_seed_overlap_area=road_min_seed_overlap_area,
+        )
+        road_area, terminal_recovery = recover_outer_terminal_road(
+            road_area,
+            relaxed_road_area,
+            work_boundary,
+        )
+        road_reconstruction["terminal_recovery"] = terminal_recovery
+        road_reconstruction["candidate_area_ratio"] = (
+            road_area.area / work_boundary.area
+        )
         road_reconstruction["status"] = "reconstructed"
         road_reconstruction["non_road_inputs"] = [
             "building",
             "sidewalk",
+            "sidewalk_boundary_partition",
             "unambiguous_plantable_surface",
         ]
     except ValueError as error:
@@ -684,6 +907,8 @@ def build(
             "road_seed_area": road_seed_area.area,
             "reconstructed_road_area": road_area.area,
             "unambiguous_plantable_surface_area": plantable_surface_area.area,
+            "sidewalk_area": sidewalks.area,
+            "sidewalk_partition_barrier_area": sidewalk_partition_area.area,
             "all_normalized_buildings": all_buildings.area,
             "buildings_in_work_area": buildings_in_work_area.area,
             "absolute_exclusions": excluded_area,
@@ -693,6 +918,7 @@ def build(
         "surface_detection": surface_diagnostics,
         "road_seed_detection": road_seed_diagnostics,
         "plantable_surface_detection": plantable_surface_diagnostics,
+        "sidewalk_partition": sidewalk_partition_diagnostics,
         "road_reconstruction": road_reconstruction,
         "applied_restrictions": [
             "hard_surface_area",

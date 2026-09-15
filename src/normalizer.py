@@ -152,6 +152,22 @@ def polygonal_geometry(lines: Iterable[Any]):
     return unary_union(faces)
 
 
+def polygonal_geometry_per_primitive(geometries: Iterable[Any]):
+    """Polygonize each closed CAD object before merging the results.
+
+    HATCH records and explicit work-boundary polylines are already independent
+    area objects. Polygonizing all of their rings together can create faces in
+    overlaps and gaps that were never present in the DXF. Open annotation
+    strokes are ignored because they do not form a face by themselves.
+    """
+    faces = []
+    for geometry in geometries:
+        if geometry is None or geometry.is_empty:
+            continue
+        faces.extend(polygonize(geometry))
+    return unary_union(faces) if faces else None
+
+
 def lineal_geometry(lines: Iterable[Any]):
     """Join connected segments while preserving disconnected network branches."""
     line_list = [line for line in lines if line is not None and not line.is_empty]
@@ -176,6 +192,8 @@ def point_geometry(geometries: Iterable[Any]):
 
 
 def normalize_group(object_type: str, geometries: list[Any]):
+    if object_type in {"work_boundary", "sidewalk"}:
+        return polygonal_geometry_per_primitive(geometries)
     if object_type in POLYGON_TYPES:
         return polygonal_geometry(geometries)
     if object_type in LINE_TYPES:
