@@ -45,6 +45,12 @@ class ScriptTests(unittest.TestCase):
         manual = seed.manual_rule("TEST_MANUAL", "tree", "gas_pipe", "inspect")
         self.assertEqual(manual.conditions["check"], "manual_review")
 
+        tree_gas_rule = next(
+            rule for rule in seed.PLACEMENT_RULES if rule.code == "TREE_GAS_1_5"
+        )
+        self.assertEqual(tree_gas_rule.conditions["check"], "min_distance")
+        self.assertEqual(tree_gas_rule.conditions["min_distance_m"], 1.5)
+
     def test_verifier_accepts_zone_inside_all_constraints(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

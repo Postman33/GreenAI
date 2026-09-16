@@ -124,7 +124,7 @@ layer_mapping:
     semantic_type: water_pipe
     source: geobase_blocks
     required: false
-    layer_tail_in: ["Сущ_сети_Водопровод", "Водопровод"]
+    layer_tail_in: ["Сущ_сети_Водопровод", "Водопровод", "Сущ_сети_Промводопровод", "Промводопровод"]
     exclude_layer_contains: ["проектн"]
     dxf_types: [LINE, LWPOLYLINE, ARC]
     geometry: multiline

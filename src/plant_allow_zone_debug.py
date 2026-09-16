@@ -52,7 +52,13 @@ DEBUG_CONTEXT_LAYERS = {
     "utility_marker": ("DEBUG_UTILITY_MARKERS", 200),
     "utility_well": ("DEBUG_UTILITY_WELLS", 210),
     "clean_water_pipe": ("DEBUG_CLEAN_WATER_PIPE", 6),
+    "clean_storm_drain": ("DEBUG_CLEAN_STORM_DRAIN", 34),
+    "clean_gas_pipe": ("DEBUG_CLEAN_GAS_PIPE", 3),
     "clean_heat_pipe": ("DEBUG_CLEAN_HEAT_PIPE", 2),
+    "clean_sewer_pipe": ("DEBUG_CLEAN_SEWER_PIPE", 32),
+    "clean_power_cable": ("DEBUG_CLEAN_POWER_CABLE", 30),
+    "clean_telecom_cable": ("DEBUG_CLEAN_TELECOM_CABLE", 94),
+    "clean_overhead_power_line": ("DEBUG_CLEAN_OVERHEAD_POWER", 7),
 }
 
 RAW_UTILITY_CONTEXT_TYPES = {
@@ -364,7 +370,7 @@ def build_debug_export(
     normalized_objects = load_normalized_objects(normalized_path)
     if cleaned_utilities_path is not None:
         cleaned = load_cleaned_utilities(cleaned_utilities_path)
-        for object_type in ("water_pipe", "heat_pipe"):
+        for object_type in RAW_UTILITY_CONTEXT_TYPES:
             geometry = cleaned.get(object_type)
             if geometry is not None and not geometry.is_empty:
                 normalized_objects[f"clean_{object_type}"] = geometry

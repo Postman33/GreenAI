@@ -186,6 +186,13 @@ def record(
             "dxf_type": entity.dxftype(),
             "handle": entity.dxf.get("handle", None),
             "block_path": block_path,
+            # Preserve explicit CAD styling.  In particular, ACI 3 is used
+            # by the manually labelled reference drawings to mark a verified
+            # utility axis.  256 means BYLAYER and 0 means BYBLOCK.
+            "color": entity.dxf.get("color", 256),
+            "true_color": entity.dxf.get("true_color", None),
+            "linetype": entity.dxf.get("linetype", "BYLAYER"),
+            "lineweight": entity.dxf.get("lineweight", -1),
             "geometry": geometry(entity),
         }
     )

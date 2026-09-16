@@ -70,6 +70,10 @@ type Record struct {
 	DXFType         string      `json:"dxf_type"`
 	Handle          interface{} `json:"handle"`
 	BlockPath       []string    `json:"block_path"`
+	Color           int         `json:"color"`
+	TrueColor       interface{} `json:"true_color"`
+	Linetype        string      `json:"linetype"`
+	Lineweight      int         `json:"lineweight"`
 	Geometry        interface{} `json:"geometry"`
 }
 
@@ -339,6 +343,18 @@ func integer(raw string, fallback int) int {
 	parsed, err := strconv.Atoi(raw)
 	if err != nil {
 		return fallback
+	}
+	return parsed
+}
+
+func optionalInteger(entity Entity, code int) interface{} {
+	raw := value(entity, code, "")
+	if raw == "" {
+		return nil
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil {
+		return nil
 	}
 	return parsed
 }
@@ -633,7 +649,17 @@ func (e *extractor) writeMatches(entity Entity, source string, path []string, ma
 		if source == "geobase_blocks" {
 			handle = nil
 		}
-		record := Record{name, mapping.SemanticType, mapping.Geometry, mapping.Conversion, entity.Layer, layerTail(entity.Layer), entity.Type, handle, path, geometry}
+		record := Record{
+			ObjectType: name, SemanticType: mapping.SemanticType,
+			TargetGeometry: mapping.Geometry, Conversion: mapping.Conversion,
+			SourceLayer: entity.Layer, SourceLayerTail: layerTail(entity.Layer),
+			DXFType: entity.Type, Handle: handle, BlockPath: path,
+			Color:      integer(value(entity, 62, "256"), 256),
+			TrueColor:  optionalInteger(entity, 420),
+			Linetype:   value(entity, 6, "BYLAYER"),
+			Lineweight: integer(value(entity, 370, "-1"), -1),
+			Geometry:   geometry,
+		}
 		if err := e.encoder.Encode(record); err != nil {
 			return err
 		}

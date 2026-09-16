@@ -1,0 +1,119 @@
+{
+  "format": "green-cad-utility-onnx-bundle",
+  "format_version": 1,
+  "created_at": "2026-09-17T00:34:10.126054+03:00",
+  "onnx_opset": 18,
+  "input": {
+    "name": "features",
+    "dtype": "float32",
+    "shape": [
+      null,
+      19
+    ],
+    "feature_names": [
+      "log_length",
+      "straightness",
+      "log_span",
+      "log_vertex_count",
+      "closed",
+      "log_bbox_short",
+      "log_bbox_long",
+      "bbox_aspect",
+      "start_degree",
+      "end_degree",
+      "both_ends_connected",
+      "best_continuation",
+      "collinear_neighbor_count",
+      "short_perpendicular_count",
+      "nearby_primitive_count",
+      "log_component_length",
+      "log_component_span",
+      "log_component_size",
+      "component_straightness"
+    ]
+  },
+  "feature_builder": {
+    "implementation": "utility_detector.detector.build_feature_matrix",
+    "connect_tolerance": 0.25,
+    "marker_max_length": 2.0
+  },
+  "networks": {
+    "gas_pipe": {
+      "model_file": "gas_pipe.onnx",
+      "sha256": "9f5dae772b2c75283482e9bbea4570b0092734979524f10663d31629b469fc7a",
+      "classes": [
+        0,
+        1
+      ],
+      "positive_class": 1,
+      "positive_probability_column": 1,
+      "accepted_threshold": 0.41000000000000003,
+      "review_threshold": 0.225,
+      "verification": {
+        "status": "probabilities_compared",
+        "providers": [
+          "CPUExecutionProvider"
+        ],
+        "sample_count": 7141,
+        "maximum_absolute_error": 3.5762786865234375e-07,
+        "mean_absolute_error": 4.1298844138118484e-08,
+        "accepted_decisions_match": true,
+        "review_decisions_match": true
+      }
+    },
+    "water_pipe": {
+      "model_file": "water_pipe.onnx",
+      "sha256": "c7846f896e0e9389e5043b452a54d5c446eb3a1bb0d76b9e85d58a6a31bc148d",
+      "classes": [
+        0,
+        1
+      ],
+      "positive_class": 1,
+      "positive_probability_column": 1,
+      "accepted_threshold": 0.25,
+      "review_threshold": 0.15,
+      "verification": {
+        "status": "probabilities_compared",
+        "providers": [
+          "CPUExecutionProvider"
+        ],
+        "sample_count": 15683,
+        "maximum_absolute_error": 3.8505371968700075e-07,
+        "mean_absolute_error": 3.2728327377505924e-08,
+        "accepted_decisions_match": true,
+        "review_decisions_match": true
+      }
+    }
+  },
+  "library_versions": {
+    "scikit_learn": "1.7.2",
+    "skl2onnx": "1.20.0",
+    "onnx": "1.22.0",
+    "onnxruntime": "1.23.2",
+    "numpy": "2.2.6"
+  },
+  "training_source": [
+    "F:\\Пилотный проект 20 улиц\\ml\\train\\gas\\3-я_Парковая_gas_train.dxf",
+    "F:\\Пилотный проект 20 улиц\\ml\\train\\gas\\Камчатская_gas_train.dxf",
+    "F:\\Пилотный проект 20 улиц\\ml\\train\\gas\\Нижние_Поля_gas_train.dxf",
+    "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\3-я_Парковая_water_train.dxf",
+    "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\Камчатская_water_train.dxf",
+    "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\Курганская_water_train.dxf",
+    "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\Нижние_Поля_water_train.dxf"
+  ],
+  "training_sources_by_type": {
+    "gas_pipe": [
+      "F:\\Пилотный проект 20 улиц\\ml\\train\\gas\\3-я_Парковая_gas_train.dxf",
+      "F:\\Пилотный проект 20 улиц\\ml\\train\\gas\\Камчатская_gas_train.dxf",
+      "F:\\Пилотный проект 20 улиц\\ml\\train\\gas\\Нижние_Поля_gas_train.dxf"
+    ],
+    "water_pipe": [
+      "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\3-я_Парковая_water_train.dxf",
+      "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\Камчатская_water_train.dxf",
+      "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\Курганская_water_train.dxf",
+      "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\Нижние_Поля_water_train.dxf"
+    ]
+  },
+  "label_color": 3,
+  "model_role": "utility_primitive_classifier"
+}

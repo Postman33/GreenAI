@@ -9,6 +9,9 @@ param(
     [double]$DxfUnitsPerMeter = 1.0,
 
     [Parameter(Mandatory = $false)]
+    [string]$UtilityDetectorModel = "",
+
+    [Parameter(Mandatory = $false)]
     [switch]$SkipDatabaseStart
 )
 
@@ -76,6 +79,22 @@ $debugPng = Join-Path $outputPath "plant_allow_zones_debug.png"
 $verificationReport = Join-Path $outputPath "verification_report.json"
 $resultDxf = Join-Path $outputPath "result_with_plant_zones.dxf"
 
+$detectorModelPath = if ([string]::IsNullOrWhiteSpace($UtilityDetectorModel)) {
+    $defaultBundle = Join-Path $workspace "models\utility_detector\latest"
+    if (Test-Path -LiteralPath $defaultBundle) {
+        (Resolve-Path -LiteralPath $defaultBundle).Path
+    } else {
+        $null
+    }
+} else {
+    $modelCandidate = if ([IO.Path]::IsPathRooted($UtilityDetectorModel)) {
+        $UtilityDetectorModel
+    } else {
+        Join-Path $workspace $UtilityDetectorModel
+    }
+    (Resolve-Path -LiteralPath $modelCandidate).Path
+}
+
 Push-Location $workspace
 try {
     if (-not $SkipDatabaseStart) {
@@ -98,15 +117,27 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Normalization failed" }
 
     Write-Host "[5/10] Cleaning engineering utility geometry"
-    & $python .\utility_cleaner\clean_utilities.py $objects `
-        --work-boundary $normalized `
-        --output $cleanedUtilities `
-        --review-output $reviewUtilities `
-        --rejected-output $rejectedUtilities `
-        --report $utilityCleaningReport `
-        --debug-dxf $utilityDebugDxf `
-        --debug-png $utilityDebugPng `
-        --dxf-units-per-meter $DxfUnitsPerMeter
+    if ($null -ne $detectorModelPath) {
+        Write-Host "       Using supervised ONNX utility detector: $detectorModelPath"
+        & $python .\utility_detector\detector.py predict $objects `
+            --model $detectorModelPath `
+            --output $cleanedUtilities `
+            --review-output $reviewUtilities `
+            --rejected-output $rejectedUtilities `
+            --report $utilityCleaningReport `
+            --debug-dxf $utilityDebugDxf `
+            --debug-png $utilityDebugPng
+    } else {
+        & $python .\utility_cleaner\clean_utilities.py $objects `
+            --work-boundary $normalized `
+            --output $cleanedUtilities `
+            --review-output $reviewUtilities `
+            --rejected-output $rejectedUtilities `
+            --report $utilityCleaningReport `
+            --debug-dxf $utilityDebugDxf `
+            --debug-png $utilityDebugPng `
+            --dxf-units-per-meter $DxfUnitsPerMeter
+    }
     if ($LASTEXITCODE -ne 0) { throw "Utility cleaning failed" }
 
     Write-Host "[6/10] Rendering source surface diagnostics"

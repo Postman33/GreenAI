@@ -52,7 +52,11 @@ class LoaderTests(unittest.TestCase):
                 dxfattribs={"layer": "BOUNDARY"},
             )
             block = doc.blocks.new("Geo_Test")
-            block.add_line((0, 0), (5, 0), dxfattribs={"layer": "Water"})
+            block.add_line(
+                (0, 0),
+                (5, 0),
+                dxfattribs={"layer": "Water", "color": 3, "linetype": "BYLAYER"},
+            )
             doc.modelspace().add_blockref("Geo_Test", (100, 200))
             doc.saveas(source)
 
@@ -86,6 +90,9 @@ class LoaderTests(unittest.TestCase):
             water = next(item for item in records if item["object_type"] == "water_pipe")
             self.assertEqual(water["geometry"]["start"][:2], [100.0, 200.0])
             self.assertEqual(water["geometry"]["end"][:2], [105.0, 200.0])
+            self.assertEqual(water["color"], 3)
+            self.assertIsNone(water["true_color"])
+            self.assertEqual(water["linetype"], "BYLAYER")
 
 
 if __name__ == "__main__":
