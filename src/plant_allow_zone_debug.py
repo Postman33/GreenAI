@@ -29,7 +29,7 @@ from shapely.plotting import plot_line, plot_polygon
 from shapely.validation import make_valid
 
 from constraint_builder import as_polygonal, read_object_geometry
-from plant_allow_zone import load_normalized_objects
+from plant_allow_zone import load_cleaned_utilities, load_normalized_objects
 
 
 Polygonal = Polygon | MultiPolygon
@@ -51,6 +51,19 @@ DEBUG_CONTEXT_LAYERS = {
     "overhead_power_line": ("DEBUG_OVERHEAD_POWER", 7),
     "utility_marker": ("DEBUG_UTILITY_MARKERS", 200),
     "utility_well": ("DEBUG_UTILITY_WELLS", 210),
+    "clean_water_pipe": ("DEBUG_CLEAN_WATER_PIPE", 6),
+    "clean_heat_pipe": ("DEBUG_CLEAN_HEAT_PIPE", 2),
+}
+
+RAW_UTILITY_CONTEXT_TYPES = {
+    "water_pipe",
+    "storm_drain",
+    "gas_pipe",
+    "heat_pipe",
+    "sewer_pipe",
+    "power_cable",
+    "telecom_cable",
+    "overhead_power_line",
 }
 
 
@@ -149,7 +162,7 @@ def export_dxf(
     road_edges: Lineal,
     context_geometries: dict[str, Any],
     zones: dict[str, Polygonal],
-) -> None:
+) -> Path:
     document = ezdxf.new("R2018")
     document.header["$INSUNITS"] = 0
     layer_colors = {
@@ -165,8 +178,10 @@ def export_dxf(
     }
     for layer, color in layer_colors.items():
         document.layers.add(layer, color=color)
-    for layer, color in DEBUG_CONTEXT_LAYERS.values():
-        document.layers.add(layer, color=color)
+    for object_type, (layer, color) in DEBUG_CONTEXT_LAYERS.items():
+        layer_definition = document.layers.add(layer, color=color)
+        if object_type in RAW_UTILITY_CONTEXT_TYPES:
+            layer_definition.off()
 
     modelspace = document.modelspace()
     add_polygons(modelspace, work_boundary, "DEBUG_WORK_BOUNDARY")
@@ -182,7 +197,26 @@ def export_dxf(
         if layer not in document.layers:
             document.layers.add(layer, color=3)
         add_polygons(modelspace, geometry, layer)
-    document.saveas(output_path)
+    candidates = [output_path, *(
+        output_path.with_name(
+            f"{output_path.stem}_v{version}{output_path.suffix}"
+        )
+        for version in range(2, 100)
+    )]
+    last_error: PermissionError | None = None
+    for candidate in candidates:
+        try:
+            document.saveas(candidate)
+            if candidate != output_path:
+                print(
+                    f"WARNING: {output_path} is locked; "
+                    f"debug DXF written to {candidate}"
+                )
+            return candidate
+        except PermissionError as error:
+            last_error = error
+    assert last_error is not None
+    raise last_error
 
 
 def draw_context(
@@ -324,9 +358,16 @@ def build_debug_export(
     dxf_output: Path,
     png_output: Path,
     dpi: int,
+    cleaned_utilities_path: Path | None = None,
 ) -> None:
     zones = load_plant_zones(plant_zones_path)
     normalized_objects = load_normalized_objects(normalized_path)
+    if cleaned_utilities_path is not None:
+        cleaned = load_cleaned_utilities(cleaned_utilities_path)
+        for object_type in ("water_pipe", "heat_pipe"):
+            geometry = cleaned.get(object_type)
+            if geometry is not None and not geometry.is_empty:
+                normalized_objects[f"clean_{object_type}"] = geometry
     work_boundary_geometry = normalized_objects.get("work_boundary")
     if work_boundary_geometry is None or work_boundary_geometry.is_empty:
         raise ValueError("No work_boundary geometry found in normalized input")
@@ -357,7 +398,7 @@ def build_debug_export(
         and not geometry.is_empty
     }
 
-    export_dxf(
+    actual_dxf_output = export_dxf(
         dxf_output,
         work_boundary,
         hard_surfaces,
@@ -379,7 +420,7 @@ def build_debug_export(
     )
 
     print(f"Plant zones: {plant_zones_path}")
-    print(f"DXF: {dxf_output}")
+    print(f"DXF: {actual_dxf_output}")
     print(f"PNG: {png_output}")
     print(f"Reconstructed road: {road_area.area:.3f} square DXF units")
     print(f"Sidewalks: {sidewalks.area:.3f} square DXF units")
@@ -408,6 +449,11 @@ def main() -> None:
     parser.add_argument(
         "--png-output", type=Path, default=Path("plant_allow_zones_debug.png")
     )
+    parser.add_argument(
+        "--cleaned-utilities",
+        type=Path,
+        help="Accepted utility GeoJSONL used by automatic setback rules",
+    )
     parser.add_argument("--dpi", type=int, default=180)
     args = parser.parse_args()
     if args.dpi <= 0:
@@ -420,6 +466,7 @@ def main() -> None:
             args.dxf_output,
             args.png_output,
             args.dpi,
+            args.cleaned_utilities,
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
         raise SystemExit(f"Plant-zone debug export error: {error}") from error

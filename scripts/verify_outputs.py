@@ -51,6 +51,10 @@ def main() -> None:
     _, base = one(constraints, "base_allowed_area")
     _, road = one(constraints, "road_area")
     _, hard_surfaces = one(constraints, "hard_surface_area")
+    _, sidewalks = one(constraints, "sidewalk_area")
+    _, confirmed_plantable = one(
+        constraints, "confirmed_plantable_surface"
+    )
 
     checks: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -59,6 +63,10 @@ def main() -> None:
         outside_base = geometry.difference(base).area
         road_overlap = geometry.intersection(road).area
         hard_surface_overlap = geometry.intersection(hard_surfaces).area
+        sidewalk_overlap = geometry.intersection(sidewalks).area
+        outside_confirmed_plantable = geometry.difference(
+            confirmed_plantable
+        ).area
         declared_area = float(properties.get("area_in_dxf_square_units", geometry.area))
         area_error = abs(declared_area - geometry.area)
         record = {
@@ -71,6 +79,8 @@ def main() -> None:
             "outside_base_area": outside_base,
             "road_overlap_area": road_overlap,
             "hard_surface_overlap_area": hard_surface_overlap,
+            "sidewalk_overlap_area": sidewalk_overlap,
+            "outside_confirmed_plantable_area": outside_confirmed_plantable,
         }
         checks.append(record)
         if not geometry.is_valid or geometry.is_empty:
@@ -83,6 +93,12 @@ def main() -> None:
             failures.append(f"{plant_type}: zone overlaps reconstructed road")
         if hard_surface_overlap > AREA_TOLERANCE:
             failures.append(f"{plant_type}: zone overlaps hard surfaces")
+        if sidewalk_overlap > AREA_TOLERANCE:
+            failures.append(f"{plant_type}: zone overlaps sidewalks")
+        if outside_confirmed_plantable > AREA_TOLERANCE:
+            failures.append(
+                f"{plant_type}: zone extends outside confirmed plantable surfaces"
+            )
 
     if not checks:
         failures.append("No plant_allow_zone features found")
@@ -105,7 +121,10 @@ def main() -> None:
             f"  {item['plant_type']}: area={item['area_in_dxf_square_units']:.3f}, "
             f"outside_base={item['outside_base_area']:.6f}, "
             f"road_overlap={item['road_overlap_area']:.6f}, "
-            f"hard_surface_overlap={item['hard_surface_overlap_area']:.6f}"
+            f"hard_surface_overlap={item['hard_surface_overlap_area']:.6f}, "
+            f"sidewalk_overlap={item['sidewalk_overlap_area']:.6f}, "
+            "outside_confirmed_plantable="
+            f"{item['outside_confirmed_plantable_area']:.6f}"
         )
     if failures:
         raise SystemExit(1)

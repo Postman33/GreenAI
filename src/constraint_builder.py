@@ -2,7 +2,8 @@
 
 The base stage applies restrictions that do not depend on a plant species::
 
-    base_allowed_area = work_boundary - hard_surfaces - road_area - buildings
+    base_allowed_area = confirmed_plantable_surfaces
+        - sidewalks - hard_surfaces - road_area - buildings
 
 Network and object setbacks belong to the following, per-plant constraint
 stage because their distances come from placement rules.
@@ -746,17 +747,17 @@ def build(
 
     road_area: Polygon | MultiPolygon = Polygon()
     sidewalks: Polygon | MultiPolygon = Polygon()
+    try:
+        sidewalks = as_polygonal(
+            read_object_geometry(normalized_path, "sidewalk").intersection(
+                work_boundary
+            )
+        )
+    except ValueError:
+        sidewalks = Polygon()
     road_reconstruction: dict[str, Any]
     try:
         road_edges = read_object_geometry(normalized_path, "road_edge")
-        try:
-            sidewalks = as_polygonal(
-                read_object_geometry(normalized_path, "sidewalk").intersection(
-                    work_boundary
-                )
-            )
-        except ValueError:
-            sidewalks = Polygon()
         road_area, road_reconstruction = build_road_area(
             road_edges,
             work_boundary,
@@ -813,16 +814,38 @@ def build(
             hard_surface_area,
             road_area,
             buildings_in_work_area,
+            sidewalks,
         ])
     )
+
+    # A subtraction-only mask treats every unclassified part of the drawing as
+    # plantable.  On real CAD plans that is unsafe: a sidewalk whose layer was
+    # not recognized becomes a false-positive green zone.  Prefer positive
+    # evidence (explicit lawn/soil/planting HATCH polygons) and use the whole
+    # work boundary only as a clearly reported fallback for poorer inputs.
+    if not plantable_surface_area.is_empty:
+        planting_candidate_area = as_polygonal(
+            plantable_surface_area.intersection(work_boundary)
+        )
+        planting_candidate_source = "confirmed_plantable_surface"
+    else:
+        planting_candidate_area = work_boundary
+        planting_candidate_source = "work_boundary_fallback"
+
     base_allowed_area = as_polygonal(
-        work_boundary.difference(absolute_exclusions)
+        planting_candidate_area.difference(absolute_exclusions)
     )
     if base_allowed_area.is_empty:
         raise ValueError(
-            "work_boundary - hard_surface_area - road_area - buildings "
+            "planting candidate area - sidewalks - hard_surface_area - "
+            "road_area - buildings "
             "produced an empty geometry"
         )
+
+    formula = (
+        f"{planting_candidate_source} - sidewalk_area - "
+        "hard_surface_area - road_area - buildings_in_work_area"
+    )
 
     output_features = [
         geometry_feature(
@@ -830,11 +853,11 @@ def build(
             base_allowed_area,
             {
                 "stage": "base_constraint_builder",
-                "formula": (
-                    "work_boundary - hard_surface_area - road_area - "
-                    "buildings_in_work_area"
-                ),
+                "formula": formula,
+                "planting_candidate_source": planting_candidate_source,
                 "applied_restrictions": [
+                    "confirmed_plantable_surface_mask",
+                    "sidewalk_area",
                     "hard_surface_area",
                     "reconstructed_road_area",
                     "building_footprints",
@@ -865,6 +888,28 @@ def build(
                 },
             )
         )
+    if not sidewalks.is_empty:
+        output_features.append(
+            geometry_feature(
+                "sidewalk_area",
+                sidewalks,
+                {
+                    "stage": "base_constraint_builder",
+                    "source_object_type": "sidewalk",
+                },
+            )
+        )
+    if not plantable_surface_area.is_empty:
+        output_features.append(
+            geometry_feature(
+                "confirmed_plantable_surface",
+                plantable_surface_area,
+                {
+                    "stage": "base_constraint_builder",
+                    "source": str(surface_candidates_path),
+                },
+            )
+        )
     if not buildings_in_work_area.is_empty:
         output_features.append(
             geometry_feature(
@@ -891,6 +936,11 @@ def build(
             "No unambiguous hard-surface polygon was found; base area still "
             "contains paved surfaces."
         )
+    if planting_candidate_source == "work_boundary_fallback":
+        warnings.append(
+            "No confirmed plantable surface was found. The base area uses the "
+            "work boundary fallback and may contain unclassified paving."
+        )
     if buildings_in_work_area.is_empty:
         warnings.append(
             "No normalized building polygon intersects the work boundary. "
@@ -912,8 +962,13 @@ def build(
     excluded_area = as_polygonal(
         absolute_exclusions.intersection(work_boundary)
     ).area
+    excluded_from_candidate_area = as_polygonal(
+        absolute_exclusions.intersection(planting_candidate_area)
+    ).area
     area_balance_error = abs(
-        work_boundary.area - base_allowed_area.area - excluded_area
+        planting_candidate_area.area
+        - base_allowed_area.area
+        - excluded_from_candidate_area
     )
     report = {
         "normalized_input": str(normalized_path),
@@ -921,12 +976,11 @@ def build(
         "output": str(output_path),
         "coordinate_reference": "local_dxf_coordinates",
         "units_confirmed_as_metres": False,
-        "formula": (
-            "work_boundary - hard_surface_area - road_area - "
-            "buildings_in_work_area"
-        ),
+        "formula": formula,
+        "planting_candidate_source": planting_candidate_source,
         "areas_in_dxf_square_units": {
             "work_boundary": work_boundary.area,
+            "planting_candidate_area": planting_candidate_area.area,
             "hard_surface_area": hard_surface_area.area,
             "road_seed_area": road_seed_area.area,
             "reconstructed_road_area": road_area.area,
@@ -936,6 +990,7 @@ def build(
             "all_normalized_buildings": all_buildings.area,
             "buildings_in_work_area": buildings_in_work_area.area,
             "absolute_exclusions": excluded_area,
+            "exclusions_inside_planting_candidate": excluded_from_candidate_area,
             "base_allowed_area": base_allowed_area.area,
             "area_balance_error": area_balance_error,
         },
@@ -945,6 +1000,8 @@ def build(
         "sidewalk_partition": sidewalk_partition_diagnostics,
         "road_reconstruction": road_reconstruction,
         "applied_restrictions": [
+            "confirmed_plantable_surface_mask",
+            "sidewalk_area",
             "hard_surface_area",
             "reconstructed_road_area",
             "building_footprints",

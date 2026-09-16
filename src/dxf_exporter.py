@@ -223,12 +223,32 @@ def export_zones(
             "previous_entities_removed": removed,
         }
 
-    document.saveas(output_dxf)
+    candidates = [output_dxf, *(
+        output_dxf.with_name(f"{output_dxf.stem}_v{version}{output_dxf.suffix}")
+        for version in range(2, 100)
+    )]
+    actual_output = output_dxf
+    last_error: PermissionError | None = None
+    for candidate in candidates:
+        try:
+            document.saveas(candidate)
+            actual_output = candidate
+            if candidate != output_dxf:
+                print(
+                    f"WARNING: {output_dxf} is locked; "
+                    f"result DXF written to {candidate}"
+                )
+            break
+        except PermissionError as error:
+            last_error = error
+    else:
+        assert last_error is not None
+        raise last_error
     print(f"Original DXF: {input_dxf}")
     print(f"Plant zones: {zones_path}")
     if constraint_map_path is not None:
         print(f"Constraint map: {constraint_map_path}")
-    print(f"Output DXF: {output_dxf}")
+    print(f"Output DXF: {actual_output}")
     print(f"Original modelspace entities: {original_entity_count}")
     for plant_type, result in exported.items():
         print(

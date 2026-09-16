@@ -26,6 +26,16 @@ from constraint_builder import as_polygonal, read_object_geometry
 
 
 DEFAULT_DSN = "postgresql://admin:admin@localhost:5432/admin"
+UTILITY_OBJECT_TYPES = {
+    "water_pipe",
+    "storm_drain",
+    "gas_pipe",
+    "heat_pipe",
+    "sewer_pipe",
+    "power_cable",
+    "telecom_cable",
+    "overhead_power_line",
+}
 
 
 def load_normalized_objects(path: Path) -> dict[str, Any]:
@@ -57,6 +67,40 @@ def load_normalized_objects(path: Path) -> dict[str, Any]:
             if not geometry.is_empty:
                 grouped[object_type].append(geometry)
 
+    return {
+        object_type: unary_union(geometries)
+        for object_type, geometries in grouped.items()
+    }
+
+
+def load_cleaned_utilities(path: Path) -> dict[str, Any]:
+    """Load only high-confidence utility features accepted by the cleaner."""
+    grouped: dict[str, list[Any]] = defaultdict(list)
+    with path.open(encoding="utf-8") as source:
+        for line_number, line in enumerate(source, start=1):
+            if not line.strip():
+                continue
+            feature = json.loads(line)
+            if feature.get("type") != "Feature":
+                raise ValueError(
+                    f"Line {line_number}: expected cleaned utility GeoJSON Feature"
+                )
+            properties = feature.get("properties", {})
+            if properties.get("decision") != "accepted":
+                raise ValueError(
+                    f"Line {line_number}: cleaned utility decision must be accepted"
+                )
+            object_type = properties.get("object_type")
+            if not object_type:
+                raise ValueError(
+                    f"Line {line_number}: cleaned utility object_type is missing"
+                )
+            geometry_data = feature.get("geometry")
+            if not geometry_data:
+                continue
+            geometry = make_valid(shape(geometry_data))
+            if not geometry.is_empty:
+                grouped[object_type].append(geometry)
     return {
         object_type: unary_union(geometries)
         for object_type, geometries in grouped.items()
@@ -187,7 +231,6 @@ def validate_distance_rule(rule: dict[str, Any]) -> float:
         )
     return distance
 
-# TODO: min_distance не работает.
 def apply_rules(
     plant_type: str,
     base_allowed_area: Any,
@@ -195,6 +238,7 @@ def apply_rules(
     rules: list[dict[str, Any]],
     dxf_units_per_meter: float,
     exclusion_cache: dict[tuple[str, float], Any],
+    geometry_sources: dict[str, str],
 ) -> tuple[Any, list[dict[str, Any]], list[str]]:
     """Apply computable rules and return zone, rule results and warnings."""
     allowed_area = base_allowed_area
@@ -212,6 +256,9 @@ def apply_rules(
             "check": check,
             "norm_reference": rule["norm_reference"],
             "norm_document": rule["norm_document"],
+            "geometry_source": geometry_sources.get(
+                target_type, "normalized_raw_geometry"
+            ),
         }
 
         if target_geometry is None or target_geometry.is_empty:
@@ -233,6 +280,27 @@ def apply_rules(
             )
             warnings.append(
                 f"{plant_type}/{rule['rule_code']}: manual review required"
+            )
+            evaluations.append(evaluation)
+            continue
+
+        if (
+            check == "min_distance"
+            and target_type in UTILITY_OBJECT_TYPES
+            and evaluation["geometry_source"]
+            != "cleaned_high_confidence_geometry"
+        ):
+            evaluation.update(
+                status="manual_review",
+                reason=(
+                    "Automatic utility setback requires accepted geometry "
+                    "from utility_cleaner"
+                ),
+                source_geometry_type=target_geometry.geom_type,
+            )
+            warnings.append(
+                f"{plant_type}/{rule['rule_code']}: cleaned {target_type} "
+                "geometry is required"
             )
             evaluations.append(evaluation)
             continue
@@ -316,6 +384,7 @@ def build_plant_allow_zones(
     dsn: str,
     plant_types: set[str] | None,
     dxf_units_per_meter: float,
+    cleaned_utilities_path: Path | None = None,
 ) -> None:
     """Build and write one provisional allow-zone feature per plant class."""
     base_allowed_area = as_polygonal(
@@ -326,10 +395,43 @@ def build_plant_allow_zones(
 
     normalized_objects = load_normalized_objects(normalized_path)
     rules_by_plant_type = load_rules(dsn, plant_types)
+    geometry_sources = {
+        object_type: "normalized_raw_geometry"
+        for object_type in normalized_objects
+    }
+    cleaned_utilities: dict[str, Any] = {}
+    ignored_cleaned_utility_types: list[str] = []
+    if cleaned_utilities_path is not None:
+        loaded_cleaned_utilities = load_cleaned_utilities(cleaned_utilities_path)
+        automatic_utility_targets = {
+            rule["target_object_type"]
+            for rules in rules_by_plant_type.values()
+            for rule in rules
+            if (rule.get("conditions") or {}).get("check") == "min_distance"
+            and rule["target_object_type"] in UTILITY_OBJECT_TYPES
+        }
+        cleaned_utilities = {
+            object_type: geometry
+            for object_type, geometry in loaded_cleaned_utilities.items()
+            if object_type in automatic_utility_targets
+        }
+        ignored_cleaned_utility_types = sorted(
+            set(loaded_cleaned_utilities) - set(cleaned_utilities)
+        )
+        normalized_objects.update(cleaned_utilities)
+        geometry_sources.update({
+            object_type: "cleaned_high_confidence_geometry"
+            for object_type in cleaned_utilities
+        })
     plants_by_plant_type = load_plants(dsn, set(rules_by_plant_type))
     report: dict[str, Any] = {
         "constraint_map_input": str(constraint_map_path),
         "normalized_input": str(normalized_path),
+        "cleaned_utilities_input": (
+            str(cleaned_utilities_path) if cleaned_utilities_path else None
+        ),
+        "cleaned_utility_object_types": sorted(cleaned_utilities),
+        "ignored_cleaned_utility_object_types": ignored_cleaned_utility_types,
         "output": str(output_path),
         "coordinate_reference": "local_dxf_coordinates",
         "dxf_units_per_meter": dxf_units_per_meter,
@@ -385,6 +487,7 @@ def build_plant_allow_zones(
             rules_by_plant_type[plant_type],
             dxf_units_per_meter,
             exclusion_cache,
+            geometry_sources,
         )
         unresolved = [
             item["rule_code"]
@@ -483,6 +586,14 @@ def main() -> None:
         "--output", type=Path, default=Path("plant_allow_zones.geojsonl")
     )
     parser.add_argument(
+        "--cleaned-utilities",
+        type=Path,
+        help=(
+            "GeoJSONL produced by utility_cleaner; accepted geometry replaces "
+            "raw utility objects before automatic distance rules are applied"
+        ),
+    )
+    parser.add_argument(
         "--report", type=Path, default=Path("plant_allow_zones_report.json")
     )
     parser.add_argument(
@@ -517,6 +628,7 @@ def main() -> None:
             args.dsn,
             plant_types,
             args.dxf_units_per_meter,
+            args.cleaned_utilities,
         )
     except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
         raise SystemExit(f"Plant allow-zone error: {error}") from error
