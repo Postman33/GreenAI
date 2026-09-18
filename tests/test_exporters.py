@@ -49,6 +49,8 @@ class ExporterTests(unittest.TestCase):
                 box(0, 8, 10, 10),
                 LineString([(4, 0), (4, 10)]),
                 {
+                    "building": box(6, 2, 9, 6),
+                    "building_source": LineString([(6, 2), (9, 2)]),
                     "water_pipe": LineString([(2, 0), (2, 10)]),
                     "existing_tree": Point(3, 3),
                 },
@@ -57,6 +59,14 @@ class ExporterTests(unittest.TestCase):
             result = ezdxf.readfile(actual)
             self.assertTrue(result.layers.get("DEBUG_WATER_PIPE").is_off())
             self.assertFalse(result.layers.get("DEBUG_EXISTING_TREES").is_off())
+            self.assertEqual(
+                len(result.modelspace().query('HATCH[layer=="DEBUG_BUILDINGS"]')),
+                1,
+            )
+            self.assertGreater(
+                len(result.modelspace().query('*[layer=="DEBUG_BUILDING_SOURCE"]')),
+                0,
+            )
             self.assertGreater(len(result.modelspace().query('*[layer=="DEBUG_ALLOW_TREE"]')), 0)
 
     def test_debug_surface_hypothesis_separates_hard_and_lawn(self) -> None:

@@ -1,7 +1,7 @@
 {
-  "version": "20260917_003204",
-  "bundle": "F:\\Пилотный проект 20 улиц\\models\\utility_detector\\20260917_003204",
-  "metadata": "F:\\Пилотный проект 20 улиц\\models\\utility_detector\\20260917_003204\\metadata.json",
+  "version": "20260917_170441",
+  "bundle": "F:\\Пилотный проект 20 улиц\\models\\utility_detector\\20260917_170441",
+  "metadata": "F:\\Пилотный проект 20 улиц\\models\\utility_detector\\20260917_170441\\metadata.json",
   "training_sources_by_type": {
     "gas_pipe": [
       "F:\\Пилотный проект 20 улиц\\ml\\train\\gas\\3-я_Парковая_gas_train.dxf",
@@ -13,6 +13,13 @@
       "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\Камчатская_water_train.dxf",
       "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\Курганская_water_train.dxf",
       "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\Нижние_Поля_water_train.dxf"
+    ],
+    "heat_pipe": [
+      "F:\\Пилотный проект 20 улиц\\ml\\train\\heat\\3-я_Парковая_heat_train.dxf",
+      "F:\\Пилотный проект 20 улиц\\ml\\train\\heat\\Нижние_Поля_heat_train.dxf"
+    ],
+    "power_cable": [
+      "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\Курганская_power_cable_train.dxf"
     ]
   }
 }

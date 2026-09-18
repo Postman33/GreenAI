@@ -399,6 +399,16 @@ def build_plant_allow_zones(
         object_type: "normalized_raw_geometry"
         for object_type in normalized_objects
     }
+    building_linework = normalized_objects.get("building_linework")
+    if building_linework is not None and not building_linework.is_empty:
+        building_footprints = normalized_objects.get("building")
+        building_sources = [building_linework]
+        if building_footprints is not None and not building_footprints.is_empty:
+            building_sources.append(building_footprints)
+        normalized_objects["building"] = unary_union(building_sources)
+        geometry_sources["building"] = (
+            "verified_footprints_plus_source_building_edges"
+        )
     cleaned_utilities: dict[str, Any] = {}
     ignored_cleaned_utility_types: list[str] = []
     if cleaned_utilities_path is not None:

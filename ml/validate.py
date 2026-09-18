@@ -28,6 +28,8 @@ from utility_detector.onnx_model import load_bundle as load_onnx_bundle  # noqa:
 NETWORK_DIRECTORIES = {
     "gas_pipe": "gas",
     "water_pipe": "water",
+    "heat_pipe": "heat",
+    "power_cable": "power",
 }
 DEFAULT_MODEL = WORKSPACE / "models" / "utility_detector" / "latest"
 DEFAULT_OUTPUT_ROOT = WORKSPACE / "output" / "ml_validation"

@@ -26,9 +26,12 @@ from shapely.geometry import (
     shape,
 )
 from shapely.plotting import plot_line, plot_polygon
+from shapely.ops import unary_union
 from shapely.validation import make_valid
 
 from constraint_builder import as_polygonal, read_object_geometry
+from dxf_exporter import add_zone_polygon
+from normalizer import primitive_to_geometry
 from plant_allow_zone import load_cleaned_utilities, load_normalized_objects
 
 
@@ -37,7 +40,8 @@ Lineal = LineString | MultiLineString
 
 
 DEBUG_CONTEXT_LAYERS = {
-    "building": ("DEBUG_BUILDINGS", 8),
+    "building": ("DEBUG_BUILDINGS", 30),
+    "building_source": ("DEBUG_BUILDING_SOURCE", 1),
     "existing_tree": ("DEBUG_EXISTING_TREES", 94),
     "existing_tree_belt": ("DEBUG_EXISTING_TREE_BELTS", 92),
     "vegetation_boundary": ("DEBUG_VEGETATION", 82),
@@ -126,6 +130,26 @@ def load_plant_zones(path: Path) -> dict[str, Polygonal]:
     }
 
 
+def load_raw_object_linework(
+    path: Path,
+    object_type: str,
+    curve_tolerance: float = 0.1,
+) -> Any:
+    """Read original extracted CAD primitives without polygon repairs."""
+    geometries = []
+    with path.open(encoding="utf-8") as source:
+        for line in source:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if record.get("object_type") != object_type:
+                continue
+            geometry = primitive_to_geometry(record, curve_tolerance)
+            if geometry is not None and not geometry.is_empty:
+                geometries.append(geometry)
+    return unary_union(geometries) if geometries else GeometryCollection()
+
+
 def add_polygons(modelspace, geometry: Polygonal, layer: str) -> None:
     for polygon in polygon_parts(geometry):
         modelspace.add_lwpolyline(
@@ -197,7 +221,11 @@ def export_dxf(
     add_lines(modelspace, road_edges, "DEBUG_ROAD_EDGES")
     for object_type, geometry in context_geometries.items():
         layer, _ = DEBUG_CONTEXT_LAYERS[object_type]
-        add_context_geometry(modelspace, geometry, layer)
+        if object_type == "building":
+            for polygon in polygon_parts(as_polygonal(geometry)):
+                add_zone_polygon(modelspace, polygon, layer, 30, 0.15)
+        else:
+            add_context_geometry(modelspace, geometry, layer)
     for plant_type, geometry in zones.items():
         layer = f"DEBUG_ALLOW_{plant_type.upper()}"
         if layer not in document.layers:
@@ -365,6 +393,7 @@ def build_debug_export(
     png_output: Path,
     dpi: int,
     cleaned_utilities_path: Path | None = None,
+    raw_objects_path: Path | None = None,
 ) -> None:
     zones = load_plant_zones(plant_zones_path)
     normalized_objects = load_normalized_objects(normalized_path)
@@ -403,6 +432,17 @@ def build_debug_export(
         if (geometry := normalized_objects.get(object_type)) is not None
         and not geometry.is_empty
     }
+    # Buildings must remain whole in the diagnostic drawing. Clipping them to
+    # the street work boundary makes valid footprints look like thin strips.
+    full_buildings = normalized_objects.get("building")
+    if full_buildings is not None and not full_buildings.is_empty:
+        context_geometries["building"] = full_buildings
+    if raw_objects_path is not None:
+        source_building_lines = load_raw_object_linework(
+            raw_objects_path, "building"
+        )
+        if not source_building_lines.is_empty:
+            context_geometries["building_source"] = source_building_lines
 
     actual_dxf_output = export_dxf(
         dxf_output,
@@ -460,6 +500,11 @@ def main() -> None:
         type=Path,
         help="Accepted utility GeoJSONL used by automatic setback rules",
     )
+    parser.add_argument(
+        "--raw-objects",
+        type=Path,
+        help="Extracted JSONL used to draw untouched source building lines",
+    )
     parser.add_argument("--dpi", type=int, default=180)
     args = parser.parse_args()
     if args.dpi <= 0:
@@ -473,6 +518,7 @@ def main() -> None:
             args.png_output,
             args.dpi,
             args.cleaned_utilities,
+            args.raw_objects,
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
         raise SystemExit(f"Plant-zone debug export error: {error}") from error

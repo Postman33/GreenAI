@@ -14,7 +14,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
-from shapely.geometry import LineString, MultiLineString, MultiPoint, Point, mapping
+from shapely.geometry import LineString, MultiLineString, MultiPoint, Point, Polygon, mapping
 from shapely.ops import linemerge, polygonize, unary_union
 
 
@@ -38,6 +38,12 @@ POLYGON_TYPES = {
     "vegetation_boundary",
 }
 POINT_TYPES = {"existing_tree", "utility_marker", "utility_well"}
+BUILDING_MAX_ENDPOINT_GAP_DXF_UNITS = 0.1
+BUILDING_MAX_RELATIVE_GAP_DXF_UNITS = 1.0
+BUILDING_MAX_RELATIVE_GAP_RATIO = 0.01
+BUILDING_MISSING_WALL_ANGLE_TOLERANCE_DEG = 18.0
+BUILDING_MIN_REPAIRED_AREA_DXF_SQ_UNITS = 10.0
+BUILDING_MIN_REPAIRED_WIDTH_DXF_UNITS = 3.0
 
 
 def xy(point: list[float] | tuple[float, ...]) -> tuple[float, float]:
@@ -152,6 +158,283 @@ def polygonal_geometry(lines: Iterable[Any]):
     return unary_union(faces)
 
 
+def line_parts(geometry: Any) -> Iterable[LineString]:
+    """Yield line components from a noded Shapely geometry."""
+    if isinstance(geometry, LineString):
+        yield geometry
+    elif isinstance(geometry, MultiLineString):
+        yield from geometry.geoms
+    elif hasattr(geometry, "geoms"):
+        for part in geometry.geoms:
+            yield from line_parts(part)
+
+
+def angle_between_vectors_deg(
+    first: tuple[float, float], second: tuple[float, float]
+) -> float:
+    denominator = math.hypot(*first) * math.hypot(*second)
+    if denominator == 0:
+        return math.nan
+    cosine = max(
+        -1.0,
+        min(1.0, (first[0] * second[0] + first[1] * second[1]) / denominator),
+    )
+    return math.degrees(math.acos(cosine))
+
+
+def minimum_rotated_width(geometry: Polygon) -> float:
+    rectangle = geometry.minimum_rotated_rectangle
+    coordinates = list(rectangle.exterior.coords)
+    lengths = [
+        math.dist(coordinates[index], coordinates[index + 1])
+        for index in range(len(coordinates) - 1)
+    ]
+    positive = [length for length in lengths if length > 1e-9]
+    return min(positive) if positive else 0.0
+
+
+def polygonal_geometry_with_endpoint_closure(
+    lines: Iterable[Any],
+    max_endpoint_gap: float = BUILDING_MAX_ENDPOINT_GAP_DXF_UNITS,
+) -> tuple[Any, dict[str, Any]]:
+    """Polygonize building outlines and repair geometrically supported gaps.
+
+    CAD building outlines are often split into unordered LINE primitives. Their
+    exact start/end coordinates define a graph. A connector is accepted for a
+    tiny drafting gap, for a sub-metre gap negligible relative to the outline,
+    or for a missing wall meeting both end segments approximately at right
+    angles. Branched and otherwise ambiguous components remain linework.
+    """
+    line_list = [line for line in lines if line is not None and not line.is_empty]
+    diagnostics: dict[str, Any] = {
+        "line_component_count": 0,
+        "closed_component_count": 0,
+        "open_chain_count": 0,
+        "branched_component_count": 0,
+        "repaired_chain_count": 0,
+        "orthogonal_missing_wall_count": 0,
+        "rejected_open_chain_count": 0,
+        "rejection_reason_counts": {},
+        "max_endpoint_gap_in_dxf_units": max_endpoint_gap,
+        "repaired_total_length_in_dxf_units": 0.0,
+        "repaired_chains": [],
+        "rejected_chains": [],
+    }
+    if not line_list:
+        return None, diagnostics
+
+    noded = unary_union(line_list)
+    parts = list(line_parts(noded))
+    endpoint_to_parts: dict[tuple[float, float], list[int]] = defaultdict(list)
+    endpoint_coordinates: dict[tuple[float, float], tuple[float, float]] = {}
+    part_endpoints: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for part_index, part in enumerate(parts):
+        coordinates = list(part.coords)
+        if len(coordinates) < 2:
+            part_endpoints.append(((math.nan, math.nan), (math.nan, math.nan)))
+            continue
+        keys = []
+        for endpoint in (coordinates[0], coordinates[-1]):
+            point = float(endpoint[0]), float(endpoint[1])
+            key = round(point[0], 8), round(point[1], 8)
+            endpoint_to_parts[key].append(part_index)
+            endpoint_coordinates[key] = point
+            keys.append(key)
+        part_endpoints.append((keys[0], keys[1]))
+
+    neighbours: dict[int, set[int]] = {index: set() for index in range(len(parts))}
+    for incident_parts in endpoint_to_parts.values():
+        for part_index in incident_parts:
+            neighbours[part_index].update(
+                other for other in incident_parts if other != part_index
+            )
+
+    components: list[list[int]] = []
+    remaining = set(range(len(parts)))
+    while remaining:
+        start = remaining.pop()
+        component = [start]
+        stack = [start]
+        while stack:
+            current = stack.pop()
+            connected = neighbours[current] & remaining
+            remaining.difference_update(connected)
+            component.extend(connected)
+            stack.extend(connected)
+        components.append(component)
+
+    diagnostics["line_component_count"] = len(components)
+
+    connectors: list[Any] = []
+    for component in components:
+        degree: Counter[tuple[float, float]] = Counter()
+        known_length = 0.0
+        for part_index in component:
+            start_key, end_key = part_endpoints[part_index]
+            degree[start_key] += 1
+            degree[end_key] += 1
+            known_length += parts[part_index].length
+
+        if degree and all(value == 2 for value in degree.values()):
+            diagnostics["closed_component_count"] += 1
+            continue
+        if any(value > 2 for value in degree.values()):
+            diagnostics["branched_component_count"] += 1
+            continue
+        loose_ends = [key for key, value in degree.items() if value == 1]
+        if len(loose_ends) != 2 or any(value != 2 for value in degree.values() if value != 1):
+            diagnostics["rejected_open_chain_count"] += 1
+            continue
+
+        diagnostics["open_chain_count"] += 1
+        start = endpoint_coordinates[loose_ends[0]]
+        end = endpoint_coordinates[loose_ends[1]]
+        closure_length = math.dist(start, end)
+        closure_ratio = closure_length / known_length if known_length > 0 else math.inf
+        connector = LineString([start, end])
+        component_linework = unary_union(
+            [*[parts[part_index] for part_index in component], connector]
+        )
+        candidate_faces = list(polygonize(component_linework))
+        candidate_polygon = unary_union(candidate_faces) if candidate_faces else None
+        candidate_is_valid = (
+            closure_length > 0
+            and isinstance(candidate_polygon, Polygon)
+            and not candidate_polygon.is_empty
+            and candidate_polygon.area > 0
+            and candidate_polygon.is_valid
+        )
+        repair_mode = None
+        endpoint_angles: list[float] = []
+        candidate_width = 0.0
+        angles_are_orthogonal = False
+        connector_crosses_linework = False
+        if candidate_is_valid and closure_length <= max_endpoint_gap:
+            repair_mode = "tiny_endpoint_gap"
+        elif (
+            candidate_is_valid
+            and closure_length <= BUILDING_MAX_RELATIVE_GAP_DXF_UNITS
+            and closure_ratio <= BUILDING_MAX_RELATIVE_GAP_RATIO
+        ):
+            repair_mode = "small_relative_gap"
+        elif candidate_is_valid:
+            incident_parts: dict[tuple[float, float], int] = {}
+            for part_index in component:
+                first_key, last_key = part_endpoints[part_index]
+                if first_key in loose_ends:
+                    incident_parts[first_key] = part_index
+                if last_key in loose_ends:
+                    incident_parts[last_key] = part_index
+
+            for endpoint_key, other_point in (
+                (loose_ends[0], end),
+                (loose_ends[1], start),
+            ):
+                part_index = incident_parts[endpoint_key]
+                coordinates = list(parts[part_index].coords)
+                if endpoint_key == part_endpoints[part_index][0]:
+                    inward = (
+                        coordinates[1][0] - coordinates[0][0],
+                        coordinates[1][1] - coordinates[0][1],
+                    )
+                    endpoint_point = coordinates[0]
+                else:
+                    inward = (
+                        coordinates[-2][0] - coordinates[-1][0],
+                        coordinates[-2][1] - coordinates[-1][1],
+                    )
+                    endpoint_point = coordinates[-1]
+                toward_other = (
+                    other_point[0] - endpoint_point[0],
+                    other_point[1] - endpoint_point[1],
+                )
+                endpoint_angles.append(
+                    angle_between_vectors_deg(inward, toward_other)
+                )
+
+            candidate_width = minimum_rotated_width(candidate_polygon)
+            angles_are_orthogonal = all(
+                math.isfinite(angle)
+                and abs(angle - 90.0)
+                <= BUILDING_MISSING_WALL_ANGLE_TOLERANCE_DEG
+                for angle in endpoint_angles
+            )
+            connector_crosses_linework = connector.crosses(noded)
+            if (
+                angles_are_orthogonal
+                and not connector_crosses_linework
+                and candidate_polygon.area >= BUILDING_MIN_REPAIRED_AREA_DXF_SQ_UNITS
+                and candidate_width >= BUILDING_MIN_REPAIRED_WIDTH_DXF_UNITS
+            ):
+                repair_mode = "orthogonal_missing_wall"
+
+        if repair_mode is not None:
+            connectors.append(connector)
+            diagnostics["repaired_chain_count"] += 1
+            if repair_mode == "orthogonal_missing_wall":
+                diagnostics["orthogonal_missing_wall_count"] += 1
+            diagnostics["repaired_total_length_in_dxf_units"] += closure_length
+            diagnostics["repaired_chains"].append(
+                {
+                    "mode": repair_mode,
+                    "start": [round(start[0], 6), round(start[1], 6)],
+                    "end": [round(end[0], 6), round(end[1], 6)],
+                    "endpoint_distance": round(closure_length, 6),
+                    "added_length": round(closure_length, 6),
+                    "known_chain_length": round(known_length, 6),
+                    "closure_ratio": round(closure_ratio, 8),
+                    "endpoint_angles_deg": [
+                        round(angle, 4) for angle in endpoint_angles
+                    ],
+                    "candidate_area_in_dxf_square_units": round(
+                        candidate_polygon.area, 6
+                    ),
+                    "candidate_min_width_in_dxf_units": round(
+                        candidate_width, 6
+                    ),
+                }
+            )
+        else:
+            diagnostics["rejected_open_chain_count"] += 1
+            rejection_reasons = []
+            if not candidate_is_valid:
+                rejection_reasons.append("invalid_polygon")
+            else:
+                if not angles_are_orthogonal:
+                    rejection_reasons.append("non_orthogonal_endpoints")
+                if connector_crosses_linework:
+                    rejection_reasons.append("connector_crosses_linework")
+                if candidate_polygon.area < BUILDING_MIN_REPAIRED_AREA_DXF_SQ_UNITS:
+                    rejection_reasons.append("area_below_minimum")
+                if candidate_width < BUILDING_MIN_REPAIRED_WIDTH_DXF_UNITS:
+                    rejection_reasons.append("width_below_minimum")
+            reason_counts = Counter(diagnostics["rejection_reason_counts"])
+            reason_counts.update(rejection_reasons)
+            diagnostics["rejection_reason_counts"] = dict(reason_counts)
+            diagnostics["rejected_chains"].append(
+                {
+                    "start": [round(start[0], 6), round(start[1], 6)],
+                    "end": [round(end[0], 6), round(end[1], 6)],
+                    "endpoint_distance": round(closure_length, 6),
+                    "known_chain_length": round(known_length, 6),
+                    "closure_ratio": round(closure_ratio, 8),
+                    "endpoint_angles_deg": [round(angle, 4) for angle in endpoint_angles],
+                    "candidate_area_in_dxf_square_units": round(
+                        candidate_polygon.area, 6
+                    ) if candidate_is_valid else 0.0,
+                    "candidate_min_width_in_dxf_units": round(candidate_width, 6),
+                    "reasons": rejection_reasons,
+                }
+            )
+
+    diagnostics["repaired_total_length_in_dxf_units"] = round(
+        diagnostics["repaired_total_length_in_dxf_units"], 6
+    )
+    repaired_linework = unary_union([noded, *connectors]) if connectors else noded
+    faces = list(polygonize(repaired_linework))
+    return (unary_union(faces) if faces else None), diagnostics
+
+
 def polygonal_geometry_per_primitive(geometries: Iterable[Any]):
     """Polygonize each closed CAD object before merging the results.
 
@@ -191,9 +474,15 @@ def point_geometry(geometries: Iterable[Any]):
     return MultiPoint(points) if points else None
 
 
-def normalize_group(object_type: str, geometries: list[Any]):
+def normalize_group(
+    object_type: str,
+    geometries: list[Any],
+):
     if object_type in {"work_boundary", "sidewalk"}:
         return polygonal_geometry_per_primitive(geometries)
+    if object_type == "building":
+        geometry, _ = polygonal_geometry_with_endpoint_closure(geometries)
+        return geometry
     if object_type in POLYGON_TYPES:
         return polygonal_geometry(geometries)
     if object_type in LINE_TYPES:
@@ -208,18 +497,22 @@ def make_feature(
     geometry: Any,
     source_records: list[dict[str, Any]],
     skipped: int,
+    extra_properties: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     layers = sorted({record["source_layer"] for record in source_records})
+    properties = {
+        "object_type": object_type,
+        "coordinate_reference": "local_dxf_coordinates",
+        "source_record_count": len(source_records),
+        "source_layers": layers,
+        "skipped_without_geometry": skipped,
+    }
+    if extra_properties:
+        properties.update(extra_properties)
     return {
         "type": "Feature",
         "id": object_type,
-        "properties": {
-            "object_type": object_type,
-            "coordinate_reference": "local_dxf_coordinates",
-            "source_record_count": len(source_records),
-            "source_layers": layers,
-            "skipped_without_geometry": skipped,
-        },
+        "properties": properties,
         "geometry": mapping(geometry),
     }
 
@@ -262,13 +555,24 @@ def normalize(
                     skipped += 1
                 else:
                     primitives.append(geometry)
-            normalized = normalize_group(object_type, primitives)
+            extra_properties: dict[str, Any] = {}
+            if object_type == "building":
+                normalized, closure_diagnostics = polygonal_geometry_with_endpoint_closure(
+                    primitives
+                )
+                summary_closure_diagnostics = closure_diagnostics
+                extra_properties.update(closure_diagnostics)
+            else:
+                normalized = normalize_group(object_type, primitives)
+                summary_closure_diagnostics = None
             summary = {
                 "source_records": records_by_type[object_type],
                 "converted_primitives": len(primitives),
                 "skipped_without_geometry": skipped,
                 "result_geometry": normalized.geom_type if normalized else None,
             }
+            if summary_closure_diagnostics is not None:
+                summary["endpoint_chain_closure"] = summary_closure_diagnostics
             if normalized is None or normalized.is_empty:
                 summary["status"] = "no_usable_geometry"
                 report["warnings"].append(
@@ -278,11 +582,37 @@ def normalize(
                 summary["status"] = "ok"
                 destination.write(
                     json.dumps(
-                        make_feature(object_type, normalized, records, skipped),
+                        make_feature(
+                            object_type,
+                            normalized,
+                            records,
+                            skipped,
+                            extra_properties,
+                        ),
                         ensure_ascii=False,
                     )
                     + "\n"
                 )
+                if object_type == "building":
+                    source_linework = lineal_geometry(primitives)
+                    if source_linework is not None and not source_linework.is_empty:
+                        destination.write(
+                            json.dumps(
+                                make_feature(
+                                    "building_linework",
+                                    source_linework,
+                                    records,
+                                    skipped,
+                                    {
+                                        "role": (
+                                            "source_edges_for_setbacks_and_manual_review"
+                                        )
+                                    },
+                                ),
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        )
             report["object_types"][object_type] = summary
 
     report_path.write_text(
@@ -329,7 +659,13 @@ def main() -> None:
         if args.only
         else None
     )
-    normalize(args.input_jsonl, args.output, args.report, args.curve_tolerance, only_types)
+    normalize(
+        args.input_jsonl,
+        args.output,
+        args.report,
+        args.curve_tolerance,
+        only_types,
+    )
 
 
 if __name__ == "__main__":

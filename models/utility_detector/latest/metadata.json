@@ -1,7 +1,7 @@
 {
   "format": "green-cad-utility-onnx-bundle",
   "format_version": 1,
-  "created_at": "2026-09-17T00:34:10.126054+03:00",
+  "created_at": "2026-09-17T17:07:48.209497+03:00",
   "onnx_opset": 18,
   "input": {
     "name": "features",
@@ -40,7 +40,7 @@
   "networks": {
     "gas_pipe": {
       "model_file": "gas_pipe.onnx",
-      "sha256": "9f5dae772b2c75283482e9bbea4570b0092734979524f10663d31629b469fc7a",
+      "sha256": "83bfd53c117e5c508066906ad3251ecf689ca638926b2c698e05ca9350900c73",
       "classes": [
         0,
         1
@@ -56,14 +56,60 @@
         ],
         "sample_count": 7141,
         "maximum_absolute_error": 3.5762786865234375e-07,
-        "mean_absolute_error": 4.1298844138118484e-08,
+        "mean_absolute_error": 4.129884413826418e-08,
+        "accepted_decisions_match": true,
+        "review_decisions_match": true
+      }
+    },
+    "heat_pipe": {
+      "model_file": "heat_pipe.onnx",
+      "sha256": "c670393ef63d863693c7b99f10dd698be952ad92cdebca2c12629c2741f3ae9c",
+      "classes": [
+        0,
+        1
+      ],
+      "positive_class": 1,
+      "positive_probability_column": 1,
+      "accepted_threshold": 0.545,
+      "review_threshold": 0.02,
+      "verification": {
+        "status": "probabilities_compared",
+        "providers": [
+          "CPUExecutionProvider"
+        ],
+        "sample_count": 4484,
+        "maximum_absolute_error": 3.8889327291791176e-07,
+        "mean_absolute_error": 1.2956942444562744e-07,
+        "accepted_decisions_match": true,
+        "review_decisions_match": true
+      }
+    },
+    "power_cable": {
+      "model_file": "power_cable.onnx",
+      "sha256": "f0fa76a7688c55c13d731b8e20e5b9df4d6bb1da448d04e2c0932c2c40036d3f",
+      "classes": [
+        0,
+        1
+      ],
+      "positive_class": 1,
+      "positive_probability_column": 1,
+      "accepted_threshold": 0.5650000000000001,
+      "review_threshold": 0.06,
+      "verification": {
+        "status": "probabilities_compared",
+        "providers": [
+          "CPUExecutionProvider"
+        ],
+        "sample_count": 3218,
+        "maximum_absolute_error": 3.8337707519708886e-07,
+        "mean_absolute_error": 2.2194179921329979e-07,
         "accepted_decisions_match": true,
         "review_decisions_match": true
       }
     },
     "water_pipe": {
       "model_file": "water_pipe.onnx",
-      "sha256": "c7846f896e0e9389e5043b452a54d5c446eb3a1bb0d76b9e85d58a6a31bc148d",
+      "sha256": "09ea65d39229054ecead35736e315a3ca89d945c9d18502d00bf0d344e89c07e",
       "classes": [
         0,
         1
@@ -79,7 +125,7 @@
         ],
         "sample_count": 15683,
         "maximum_absolute_error": 3.8505371968700075e-07,
-        "mean_absolute_error": 3.2728327377505924e-08,
+        "mean_absolute_error": 3.272832737737834e-08,
         "accepted_decisions_match": true,
         "review_decisions_match": true
       }
@@ -99,7 +145,10 @@
     "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\3-я_Парковая_water_train.dxf",
     "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\Камчатская_water_train.dxf",
     "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\Курганская_water_train.dxf",
-    "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\Нижние_Поля_water_train.dxf"
+    "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\Нижние_Поля_water_train.dxf",
+    "F:\\Пилотный проект 20 улиц\\ml\\train\\heat\\3-я_Парковая_heat_train.dxf",
+    "F:\\Пилотный проект 20 улиц\\ml\\train\\heat\\Нижние_Поля_heat_train.dxf",
+    "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\Курганская_power_cable_train.dxf"
   ],
   "training_sources_by_type": {
     "gas_pipe": [
@@ -112,6 +161,13 @@
       "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\Камчатская_water_train.dxf",
       "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\Курганская_water_train.dxf",
       "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\Нижние_Поля_water_train.dxf"
+    ],
+    "heat_pipe": [
+      "F:\\Пилотный проект 20 улиц\\ml\\train\\heat\\3-я_Парковая_heat_train.dxf",
+      "F:\\Пилотный проект 20 улиц\\ml\\train\\heat\\Нижние_Поля_heat_train.dxf"
+    ],
+    "power_cable": [
+      "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\Курганская_power_cable_train.dxf"
     ]
   },
   "label_color": 3,

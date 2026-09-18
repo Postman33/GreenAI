@@ -860,7 +860,7 @@ def build(
                     "sidewalk_area",
                     "hard_surface_area",
                     "reconstructed_road_area",
-                    "building_footprints",
+                    "verified_building_footprints",
                 ],
             },
         ),
@@ -1004,7 +1004,7 @@ def build(
             "sidewalk_area",
             "hard_surface_area",
             "reconstructed_road_area",
-            "building_footprints",
+            "verified_building_footprints",
         ],
         "deferred_restrictions": [
             "building_setbacks",

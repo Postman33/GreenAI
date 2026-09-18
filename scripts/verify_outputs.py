@@ -7,7 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from shapely.geometry import shape
+from shapely.geometry import GeometryCollection, shape
+from shapely.ops import unary_union
 
 
 AREA_TOLERANCE = 1e-4
@@ -55,6 +56,11 @@ def main() -> None:
     _, confirmed_plantable = one(
         constraints, "confirmed_plantable_surface"
     )
+    building_parts = [
+        geometry
+        for _properties, geometry in constraints.get("buildings_in_work_area", [])
+    ]
+    buildings = unary_union(building_parts) if building_parts else GeometryCollection()
 
     checks: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -64,6 +70,7 @@ def main() -> None:
         road_overlap = geometry.intersection(road).area
         hard_surface_overlap = geometry.intersection(hard_surfaces).area
         sidewalk_overlap = geometry.intersection(sidewalks).area
+        building_overlap = geometry.intersection(buildings).area
         outside_confirmed_plantable = geometry.difference(
             confirmed_plantable
         ).area
@@ -80,6 +87,7 @@ def main() -> None:
             "road_overlap_area": road_overlap,
             "hard_surface_overlap_area": hard_surface_overlap,
             "sidewalk_overlap_area": sidewalk_overlap,
+            "building_overlap_area": building_overlap,
             "outside_confirmed_plantable_area": outside_confirmed_plantable,
         }
         checks.append(record)
@@ -95,6 +103,8 @@ def main() -> None:
             failures.append(f"{plant_type}: zone overlaps hard surfaces")
         if sidewalk_overlap > AREA_TOLERANCE:
             failures.append(f"{plant_type}: zone overlaps sidewalks")
+        if building_overlap > AREA_TOLERANCE:
+            failures.append(f"{plant_type}: zone overlaps buildings")
         if outside_confirmed_plantable > AREA_TOLERANCE:
             failures.append(
                 f"{plant_type}: zone extends outside confirmed plantable surfaces"
@@ -123,6 +133,7 @@ def main() -> None:
             f"road_overlap={item['road_overlap_area']:.6f}, "
             f"hard_surface_overlap={item['hard_surface_overlap_area']:.6f}, "
             f"sidewalk_overlap={item['sidewalk_overlap_area']:.6f}, "
+            f"building_overlap={item['building_overlap_area']:.6f}, "
             "outside_confirmed_plantable="
             f"{item['outside_confirmed_plantable_area']:.6f}"
         )

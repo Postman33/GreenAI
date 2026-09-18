@@ -65,6 +65,7 @@ class ScriptTests(unittest.TestCase):
                     feature("road_area", box(20, 20, 21, 21)),
                     feature("hard_surface_area", box(30, 30, 31, 31)),
                     feature("sidewalk_area", box(40, 40, 41, 41)),
+                    feature("buildings_in_work_area", box(50, 50, 51, 51)),
                     feature("confirmed_plantable_surface", base),
                 ],
             )
@@ -80,6 +81,7 @@ class ScriptTests(unittest.TestCase):
             data = json.loads(report.read_text(encoding="utf-8"))
             self.assertEqual(data["status"], "passed")
             self.assertEqual(data["checks"][0]["sidewalk_overlap_area"], 0)
+            self.assertEqual(data["checks"][0]["building_overlap_area"], 0)
 
 
 if __name__ == "__main__":

@@ -27,6 +27,8 @@ from utility_detector.onnx_model import export_bundle as export_onnx_bundle  # n
 NETWORK_DIRECTORIES = {
     "gas_pipe": "gas",
     "water_pipe": "water",
+    "heat_pipe": "heat",
+    "power_cable": "power",
 }
 DEFAULT_TRAIN_ROOT = Path(__file__).resolve().parent / "train"
 DEFAULT_OUTPUT_ROOT = WORKSPACE / "models" / "utility_detector"
@@ -107,7 +109,7 @@ def main() -> None:
         "--types",
         type=parse_types,
         default=list(NETWORK_DIRECTORIES),
-        help="Comma-separated types: gas_pipe,water_pipe",
+        help="Comma-separated types: gas_pipe,water_pipe,heat_pipe,power_cable",
     )
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--version")

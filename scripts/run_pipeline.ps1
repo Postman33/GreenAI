@@ -165,7 +165,8 @@ try {
     & $python .\src\plant_allow_zone_debug.py $zones $constraints $normalized `
         --dxf-output $debugDxf `
         --png-output $debugPng `
-        --cleaned-utilities $cleanedUtilities
+        --cleaned-utilities $cleanedUtilities `
+        --raw-objects $objects
     if ($LASTEXITCODE -ne 0) { throw "Debug export failed" }
     & $python .\scripts\verify_outputs.py $constraints $zones --output $verificationReport
     if ($LASTEXITCODE -ne 0) { throw "Spatial verification failed" }

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from shapely.geometry import LineString, Point
+from shapely.geometry import LineString, Point, shape
 
 from tests import ROOT  # noqa: F401 - initializes script-module import paths
 from src import normalizer
@@ -37,6 +37,100 @@ class NormalizerTests(unittest.TestCase):
         self.assertEqual(point, Point(1, 2))
         self.assertAlmostEqual(polygon.area, 4)
 
+    def test_building_polygonizer_closes_endpoint_chain(self) -> None:
+        lines = [
+            LineString([(0, 0), (10, 0)]),
+            LineString([(10, 0), (10, 10)]),
+            LineString([(10, 10), (0, 10)]),
+            LineString([(0, 10), (0, 0.05)]),
+        ]
+        polygon, diagnostics = normalizer.polygonal_geometry_with_endpoint_closure(lines)
+        self.assertIsNotNone(polygon)
+        self.assertAlmostEqual(polygon.area, 100.0)
+        self.assertEqual(diagnostics["repaired_chain_count"], 1)
+        self.assertAlmostEqual(
+            diagnostics["repaired_total_length_in_dxf_units"], 0.05
+        )
+
+    def test_building_polygonizer_rejects_long_missing_side(self) -> None:
+        lines = [
+            LineString([(0, 0), (10, 0)]),
+            LineString([(10, 0), (10, 10)]),
+            LineString([(10, 10), (0, 10)]),
+            LineString([(0, 10), (0, 5)]),
+        ]
+        polygon, diagnostics = normalizer.polygonal_geometry_with_endpoint_closure(lines)
+        self.assertIsNone(polygon)
+        self.assertEqual(diagnostics["repaired_chain_count"], 0)
+        self.assertEqual(diagnostics["rejected_open_chain_count"], 1)
+
+    def test_building_polygonizer_restores_orthogonal_missing_wall(self) -> None:
+        lines = [
+            LineString([(0, 0), (10, 0)]),
+            LineString([(10, 0), (10, 10)]),
+            LineString([(10, 10), (0, 10)]),
+        ]
+        polygon, diagnostics = normalizer.polygonal_geometry_with_endpoint_closure(lines)
+
+        self.assertIsNotNone(polygon)
+        self.assertAlmostEqual(polygon.area, 100.0)
+        self.assertEqual(diagnostics["orthogonal_missing_wall_count"], 1)
+        self.assertEqual(
+            diagnostics["repaired_chains"][0]["mode"],
+            "orthogonal_missing_wall",
+        )
+
+    def test_building_polygonizer_repairs_small_relative_gap(self) -> None:
+        lines = [
+            LineString([(0.5, 0), (100, 0), (100, 100), (0, 100), (0, 0)]),
+        ]
+        polygon, diagnostics = normalizer.polygonal_geometry_with_endpoint_closure(lines)
+
+        self.assertIsNotNone(polygon)
+        self.assertAlmostEqual(polygon.area, 10000.0)
+        self.assertEqual(
+            diagnostics["repaired_chains"][0]["mode"],
+            "small_relative_gap",
+        )
+
+    def test_building_polygonizer_rejects_straight_chain(self) -> None:
+        lines = [
+            LineString([(0, 0), (10, 0)]),
+            LineString([(10, 0), (20, 0)]),
+        ]
+        polygon, diagnostics = normalizer.polygonal_geometry_with_endpoint_closure(lines)
+        self.assertIsNone(polygon)
+        self.assertEqual(diagnostics["repaired_chain_count"], 0)
+        self.assertEqual(diagnostics["rejected_open_chain_count"], 1)
+
+    def test_right_angle_does_not_invent_missing_rectangle(self) -> None:
+        lines = [
+            LineString([(0, 0), (10, 0)]),
+            LineString([(0, 0), (0, 5)]),
+        ]
+        polygon, diagnostics = normalizer.polygonal_geometry_with_endpoint_closure(lines)
+        self.assertIsNone(polygon)
+        self.assertEqual(diagnostics["repaired_chain_count"], 0)
+
+    def test_non_right_open_angle_remains_unresolved(self) -> None:
+        lines = [
+            LineString([(0, 0), (10, 0)]),
+            LineString([(0, 0), (8, 5)]),
+        ]
+        polygon, diagnostics = normalizer.polygonal_geometry_with_endpoint_closure(lines)
+        self.assertIsNone(polygon)
+        self.assertEqual(diagnostics["repaired_chain_count"], 0)
+
+    def test_building_polygonizer_does_not_close_branched_component(self) -> None:
+        lines = [
+            LineString([(0, 0), (10, 0)]),
+            LineString([(10, 0), (10, 10)]),
+            LineString([(10, 0), (15, 0)]),
+        ]
+        polygon, diagnostics = normalizer.polygonal_geometry_with_endpoint_closure(lines)
+        self.assertIsNone(polygon)
+        self.assertEqual(diagnostics["branched_component_count"], 1)
+
     def test_normalize_writes_geojson_and_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -52,6 +146,12 @@ class NormalizerTests(unittest.TestCase):
                         closed=True,
                         layer="BOUNDARY",
                     ),
+                    raw_polyline(
+                        "building",
+                        [(2, 2), (4, 2), (4, 4), (2, 4)],
+                        closed=True,
+                        layer="BUILDING",
+                    ),
                     {
                         "object_type": "existing_tree",
                         "source_layer": "TREES",
@@ -63,7 +163,15 @@ class NormalizerTests(unittest.TestCase):
             features = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
             summary = json.loads(report.read_text(encoding="utf-8"))
 
-            self.assertEqual({item["properties"]["object_type"] for item in features}, {"work_boundary", "existing_tree"})
+            self.assertEqual(
+                {item["properties"]["object_type"] for item in features},
+                {"work_boundary", "building", "building_linework", "existing_tree"},
+            )
+            building = next(
+                item for item in features
+                if item["properties"]["object_type"] == "building"
+            )
+            self.assertAlmostEqual(shape(building["geometry"]).area, 4.0)
             self.assertEqual(summary["object_types"]["work_boundary"]["status"], "ok")
             self.assertEqual(summary["object_types"]["existing_tree"]["result_geometry"], "MultiPoint")
 

@@ -968,7 +968,14 @@ def command_evaluate(args: argparse.Namespace) -> None:
 
 def command_prelabel(args: argparse.Namespace) -> None:
     bundle = load_onnx_bundle(args.model)
-    object_types = set(bundle["metadata"]["networks"])
+    model_object_types = set(bundle["metadata"]["networks"])
+    object_types = parse_types(args.types) if args.types else model_object_types
+    missing_model_types = object_types - model_object_types
+    if missing_model_types:
+        raise ValueError(
+            "Model does not contain network types: "
+            + ", ".join(sorted(missing_model_types))
+        )
     grouped = load_labeled_dxf(args.input, object_types, args.accepted_color, args.curve_tolerance)
     classified, report = classify_onnx(bundle, grouped)
     written_counts = write_prelabeled_dxf(
@@ -1046,6 +1053,10 @@ def build_parser() -> argparse.ArgumentParser:
     prelabel.add_argument("--report", type=Path, required=True)
     prelabel.add_argument("--accepted-color", type=int, default=3)
     prelabel.add_argument("--review-color", type=int, default=2)
+    prelabel.add_argument(
+        "--types",
+        help="Optional comma-separated network types to prelabel, for example heat_pipe",
+    )
     prelabel.add_argument("--curve-tolerance", type=float, default=0.1)
     prelabel.set_defaults(handler=command_prelabel)
     return parser

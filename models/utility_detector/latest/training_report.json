@@ -71,6 +71,146 @@
         }
       ]
     },
+    "heat_pipe": {
+      "status": "trained",
+      "primitive_count": 4484,
+      "positive_count": 2618,
+      "negative_count": 1866,
+      "training_tile_count": 47,
+      "validation_tile_count": 16,
+      "accepted_validation": {
+        "threshold": 0.545,
+        "precision": 0.9650436953807741,
+        "recall": 0.9809644670050761,
+        "f1": 0.9729389553178099,
+        "true_positive": 773,
+        "false_positive": 28,
+        "false_negative": 15,
+        "true_negative": 514
+      },
+      "review_or_accepted_validation": {
+        "threshold": 0.02,
+        "precision": 0.767578125,
+        "recall": 0.9974619289340102,
+        "f1": 0.8675496688741722,
+        "true_positive": 786,
+        "false_positive": 238,
+        "false_negative": 2,
+        "true_negative": 304
+      },
+      "top_features": [
+        {
+          "name": "start_degree",
+          "importance": 0.21022162895698734
+        },
+        {
+          "name": "log_component_size",
+          "importance": 0.09551469450788673
+        },
+        {
+          "name": "log_length",
+          "importance": 0.09266034289729037
+        },
+        {
+          "name": "best_continuation",
+          "importance": 0.08910764339412326
+        },
+        {
+          "name": "log_span",
+          "importance": 0.084732323887121
+        },
+        {
+          "name": "log_component_span",
+          "importance": 0.07231405710245128
+        },
+        {
+          "name": "log_component_length",
+          "importance": 0.07114249559615649
+        },
+        {
+          "name": "log_bbox_long",
+          "importance": 0.0674639725874774
+        },
+        {
+          "name": "nearby_primitive_count",
+          "importance": 0.04662114321228394
+        },
+        {
+          "name": "component_straightness",
+          "importance": 0.04026558147305233
+        }
+      ]
+    },
+    "power_cable": {
+      "status": "trained",
+      "primitive_count": 3218,
+      "positive_count": 2602,
+      "negative_count": 616,
+      "training_tile_count": 9,
+      "validation_tile_count": 4,
+      "accepted_validation": {
+        "threshold": 0.5650000000000001,
+        "precision": 0.9957386363636364,
+        "recall": 0.9873239436619718,
+        "f1": 0.9915134370579916,
+        "true_positive": 701,
+        "false_positive": 3,
+        "false_negative": 9,
+        "true_negative": 83
+      },
+      "review_or_accepted_validation": {
+        "threshold": 0.06,
+        "precision": 0.9376657824933687,
+        "recall": 0.995774647887324,
+        "f1": 0.9658469945355191,
+        "true_positive": 707,
+        "false_positive": 47,
+        "false_negative": 3,
+        "true_negative": 39
+      },
+      "top_features": [
+        {
+          "name": "start_degree",
+          "importance": 0.17600941229823028
+        },
+        {
+          "name": "log_component_size",
+          "importance": 0.11837292999706388
+        },
+        {
+          "name": "component_straightness",
+          "importance": 0.10130639816280824
+        },
+        {
+          "name": "best_continuation",
+          "importance": 0.09954862590189138
+        },
+        {
+          "name": "nearby_primitive_count",
+          "importance": 0.0955631243958405
+        },
+        {
+          "name": "log_component_length",
+          "importance": 0.0776765970200119
+        },
+        {
+          "name": "log_component_span",
+          "importance": 0.05133812232014847
+        },
+        {
+          "name": "log_length",
+          "importance": 0.049314212858207813
+        },
+        {
+          "name": "log_span",
+          "importance": 0.04318846171357234
+        },
+        {
+          "name": "log_bbox_long",
+          "importance": 0.03801065207303234
+        }
+      ]
+    },
     "water_pipe": {
       "status": "trained",
       "primitive_count": 15683,
@@ -211,6 +351,37 @@
           "Водопровод"
         ]
       }
+    ],
+    "heat_pipe": [
+      {
+        "path": "F:\\Пилотный проект 20 улиц\\ml\\train\\heat\\3-я_Парковая_heat_train.dxf",
+        "primitive_count": 1876,
+        "positive_count": 1038,
+        "negative_count": 838,
+        "layers": [
+          "Сущ_сети_Теплосеть"
+        ]
+      },
+      {
+        "path": "F:\\Пилотный проект 20 улиц\\ml\\train\\heat\\Нижние_Поля_heat_train.dxf",
+        "primitive_count": 2608,
+        "positive_count": 1580,
+        "negative_count": 1028,
+        "layers": [
+          "Теплосеть"
+        ]
+      }
+    ],
+    "power_cable": [
+      {
+        "path": "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\Курганская_power_cable_train.dxf",
+        "primitive_count": 3218,
+        "positive_count": 2602,
+        "negative_count": 616,
+        "layers": [
+          "Кабель электрический"
+        ]
+      }
     ]
   },
   "onnx_verification": {
@@ -221,7 +392,29 @@
       ],
       "sample_count": 7141,
       "maximum_absolute_error": 3.5762786865234375e-07,
-      "mean_absolute_error": 4.1298844138118484e-08,
+      "mean_absolute_error": 4.129884413826418e-08,
+      "accepted_decisions_match": true,
+      "review_decisions_match": true
+    },
+    "heat_pipe": {
+      "status": "probabilities_compared",
+      "providers": [
+        "CPUExecutionProvider"
+      ],
+      "sample_count": 4484,
+      "maximum_absolute_error": 3.8889327291791176e-07,
+      "mean_absolute_error": 1.2956942444562744e-07,
+      "accepted_decisions_match": true,
+      "review_decisions_match": true
+    },
+    "power_cable": {
+      "status": "probabilities_compared",
+      "providers": [
+        "CPUExecutionProvider"
+      ],
+      "sample_count": 3218,
+      "maximum_absolute_error": 3.8337707519708886e-07,
+      "mean_absolute_error": 2.2194179921329979e-07,
       "accepted_decisions_match": true,
       "review_decisions_match": true
     },
@@ -232,7 +425,7 @@
       ],
       "sample_count": 15683,
       "maximum_absolute_error": 3.8505371968700075e-07,
-      "mean_absolute_error": 3.2728327377505924e-08,
+      "mean_absolute_error": 3.272832737737834e-08,
       "accepted_decisions_match": true,
       "review_decisions_match": true
     }

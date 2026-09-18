@@ -30,6 +30,7 @@ from shapely.plotting import plot_polygon
 from shapely.validation import make_valid
 
 from constraint_builder import read_object_geometry
+from dxf_exporter import add_zone_polygon
 from surface_inspector import (
     polygon_parts,
     readable_layer_name,
@@ -148,7 +149,7 @@ def export_dxf(
         "DEBUG_BASE_ALLOWED": 3,
         "DEBUG_HARD_SURFACES": 1,
         "DEBUG_PROJECT_LAWN_REFERENCE": 6,
-        "DEBUG_BUILDINGS": 8,
+        "DEBUG_BUILDINGS": 30,
     }
     for name, color in layers.items():
         document.layers.add(name, color=color)
@@ -158,7 +159,8 @@ def export_dxf(
     add_polygon_geometry(modelspace, base_allowed_area, "DEBUG_BASE_ALLOWED")
     add_polygon_geometry(modelspace, hard_surfaces, "DEBUG_HARD_SURFACES")
     add_polygon_geometry(modelspace, project_lawn, "DEBUG_PROJECT_LAWN_REFERENCE")
-    add_polygon_geometry(modelspace, buildings, "DEBUG_BUILDINGS")
+    for building in polygons(buildings):
+        add_zone_polygon(modelspace, building, "DEBUG_BUILDINGS", 30, 0.15)
     document.saveas(output_path)
 
 
