@@ -713,6 +713,16 @@ def build(
     buildings_in_work_area = as_polygonal(
         all_buildings.intersection(work_boundary)
     )
+    utility_well_footprints: Polygon | MultiPolygon = Polygon()
+    try:
+        utility_well_footprints = as_polygonal(
+            read_object_geometry(
+                normalized_path, "utility_well_footprint"
+            ).intersection(work_boundary)
+        )
+    except ValueError:
+        # Older normalized files and streets without wells remain supported.
+        utility_well_footprints = Polygon()
     hard_surface_area, surface_diagnostics = read_hard_surface_area(
         surface_candidates_path,
         work_boundary,
@@ -809,13 +819,16 @@ def build(
             "requires_visual_confirmation": True,
         }
 
-    absolute_exclusions = as_polygonal(
+    exclusions_without_utility_wells = as_polygonal(
         unary_union([
             hard_surface_area,
             road_area,
             buildings_in_work_area,
             sidewalks,
         ])
+    )
+    absolute_exclusions = as_polygonal(
+        unary_union([exclusions_without_utility_wells, utility_well_footprints])
     )
 
     # A subtraction-only mask treats every unclassified part of the drawing as
@@ -838,13 +851,14 @@ def build(
     if base_allowed_area.is_empty:
         raise ValueError(
             "planting candidate area - sidewalks - hard_surface_area - "
-            "road_area - buildings "
+            "road_area - buildings - utility_well_footprints "
             "produced an empty geometry"
         )
 
     formula = (
         f"{planting_candidate_source} - sidewalk_area - "
-        "hard_surface_area - road_area - buildings_in_work_area"
+        "hard_surface_area - road_area - buildings_in_work_area - "
+        "utility_well_footprints"
     )
 
     output_features = [
@@ -861,6 +875,7 @@ def build(
                     "hard_surface_area",
                     "reconstructed_road_area",
                     "verified_building_footprints",
+                    "utility_well_footprints",
                 ],
             },
         ),
@@ -921,6 +936,19 @@ def build(
                 },
             )
         )
+    if not utility_well_footprints.is_empty:
+        output_features.append(
+            geometry_feature(
+                "utility_well_footprints",
+                utility_well_footprints,
+                {
+                    "stage": "base_constraint_builder",
+                    "source_object_type": "utility_well_footprint",
+                    "role": "physical_hard_obstacle",
+                    "extra_clearance_in_dxf_units": 0.0,
+                },
+            )
+        )
 
     output_path.write_text(
         "".join(
@@ -965,6 +993,11 @@ def build(
     excluded_from_candidate_area = as_polygonal(
         absolute_exclusions.intersection(planting_candidate_area)
     ).area
+    incremental_utility_well_exclusion = as_polygonal(
+        utility_well_footprints
+        .intersection(planting_candidate_area)
+        .difference(exclusions_without_utility_wells)
+    ).area
     area_balance_error = abs(
         planting_candidate_area.area
         - base_allowed_area.area
@@ -989,6 +1022,10 @@ def build(
             "sidewalk_partition_barrier_area": sidewalk_partition_area.area,
             "all_normalized_buildings": all_buildings.area,
             "buildings_in_work_area": buildings_in_work_area.area,
+            "utility_well_footprints": utility_well_footprints.area,
+            "incremental_utility_well_exclusion_inside_planting_candidate": (
+                incremental_utility_well_exclusion
+            ),
             "absolute_exclusions": excluded_area,
             "exclusions_inside_planting_candidate": excluded_from_candidate_area,
             "base_allowed_area": base_allowed_area.area,
@@ -1005,6 +1042,7 @@ def build(
             "hard_surface_area",
             "reconstructed_road_area",
             "verified_building_footprints",
+            "utility_well_footprints",
         ],
         "deferred_restrictions": [
             "building_setbacks",
@@ -1030,6 +1068,10 @@ def build(
     print(
         "Buildings in work area: "
         f"{buildings_in_work_area.area:.3f} square DXF units"
+    )
+    print(
+        "Utility well footprints in work area: "
+        f"{utility_well_footprints.area:.3f} square DXF units"
     )
     print(f"Base allowed area: {base_allowed_area.area:.3f} square DXF units")
     for warning in warnings:

@@ -157,6 +157,17 @@ class NormalizerTests(unittest.TestCase):
                         "source_layer": "TREES",
                         "geometry": {"kind": "circle", "center": [3, 4], "radius": 1},
                     },
+                    {
+                        "object_type": "utility_well",
+                        "source_layer": "Колодцы",
+                        "geometry": {
+                            "kind": "arc",
+                            "center": [6, 6],
+                            "radius": 0.5,
+                            "start_angle": 0.0,
+                            "end_angle": 359.999995,
+                        },
+                    },
                 ],
             )
             normalizer.normalize(source, output, report, 0.1, None)
@@ -165,7 +176,14 @@ class NormalizerTests(unittest.TestCase):
 
             self.assertEqual(
                 {item["properties"]["object_type"] for item in features},
-                {"work_boundary", "building", "building_linework", "existing_tree"},
+                {
+                    "work_boundary",
+                    "building",
+                    "building_linework",
+                    "existing_tree",
+                    "utility_well",
+                    "utility_well_footprint",
+                },
             )
             building = next(
                 item for item in features
@@ -174,6 +192,17 @@ class NormalizerTests(unittest.TestCase):
             self.assertAlmostEqual(shape(building["geometry"]).area, 4.0)
             self.assertEqual(summary["object_types"]["work_boundary"]["status"], "ok")
             self.assertEqual(summary["object_types"]["existing_tree"]["result_geometry"], "MultiPoint")
+            well_footprint = next(
+                item for item in features
+                if item["properties"]["object_type"] == "utility_well_footprint"
+            )
+            self.assertAlmostEqual(shape(well_footprint["geometry"]).area, math.pi * 0.25, places=2)
+            self.assertEqual(
+                summary["object_types"]["utility_well"]["physical_footprint"][
+                    "source_symbol_count"
+                ],
+                1,
+            )
 
 
 if __name__ == "__main__":

@@ -36,6 +36,10 @@ UTILITY_OBJECT_TYPES = {
     "telecom_cable",
     "overhead_power_line",
 }
+ACCEPTED_UTILITY_GEOMETRY_SOURCES = {
+    "cleaned_high_confidence_geometry",
+    "reconstructed_high_confidence_geometry",
+}
 
 
 def load_normalized_objects(path: Path) -> dict[str, Any]:
@@ -73,9 +77,21 @@ def load_normalized_objects(path: Path) -> dict[str, Any]:
     }
 
 
-def load_cleaned_utilities(path: Path) -> dict[str, Any]:
-    """Load only high-confidence utility features accepted by the cleaner."""
+def load_utility_geometries(
+    path: Path,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Load accepted cleaned/reconstructed utilities and their provenance."""
     grouped: dict[str, list[Any]] = defaultdict(list)
+    metadata: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "source_kind": "cleaned",
+            "source_feature_count": 0,
+            "source_part_count": 0,
+            "inferred_connection_count": 0,
+            "statuses": set(),
+            "reasons": set(),
+        }
+    )
     with path.open(encoding="utf-8") as source:
         for line_number, line in enumerate(source, start=1):
             if not line.strip():
@@ -101,10 +117,51 @@ def load_cleaned_utilities(path: Path) -> dict[str, Any]:
             geometry = make_valid(shape(geometry_data))
             if not geometry.is_empty:
                 grouped[object_type].append(geometry)
-    return {
+                item = metadata[object_type]
+                item["source_feature_count"] += 1
+                source_part_count = properties.get("source_part_count", 1)
+                inferred_count = properties.get("inferred_connection_count", 0)
+                for field, value in (
+                    ("source_part_count", source_part_count),
+                    ("inferred_connection_count", inferred_count),
+                ):
+                    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                        raise ValueError(
+                            f"Line {line_number}: {field} must be a non-negative integer"
+                        )
+                    item[field] += value
+                status = properties.get("status")
+                reason = properties.get("reason")
+                if status:
+                    item["statuses"].add(str(status))
+                if reason:
+                    item["reasons"].add(str(reason))
+                if (
+                    status == "algorithmic_reconstruction"
+                    or reason == "accepted_with_reconstructed_gaps"
+                    or "inferred_connection_count" in properties
+                ):
+                    item["source_kind"] = "reconstructed"
+
+    geometries = {
         object_type: unary_union(geometries)
         for object_type, geometries in grouped.items()
     }
+    serializable_metadata = {
+        object_type: {
+            **item,
+            "statuses": sorted(item["statuses"]),
+            "reasons": sorted(item["reasons"]),
+        }
+        for object_type, item in metadata.items()
+    }
+    return geometries, serializable_metadata
+
+
+def load_cleaned_utilities(path: Path) -> dict[str, Any]:
+    """Compatibility wrapper returning accepted utility geometry only."""
+    geometries, _ = load_utility_geometries(path)
+    return geometries
 
 
 def load_rules(
@@ -239,6 +296,7 @@ def apply_rules(
     dxf_units_per_meter: float,
     exclusion_cache: dict[tuple[str, float], Any],
     geometry_sources: dict[str, str],
+    geometry_metadata: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[Any, list[dict[str, Any]], list[str]]:
     """Apply computable rules and return zone, rule results and warnings."""
     allowed_area = base_allowed_area
@@ -260,6 +318,9 @@ def apply_rules(
                 target_type, "normalized_raw_geometry"
             ),
         }
+        source_metadata = (geometry_metadata or {}).get(target_type)
+        if source_metadata:
+            evaluation["source_geometry_metadata"] = source_metadata
 
         if target_geometry is None or target_geometry.is_empty:
             evaluation.update(
@@ -288,19 +349,19 @@ def apply_rules(
             check == "min_distance"
             and target_type in UTILITY_OBJECT_TYPES
             and evaluation["geometry_source"]
-            != "cleaned_high_confidence_geometry"
+            not in ACCEPTED_UTILITY_GEOMETRY_SOURCES
         ):
             evaluation.update(
                 status="manual_review",
                 reason=(
-                    "Automatic utility setback requires accepted geometry "
-                    "from utility_cleaner"
+                    "Automatic utility setback requires accepted cleaned or "
+                    "reconstructed utility geometry"
                 ),
                 source_geometry_type=target_geometry.geom_type,
             )
             warnings.append(
-                f"{plant_type}/{rule['rule_code']}: cleaned {target_type} "
-                "geometry is required"
+                f"{plant_type}/{rule['rule_code']}: accepted cleaned or reconstructed "
+                f"{target_type} geometry is required"
             )
             evaluations.append(evaluation)
             continue
@@ -409,10 +470,13 @@ def build_plant_allow_zones(
         geometry_sources["building"] = (
             "verified_footprints_plus_source_building_edges"
         )
-    cleaned_utilities: dict[str, Any] = {}
+    utility_geometries: dict[str, Any] = {}
+    utility_geometry_metadata: dict[str, dict[str, Any]] = {}
     ignored_cleaned_utility_types: list[str] = []
     if cleaned_utilities_path is not None:
-        loaded_cleaned_utilities = load_cleaned_utilities(cleaned_utilities_path)
+        loaded_utility_geometries, loaded_utility_metadata = load_utility_geometries(
+            cleaned_utilities_path
+        )
         automatic_utility_targets = {
             rule["target_object_type"]
             for rules in rules_by_plant_type.values()
@@ -420,18 +484,27 @@ def build_plant_allow_zones(
             if (rule.get("conditions") or {}).get("check") == "min_distance"
             and rule["target_object_type"] in UTILITY_OBJECT_TYPES
         }
-        cleaned_utilities = {
+        utility_geometries = {
             object_type: geometry
-            for object_type, geometry in loaded_cleaned_utilities.items()
+            for object_type, geometry in loaded_utility_geometries.items()
             if object_type in automatic_utility_targets
         }
+        utility_geometry_metadata = {
+            object_type: loaded_utility_metadata[object_type]
+            for object_type in utility_geometries
+        }
         ignored_cleaned_utility_types = sorted(
-            set(loaded_cleaned_utilities) - set(cleaned_utilities)
+            set(loaded_utility_geometries) - set(utility_geometries)
         )
-        normalized_objects.update(cleaned_utilities)
+        normalized_objects.update(utility_geometries)
         geometry_sources.update({
-            object_type: "cleaned_high_confidence_geometry"
-            for object_type in cleaned_utilities
+            object_type: (
+                "reconstructed_high_confidence_geometry"
+                if utility_geometry_metadata[object_type]["source_kind"]
+                == "reconstructed"
+                else "cleaned_high_confidence_geometry"
+            )
+            for object_type in utility_geometries
         })
     plants_by_plant_type = load_plants(dsn, set(rules_by_plant_type))
     report: dict[str, Any] = {
@@ -440,7 +513,21 @@ def build_plant_allow_zones(
         "cleaned_utilities_input": (
             str(cleaned_utilities_path) if cleaned_utilities_path else None
         ),
-        "cleaned_utility_object_types": sorted(cleaned_utilities),
+        "utility_geometry_input": (
+            str(cleaned_utilities_path) if cleaned_utilities_path else None
+        ),
+        "cleaned_utility_object_types": sorted(utility_geometries),
+        "utility_geometry_object_types": sorted(utility_geometries),
+        "reconstructed_utility_object_types": sorted(
+            object_type
+            for object_type, item in utility_geometry_metadata.items()
+            if item["source_kind"] == "reconstructed"
+        ),
+        "utility_geometry_metadata": utility_geometry_metadata,
+        "inferred_connection_count_by_type": {
+            object_type: item["inferred_connection_count"]
+            for object_type, item in utility_geometry_metadata.items()
+        },
         "ignored_cleaned_utility_object_types": ignored_cleaned_utility_types,
         "output": str(output_path),
         "coordinate_reference": "local_dxf_coordinates",
@@ -498,6 +585,7 @@ def build_plant_allow_zones(
             dxf_units_per_meter,
             exclusion_cache,
             geometry_sources,
+            utility_geometry_metadata,
         )
         unresolved = [
             item["rule_code"]
@@ -596,11 +684,14 @@ def main() -> None:
         "--output", type=Path, default=Path("plant_allow_zones.geojsonl")
     )
     parser.add_argument(
+        "--utility-geometries",
         "--cleaned-utilities",
+        dest="cleaned_utilities",
         type=Path,
         help=(
-            "GeoJSONL produced by utility_cleaner; accepted geometry replaces "
-            "raw utility objects before automatic distance rules are applied"
+            "Accepted utility GeoJSONL produced by network_reconstructor (preferred) "
+            "or utility_cleaner; this geometry replaces raw utility objects before "
+            "automatic distance rules are applied"
         ),
     )
     parser.add_argument(

@@ -66,6 +66,7 @@ class ScriptTests(unittest.TestCase):
                     feature("hard_surface_area", box(30, 30, 31, 31)),
                     feature("sidewalk_area", box(40, 40, 41, 41)),
                     feature("buildings_in_work_area", box(50, 50, 51, 51)),
+                    feature("utility_well_footprints", box(60, 60, 61, 61)),
                     feature("confirmed_plantable_surface", base),
                 ],
             )
@@ -82,6 +83,7 @@ class ScriptTests(unittest.TestCase):
             self.assertEqual(data["status"], "passed")
             self.assertEqual(data["checks"][0]["sidewalk_overlap_area"], 0)
             self.assertEqual(data["checks"][0]["building_overlap_area"], 0)
+            self.assertEqual(data["checks"][0]["utility_well_overlap_area"], 0)
 
 
 if __name__ == "__main__":

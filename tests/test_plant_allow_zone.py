@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from shapely.geometry import LineString, box, shape
+from shapely.geometry import LineString, MultiLineString, Point, box, shape
 
 from tests import ROOT  # noqa: F401 - initializes script-module import paths
 from src import plant_allow_zone
@@ -62,6 +62,58 @@ class PlantAllowZoneTests(unittest.TestCase):
         self.assertAlmostEqual(allowed.area, 100.0)
         self.assertEqual(evaluations[0]["status"], "manual_review")
         self.assertEqual(len(warnings), 1)
+
+    def test_reconstructed_gap_is_used_by_distance_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            reconstructed = Path(directory) / "reconstructed.geojsonl"
+            write_jsonl(
+                reconstructed,
+                [
+                    feature(
+                        "water_pipe",
+                        MultiLineString(
+                            [
+                                [(1, 5), (4, 5)],
+                                [(4, 5), (6, 5)],
+                                [(6, 5), (9, 5)],
+                            ]
+                        ),
+                        decision="accepted",
+                        reason="accepted_with_reconstructed_gaps",
+                        status="algorithmic_reconstruction",
+                        source_part_count=2,
+                        inferred_connection_count=1,
+                    )
+                ],
+            )
+
+            geometries, metadata = plant_allow_zone.load_utility_geometries(
+                reconstructed
+            )
+            allowed, evaluations, warnings = plant_allow_zone.apply_rules(
+                "tree",
+                box(0, 0, 10, 10),
+                geometries,
+                [rule("TREE_WATER", "water_pipe", 0.5)],
+                1.0,
+                {},
+                {"water_pipe": "reconstructed_high_confidence_geometry"},
+                metadata,
+            )
+
+            self.assertFalse(allowed.covers(Point(5, 5)))
+            self.assertEqual(evaluations[0]["status"], "applied")
+            self.assertEqual(
+                evaluations[0]["geometry_source"],
+                "reconstructed_high_confidence_geometry",
+            )
+            self.assertEqual(
+                evaluations[0]["source_geometry_metadata"][
+                    "inferred_connection_count"
+                ],
+                1,
+            )
+            self.assertEqual(warnings, [])
 
     def test_build_plant_zones_without_database(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

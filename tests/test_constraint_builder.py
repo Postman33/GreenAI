@@ -54,6 +54,7 @@ class ConstraintBuilderTests(unittest.TestCase):
                     feature("work_boundary", box(0, 0, 20, 20)),
                     feature("sidewalk", box(0, 0, 2, 10)),
                     feature("building", box(7, 0, 9, 2)),
+                    feature("utility_well_footprint", box(2.5, 5, 3.5, 6)),
                 ],
             )
             write_jsonl(
@@ -75,11 +76,18 @@ class ConstraintBuilderTests(unittest.TestCase):
             by_type = {record["properties"]["object_type"]: shape(record["geometry"]) for record in records}
             report = json.loads(report_path.read_text(encoding="utf-8"))
 
-            self.assertAlmostEqual(by_type["base_allowed_area"].area, 56.0, places=5)
+            self.assertAlmostEqual(by_type["base_allowed_area"].area, 55.0, places=5)
             self.assertAlmostEqual(by_type["base_allowed_area"].intersection(by_type["sidewalk_area"]).area, 0.0)
             self.assertAlmostEqual(by_type["base_allowed_area"].intersection(by_type["buildings_in_work_area"]).area, 0.0)
+            self.assertAlmostEqual(
+                by_type["base_allowed_area"].intersection(
+                    by_type["utility_well_footprints"]
+                ).area,
+                0.0,
+            )
             self.assertAlmostEqual(by_type["base_allowed_area"].difference(by_type["confirmed_plantable_surface"]).area, 0.0)
             self.assertEqual(report["planting_candidate_source"], "confirmed_plantable_surface")
+            self.assertIn("utility_well_footprints", report["applied_restrictions"])
 
 
 if __name__ == "__main__":

@@ -44,6 +44,7 @@ BUILDING_MAX_RELATIVE_GAP_RATIO = 0.01
 BUILDING_MISSING_WALL_ANGLE_TOLERANCE_DEG = 18.0
 BUILDING_MIN_REPAIRED_AREA_DXF_SQ_UNITS = 10.0
 BUILDING_MIN_REPAIRED_WIDTH_DXF_UNITS = 3.0
+UTILITY_WELL_MIN_FULL_CIRCLE_SWEEP_DEG = 350.0
 
 
 def xy(point: list[float] | tuple[float, ...]) -> tuple[float, float]:
@@ -474,6 +475,53 @@ def point_geometry(geometries: Iterable[Any]):
     return MultiPoint(points) if points else None
 
 
+def utility_well_footprint(
+    records: Iterable[dict[str, Any]],
+) -> tuple[Any | None, dict[str, Any]]:
+    """Restore physical well/manhole disks from full-circle CAD primitives.
+
+    In the supplied geobases the ``Колодцы`` symbols are stored as ARC objects
+    with an almost 360-degree sweep and a stable radius.  Their centre is useful
+    for context, while the disk itself is the hard physical obstacle that must
+    be removed from a planting zone.  Lines and partial arcs are deliberately
+    ignored because their footprint cannot be inferred unambiguously.
+    """
+    disks: dict[tuple[float, float, float], Any] = {}
+    ignored_partial_arcs = 0
+    ignored_other_primitives = 0
+    for record in records:
+        raw = record.get("geometry") or {}
+        kind = raw.get("kind")
+        if kind not in {"arc", "circle"}:
+            ignored_other_primitives += 1
+            continue
+        radius = float(raw.get("radius", 0.0))
+        center = raw.get("center")
+        if radius <= 0 or not center:
+            ignored_other_primitives += 1
+            continue
+        if kind == "arc":
+            start = float(raw.get("start_angle", 0.0))
+            end = float(raw.get("end_angle", 0.0))
+            sweep = (end - start) % 360.0
+            if sweep < UTILITY_WELL_MIN_FULL_CIRCLE_SWEEP_DEG:
+                ignored_partial_arcs += 1
+                continue
+        center_x, center_y = xy(center)
+        key = (round(center_x, 6), round(center_y, 6), round(radius, 6))
+        disks[key] = Point(center_x, center_y).buffer(radius, quad_segs=16)
+
+    footprint = unary_union(list(disks.values())) if disks else None
+    diagnostics = {
+        "method": "full_circle_arc_or_circle_footprint",
+        "source_symbol_count": len(disks),
+        "ignored_partial_arc_count": ignored_partial_arcs,
+        "ignored_other_primitive_count": ignored_other_primitives,
+        "uses_drawn_radius_without_extra_clearance": True,
+    }
+    return footprint, diagnostics
+
+
 def normalize_group(
     object_type: str,
     geometries: list[Any],
@@ -607,6 +655,26 @@ def normalize(
                                         "role": (
                                             "source_edges_for_setbacks_and_manual_review"
                                         )
+                                    },
+                                ),
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        )
+                if object_type == "utility_well":
+                    footprint, footprint_diagnostics = utility_well_footprint(records)
+                    summary["physical_footprint"] = footprint_diagnostics
+                    if footprint is not None and not footprint.is_empty:
+                        destination.write(
+                            json.dumps(
+                                make_feature(
+                                    "utility_well_footprint",
+                                    footprint,
+                                    records,
+                                    skipped,
+                                    {
+                                        "role": "physical_hard_obstacle",
+                                        **footprint_diagnostics,
                                     },
                                 ),
                                 ensure_ascii=False,

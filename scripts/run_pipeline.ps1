@@ -168,11 +168,11 @@ try {
         --report $constraintReport
     if ($LASTEXITCODE -ne 0) { throw "Constraint building failed" }
 
-    Write-Host "[9/11] Applying plant placement rules from the existing database"
+    Write-Host "[9/11] Applying plant rules to reconstructed utility geometry"
     & $python .\src\plant_allow_zone.py $constraints $normalized `
         --output $zones `
         --report $zoneReport `
-        --cleaned-utilities $reconstructedUtilities `
+        --utility-geometries $reconstructedUtilities `
         --dxf-units-per-meter $DxfUnitsPerMeter
     if ($LASTEXITCODE -ne 0) { throw "Plant allow-zone calculation failed" }
 
@@ -180,7 +180,7 @@ try {
     & $python .\src\plant_allow_zone_debug.py $zones $constraints $normalized `
         --dxf-output $debugDxf `
         --png-output $debugPng `
-        --cleaned-utilities $reconstructedUtilities `
+        --utility-geometries $reconstructedUtilities `
         --raw-objects $objects
     if ($LASTEXITCODE -ne 0) { throw "Debug export failed" }
     & $python .\scripts\verify_outputs.py $constraints $zones --output $verificationReport

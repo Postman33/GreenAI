@@ -55,6 +55,7 @@ DEBUG_CONTEXT_LAYERS = {
     "overhead_power_line": ("DEBUG_OVERHEAD_POWER", 7),
     "utility_marker": ("DEBUG_UTILITY_MARKERS", 200),
     "utility_well": ("DEBUG_UTILITY_WELLS", 210),
+    "utility_well_footprint": ("DEBUG_UTILITY_WELL_FOOTPRINTS", 20),
     "clean_water_pipe": ("DEBUG_CLEAN_WATER_PIPE", 6),
     "clean_storm_drain": ("DEBUG_CLEAN_STORM_DRAIN", 34),
     "clean_gas_pipe": ("DEBUG_CLEAN_GAS_PIPE", 3),
@@ -496,9 +497,14 @@ def main() -> None:
         "--png-output", type=Path, default=Path("plant_allow_zones_debug.png")
     )
     parser.add_argument(
+        "--utility-geometries",
         "--cleaned-utilities",
+        dest="cleaned_utilities",
         type=Path,
-        help="Accepted utility GeoJSONL used by automatic setback rules",
+        help=(
+            "Accepted cleaned or reconstructed utility GeoJSONL used by "
+            "automatic setback rules"
+        ),
     )
     parser.add_argument(
         "--raw-objects",
