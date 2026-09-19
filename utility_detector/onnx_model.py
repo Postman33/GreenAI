@@ -124,6 +124,7 @@ def export_bundle(
             "positive_probability_column": positive_column,
             "accepted_threshold": accepted_threshold,
             "review_threshold": review_threshold,
+            "threshold_policy": model_data.get("threshold_policy", "unspecified"),
             "verification": verification,
         }
 

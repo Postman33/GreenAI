@@ -67,6 +67,11 @@ $rejectedUtilities = Join-Path $outputPath "rejected_utility_graphics.geojsonl"
 $utilityCleaningReport = Join-Path $outputPath "utility_cleaning_report.json"
 $utilityDebugDxf = Join-Path $outputPath "utility_cleaning_debug.dxf"
 $utilityDebugPng = Join-Path $outputPath "utility_cleaning_debug.png"
+$reconstructedUtilities = Join-Path $outputPath "reconstructed_utilities.geojsonl"
+$inferredUtilityConnections = Join-Path $outputPath "inferred_utility_connections.geojsonl"
+$reviewUtilityConnections = Join-Path $outputPath "review_utility_connections.geojsonl"
+$networkReconstructionReport = Join-Path $outputPath "network_reconstruction_report.json"
+$networkReconstructionDebugDxf = Join-Path $outputPath "network_reconstruction_debug.dxf"
 $surfaceDxf = Join-Path $outputPath "surface_candidates.dxf"
 $surfacePng = Join-Path $outputPath "surface_candidates.png"
 $surfaceReport = Join-Path $outputPath "surface_candidates_report.json"
@@ -98,25 +103,25 @@ $detectorModelPath = if ([string]::IsNullOrWhiteSpace($UtilityDetectorModel)) {
 Push-Location $workspace
 try {
     if (-not $SkipDatabaseStart) {
-        Write-Host "[1/10] Starting PostGIS"
+        Write-Host "[1/11] Starting PostGIS"
         docker compose up -d --wait
     } else {
-        Write-Host "[1/10] PostGIS start skipped"
+        Write-Host "[1/11] PostGIS start skipped"
     }
 
-    Write-Host "[2/10] Extracting semantic DXF objects"
+    Write-Host "[2/11] Extracting semantic DXF objects"
     & $extractor --config .\src\core\config.yaml --output $objects $inputPath
     if ($LASTEXITCODE -ne 0) { throw "Semantic extraction failed" }
 
-    Write-Host "[3/10] Extracting surface candidates"
+    Write-Host "[3/11] Extracting surface candidates"
     & $extractor --config .\src\core\surface_inspector_config.yaml --output $surfaces $inputPath
     if ($LASTEXITCODE -ne 0) { throw "Surface extraction failed" }
 
-    Write-Host "[4/10] Normalizing semantic geometry"
+    Write-Host "[4/11] Normalizing semantic geometry"
     & $python .\src\normalizer.py $objects --output $normalized --report $normalizationReport
     if ($LASTEXITCODE -ne 0) { throw "Normalization failed" }
 
-    Write-Host "[5/10] Cleaning engineering utility geometry"
+    Write-Host "[5/11] Cleaning engineering utility geometry"
     if ($null -ne $detectorModelPath) {
         Write-Host "       Using supervised ONNX utility detector: $detectorModelPath"
         & $python .\utility_detector\detector.py predict $objects `
@@ -140,38 +145,48 @@ try {
     }
     if ($LASTEXITCODE -ne 0) { throw "Utility cleaning failed" }
 
-    Write-Host "[6/10] Rendering source surface diagnostics"
+    Write-Host "[6/11] Reconstructing utility gaps and junctions"
+    & $python .\src\network_reconstructor.py $cleanedUtilities `
+        --output $reconstructedUtilities `
+        --inferred-output $inferredUtilityConnections `
+        --review-output $reviewUtilityConnections `
+        --report $networkReconstructionReport `
+        --debug-dxf $networkReconstructionDebugDxf `
+        --dxf-units-per-meter $DxfUnitsPerMeter
+    if ($LASTEXITCODE -ne 0) { throw "Utility network reconstruction failed" }
+
+    Write-Host "[7/11] Rendering source surface diagnostics"
     & $python .\src\surface_inspector.py $surfaces $normalized `
         --dxf-output $surfaceDxf `
         --png-output $surfacePng `
         --report $surfaceReport
     if ($LASTEXITCODE -ne 0) { throw "Surface inspection failed" }
 
-    Write-Host "[7/10] Building common constraints and reconstructed road"
+    Write-Host "[8/11] Building common constraints and reconstructed road"
     & $python .\src\constraint_builder.py $normalized $surfaces `
         --output $constraints `
         --report $constraintReport
     if ($LASTEXITCODE -ne 0) { throw "Constraint building failed" }
 
-    Write-Host "[8/10] Applying plant placement rules from the existing database"
+    Write-Host "[9/11] Applying plant placement rules from the existing database"
     & $python .\src\plant_allow_zone.py $constraints $normalized `
         --output $zones `
         --report $zoneReport `
-        --cleaned-utilities $cleanedUtilities `
+        --cleaned-utilities $reconstructedUtilities `
         --dxf-units-per-meter $DxfUnitsPerMeter
     if ($LASTEXITCODE -ne 0) { throw "Plant allow-zone calculation failed" }
 
-    Write-Host "[9/10] Rendering and verifying calculated zones"
+    Write-Host "[10/11] Rendering and verifying calculated zones"
     & $python .\src\plant_allow_zone_debug.py $zones $constraints $normalized `
         --dxf-output $debugDxf `
         --png-output $debugPng `
-        --cleaned-utilities $cleanedUtilities `
+        --cleaned-utilities $reconstructedUtilities `
         --raw-objects $objects
     if ($LASTEXITCODE -ne 0) { throw "Debug export failed" }
     & $python .\scripts\verify_outputs.py $constraints $zones --output $verificationReport
     if ($LASTEXITCODE -ne 0) { throw "Spatial verification failed" }
 
-    Write-Host "[10/10] Writing result layers into a copy of the source DXF"
+    Write-Host "[11/11] Writing result layers into a copy of the source DXF"
     & $python .\src\dxf_exporter.py $inputPath $zones `
         --constraint-map $constraints `
         --output $resultDxf
@@ -182,6 +197,7 @@ try {
     Write-Host "Final DXF: $resultDxf"
     Write-Host "Preview PNG: $debugPng"
     Write-Host "Rule report: $zoneReport"
+    Write-Host "Network reconstruction: $networkReconstructionReport"
     Write-Host "Verification: $verificationReport"
 } finally {
     Pop-Location

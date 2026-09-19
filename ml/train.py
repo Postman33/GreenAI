@@ -48,7 +48,12 @@ def parse_types(value: str) -> list[str]:
 
 def training_paths(directory: Path) -> list[Path]:
     paths = sorted(
-        (path.resolve() for path in directory.glob("*.dxf") if path.is_file()),
+        (
+            path.resolve()
+            for path in directory.glob("*.dxf")
+            if path.is_file()
+            and not Path(f"{path}.exclude").is_file()
+        ),
         key=lambda path: path.name.casefold(),
     )
     if not paths:

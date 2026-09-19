@@ -441,6 +441,29 @@ def choose_threshold(labels: np.ndarray, probabilities: np.ndarray, target_recal
     return max(scored)[1]
 
 
+def choose_threshold_for_precision(
+    labels: np.ndarray,
+    probabilities: np.ndarray,
+    target_precision: float,
+) -> float:
+    """Keep the most recall available at or above a precision target."""
+    candidates = []
+    for threshold in np.linspace(0.02, 0.98, 193):
+        result = metrics(labels, probabilities, float(threshold))
+        if result["precision"] + 1e-12 < target_precision:
+            continue
+        candidates.append((result["recall"], result["f1"], -float(threshold)))
+    if candidates:
+        return -max(candidates)[2]
+    return max(
+        (
+            metrics(labels, probabilities, float(threshold))["precision"],
+            -float(threshold),
+        )
+        for threshold in np.linspace(0.02, 0.98, 193)
+    )[1] * -1
+
+
 def train_models(
     grouped: dict[str, list[Primitive]],
     connect_tolerance: float,
@@ -479,14 +502,26 @@ def train_models(
         )
         validation_model.fit(features[train_indices], labels[train_indices])
         probabilities = validation_model.predict_proba(features[test_indices])[:, 1]
-        accepted_threshold = choose_threshold(labels[test_indices], probabilities, 0.98)
+        if object_type == "power_cable":
+            # Cable layers contain many leaders and annotation strokes.  Keep
+            # only the high-confidence axis as accepted and route the wider
+            # recall-oriented band to manual review.
+            accepted_threshold = choose_threshold_for_precision(
+                labels[test_indices], probabilities, 0.75
+            )
+            review_recall_target = 0.97
+            threshold_policy = "precision_first"
+        else:
+            accepted_threshold = choose_threshold(labels[test_indices], probabilities, 0.98)
+            review_recall_target = 0.995
+            threshold_policy = "recall_first"
         # Keep a real uncertainty band even when a small validation region
         # cannot reach the stricter recall target at a distinct threshold.
         # Those primitives remain visible for CAD review and are never mixed
         # into either the confirmed axis or annotation classes.
         review_threshold = min(
             accepted_threshold * 0.70,
-            choose_threshold(labels[test_indices], probabilities, 0.995),
+            choose_threshold(labels[test_indices], probabilities, review_recall_target),
         )
         final_model = RandomForestClassifier(
             n_estimators=500,
@@ -502,6 +537,7 @@ def train_models(
             "classifier": final_model,
             "accepted_threshold": accepted_threshold,
             "review_threshold": review_threshold,
+            "threshold_policy": threshold_policy,
         }
         importances = sorted(
             zip(FEATURE_NAMES, final_model.feature_importances_),
@@ -517,6 +553,7 @@ def train_models(
             "validation_tile_count": len(set(spatial_groups(primitives)[test_indices])),
             "accepted_validation": metrics(labels[test_indices], probabilities, accepted_threshold),
             "review_or_accepted_validation": metrics(labels[test_indices], probabilities, review_threshold),
+            "threshold_policy": threshold_policy,
             "top_features": [
                 {"name": name, "importance": float(value)} for name, value in importances[:10]
             ],

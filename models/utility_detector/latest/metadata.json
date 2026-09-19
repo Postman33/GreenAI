@@ -1,7 +1,7 @@
 {
   "format": "green-cad-utility-onnx-bundle",
   "format_version": 1,
-  "created_at": "2026-09-17T17:07:48.209497+03:00",
+  "created_at": "2026-09-19T02:12:51.850522+03:00",
   "onnx_opset": 18,
   "input": {
     "name": "features",
@@ -40,7 +40,7 @@
   "networks": {
     "gas_pipe": {
       "model_file": "gas_pipe.onnx",
-      "sha256": "83bfd53c117e5c508066906ad3251ecf689ca638926b2c698e05ca9350900c73",
+      "sha256": "3ddfe9fe6dfe5b82177587d49109b1e918f5e371d3bd8e14a401d88c0c5743e1",
       "classes": [
         0,
         1
@@ -49,6 +49,7 @@
       "positive_probability_column": 1,
       "accepted_threshold": 0.41000000000000003,
       "review_threshold": 0.225,
+      "threshold_policy": "recall_first",
       "verification": {
         "status": "probabilities_compared",
         "providers": [
@@ -56,14 +57,14 @@
         ],
         "sample_count": 7141,
         "maximum_absolute_error": 3.5762786865234375e-07,
-        "mean_absolute_error": 4.129884413826418e-08,
+        "mean_absolute_error": 4.1298844138128265e-08,
         "accepted_decisions_match": true,
         "review_decisions_match": true
       }
     },
     "heat_pipe": {
       "model_file": "heat_pipe.onnx",
-      "sha256": "c670393ef63d863693c7b99f10dd698be952ad92cdebca2c12629c2741f3ae9c",
+      "sha256": "3b9606bd6a1e35cbb8cc9de9d56621caf1e81069c3b2e09b1a1799e6e64b94bc",
       "classes": [
         0,
         1
@@ -72,6 +73,7 @@
       "positive_probability_column": 1,
       "accepted_threshold": 0.545,
       "review_threshold": 0.02,
+      "threshold_policy": "recall_first",
       "verification": {
         "status": "probabilities_compared",
         "providers": [
@@ -79,37 +81,38 @@
         ],
         "sample_count": 4484,
         "maximum_absolute_error": 3.8889327291791176e-07,
-        "mean_absolute_error": 1.2956942444562744e-07,
+        "mean_absolute_error": 1.2956942444573596e-07,
         "accepted_decisions_match": true,
         "review_decisions_match": true
       }
     },
     "power_cable": {
       "model_file": "power_cable.onnx",
-      "sha256": "f0fa76a7688c55c13d731b8e20e5b9df4d6bb1da448d04e2c0932c2c40036d3f",
+      "sha256": "1ac834bff51dbda4d24cd6e0e858782b5d31e9d2d169bbbad00d291b6414d397",
       "classes": [
         0,
         1
       ],
       "positive_class": 1,
       "positive_probability_column": 1,
-      "accepted_threshold": 0.5650000000000001,
-      "review_threshold": 0.06,
+      "accepted_threshold": 0.30500000000000005,
+      "review_threshold": 0.21350000000000002,
+      "threshold_policy": "precision_first",
       "verification": {
         "status": "probabilities_compared",
         "providers": [
           "CPUExecutionProvider"
         ],
-        "sample_count": 3218,
-        "maximum_absolute_error": 3.8337707519708886e-07,
-        "mean_absolute_error": 2.2194179921329979e-07,
+        "sample_count": 1706,
+        "maximum_absolute_error": 3.717392103030903e-07,
+        "mean_absolute_error": 1.3333744973742115e-07,
         "accepted_decisions_match": true,
         "review_decisions_match": true
       }
     },
     "water_pipe": {
       "model_file": "water_pipe.onnx",
-      "sha256": "09ea65d39229054ecead35736e315a3ca89d945c9d18502d00bf0d344e89c07e",
+      "sha256": "978ade5be10c5e6c0c7324405641c89877a89068b6a27e680d0cc58d4993444d",
       "classes": [
         0,
         1
@@ -118,6 +121,7 @@
       "positive_probability_column": 1,
       "accepted_threshold": 0.25,
       "review_threshold": 0.15,
+      "threshold_policy": "recall_first",
       "verification": {
         "status": "probabilities_compared",
         "providers": [
@@ -125,7 +129,7 @@
         ],
         "sample_count": 15683,
         "maximum_absolute_error": 3.8505371968700075e-07,
-        "mean_absolute_error": 3.272832737737834e-08,
+        "mean_absolute_error": 3.272832737755678e-08,
         "accepted_decisions_match": true,
         "review_decisions_match": true
       }
@@ -148,7 +152,10 @@
     "F:\\Пилотный проект 20 улиц\\ml\\train\\water\\Нижние_Поля_water_train.dxf",
     "F:\\Пилотный проект 20 улиц\\ml\\train\\heat\\3-я_Парковая_heat_train.dxf",
     "F:\\Пилотный проект 20 улиц\\ml\\train\\heat\\Нижние_Поля_heat_train.dxf",
-    "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\Курганская_power_cable_train.dxf"
+    "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\3-я_Парковая_power_cable_corrected.dxf",
+    "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\3-я_Парковая_power_cable_corrected_02.dxf",
+    "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\3-я_Парковая_power_cable_corrected_03.dxf",
+    "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\3-я_Парковая_power_cable_corrected_04.dxf"
   ],
   "training_sources_by_type": {
     "gas_pipe": [
@@ -167,7 +174,10 @@
       "F:\\Пилотный проект 20 улиц\\ml\\train\\heat\\Нижние_Поля_heat_train.dxf"
     ],
     "power_cable": [
-      "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\Курганская_power_cable_train.dxf"
+      "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\3-я_Парковая_power_cable_corrected.dxf",
+      "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\3-я_Парковая_power_cable_corrected_02.dxf",
+      "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\3-я_Парковая_power_cable_corrected_03.dxf",
+      "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\3-я_Парковая_power_cable_corrected_04.dxf"
     ]
   },
   "label_color": 3,

@@ -28,6 +28,7 @@
         "false_negative": 2,
         "true_negative": 1377
       },
+      "threshold_policy": "recall_first",
       "top_features": [
         {
           "name": "log_length",
@@ -98,6 +99,7 @@
         "false_negative": 2,
         "true_negative": 304
       },
+      "threshold_policy": "recall_first",
       "top_features": [
         {
           "name": "start_degree",
@@ -143,71 +145,72 @@
     },
     "power_cable": {
       "status": "trained",
-      "primitive_count": 3218,
-      "positive_count": 2602,
-      "negative_count": 616,
-      "training_tile_count": 9,
+      "primitive_count": 1706,
+      "positive_count": 1095,
+      "negative_count": 611,
+      "training_tile_count": 10,
       "validation_tile_count": 4,
       "accepted_validation": {
-        "threshold": 0.5650000000000001,
-        "precision": 0.9957386363636364,
-        "recall": 0.9873239436619718,
-        "f1": 0.9915134370579916,
-        "true_positive": 701,
-        "false_positive": 3,
-        "false_negative": 9,
-        "true_negative": 83
+        "threshold": 0.30500000000000005,
+        "precision": 0.8717105263157895,
+        "recall": 1.0,
+        "f1": 0.9314586994727593,
+        "true_positive": 265,
+        "false_positive": 39,
+        "false_negative": 0,
+        "true_negative": 153
       },
       "review_or_accepted_validation": {
-        "threshold": 0.06,
-        "precision": 0.9376657824933687,
-        "recall": 0.995774647887324,
-        "f1": 0.9658469945355191,
-        "true_positive": 707,
-        "false_positive": 47,
-        "false_negative": 3,
-        "true_negative": 39
+        "threshold": 0.21350000000000002,
+        "precision": 0.8359621451104101,
+        "recall": 1.0,
+        "f1": 0.9106529209621993,
+        "true_positive": 265,
+        "false_positive": 52,
+        "false_negative": 0,
+        "true_negative": 140
       },
+      "threshold_policy": "precision_first",
       "top_features": [
         {
-          "name": "start_degree",
-          "importance": 0.17600941229823028
-        },
-        {
-          "name": "log_component_size",
-          "importance": 0.11837292999706388
-        },
-        {
-          "name": "component_straightness",
-          "importance": 0.10130639816280824
-        },
-        {
           "name": "best_continuation",
-          "importance": 0.09954862590189138
+          "importance": 0.1609956900663866
         },
         {
-          "name": "nearby_primitive_count",
-          "importance": 0.0955631243958405
+          "name": "start_degree",
+          "importance": 0.09312415305514751
         },
         {
           "name": "log_component_length",
-          "importance": 0.0776765970200119
-        },
-        {
-          "name": "log_component_span",
-          "importance": 0.05133812232014847
+          "importance": 0.08913686190067739
         },
         {
           "name": "log_length",
-          "importance": 0.049314212858207813
+          "importance": 0.0762687682794361
+        },
+        {
+          "name": "log_component_span",
+          "importance": 0.06894725051465204
         },
         {
           "name": "log_span",
-          "importance": 0.04318846171357234
+          "importance": 0.06739401536633167
+        },
+        {
+          "name": "component_straightness",
+          "importance": 0.06666630304424538
+        },
+        {
+          "name": "bbox_aspect",
+          "importance": 0.05555993876987875
+        },
+        {
+          "name": "collinear_neighbor_count",
+          "importance": 0.05337992800068019
         },
         {
           "name": "log_bbox_long",
-          "importance": 0.03801065207303234
+          "importance": 0.05213612737030221
         }
       ]
     },
@@ -238,6 +241,7 @@
         "false_negative": 4,
         "true_negative": 2551
       },
+      "threshold_policy": "recall_first",
       "top_features": [
         {
           "name": "log_span",
@@ -374,10 +378,37 @@
     ],
     "power_cable": [
       {
-        "path": "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\Курганская_power_cable_train.dxf",
-        "primitive_count": 3218,
-        "positive_count": 2602,
-        "negative_count": 616,
+        "path": "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\3-я_Парковая_power_cable_corrected.dxf",
+        "primitive_count": 273,
+        "positive_count": 105,
+        "negative_count": 168,
+        "layers": [
+          "Кабель электрический"
+        ]
+      },
+      {
+        "path": "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\3-я_Парковая_power_cable_corrected_02.dxf",
+        "primitive_count": 301,
+        "positive_count": 173,
+        "negative_count": 128,
+        "layers": [
+          "Кабель электрический"
+        ]
+      },
+      {
+        "path": "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\3-я_Парковая_power_cable_corrected_03.dxf",
+        "primitive_count": 504,
+        "positive_count": 299,
+        "negative_count": 205,
+        "layers": [
+          "Кабель электрический"
+        ]
+      },
+      {
+        "path": "F:\\Пилотный проект 20 улиц\\ml\\train\\power\\3-я_Парковая_power_cable_corrected_04.dxf",
+        "primitive_count": 628,
+        "positive_count": 518,
+        "negative_count": 110,
         "layers": [
           "Кабель электрический"
         ]
@@ -392,7 +423,7 @@
       ],
       "sample_count": 7141,
       "maximum_absolute_error": 3.5762786865234375e-07,
-      "mean_absolute_error": 4.129884413826418e-08,
+      "mean_absolute_error": 4.1298844138128265e-08,
       "accepted_decisions_match": true,
       "review_decisions_match": true
     },
@@ -403,7 +434,7 @@
       ],
       "sample_count": 4484,
       "maximum_absolute_error": 3.8889327291791176e-07,
-      "mean_absolute_error": 1.2956942444562744e-07,
+      "mean_absolute_error": 1.2956942444573596e-07,
       "accepted_decisions_match": true,
       "review_decisions_match": true
     },
@@ -412,9 +443,9 @@
       "providers": [
         "CPUExecutionProvider"
       ],
-      "sample_count": 3218,
-      "maximum_absolute_error": 3.8337707519708886e-07,
-      "mean_absolute_error": 2.2194179921329979e-07,
+      "sample_count": 1706,
+      "maximum_absolute_error": 3.717392103030903e-07,
+      "mean_absolute_error": 1.3333744973742115e-07,
       "accepted_decisions_match": true,
       "review_decisions_match": true
     },
@@ -425,7 +456,7 @@
       ],
       "sample_count": 15683,
       "maximum_absolute_error": 3.8505371968700075e-07,
-      "mean_absolute_error": 3.272832737737834e-08,
+      "mean_absolute_error": 3.272832737755678e-08,
       "accepted_decisions_match": true,
       "review_decisions_match": true
     }

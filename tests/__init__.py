@@ -11,4 +11,3 @@ for path in (ROOT, ROOT / "src", ROOT / "utility_cleaner"):
     value = str(path)
     if value not in sys.path:
         sys.path.insert(0, value)
-
