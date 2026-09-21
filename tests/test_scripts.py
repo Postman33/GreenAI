@@ -12,12 +12,41 @@ from shapely.geometry import Point, box
 
 from tests import ROOT
 import inspect_dxf
-from scripts import seed, verify_outputs
+from scripts import pipeline_cache, seed, verify_outputs
 from src import loader, utils
 from tests.helpers import feature, write_jsonl
 
 
 class ScriptTests(unittest.TestCase):
+    def test_pipeline_cache_reuses_only_unchanged_complete_preprocessing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            output = workspace / "output"
+            workspace.mkdir()
+            output.mkdir()
+            input_dxf = workspace / "input.dxf"
+            input_dxf.write_text("input", encoding="utf-8")
+            for relative in pipeline_cache.DEPENDENCIES:
+                path = workspace / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(relative, encoding="utf-8")
+            for name in pipeline_cache.ARTIFACTS:
+                (output / name).write_text(name, encoding="utf-8")
+            manifest = output / "preprocessing_cache.json"
+            key = pipeline_cache.build_cache_key(workspace, input_dxf, None, "auto")
+            pipeline_cache.write_manifest(manifest, key, output)
+
+            self.assertTrue(
+                pipeline_cache.validate_manifest(manifest, key, output)["hit"]
+            )
+            (output / pipeline_cache.ARTIFACTS[0]).write_text(
+                "changed", encoding="utf-8"
+            )
+            self.assertFalse(
+                pipeline_cache.validate_manifest(manifest, key, output)["hit"]
+            )
+
     def write_minimal_verifier_inputs(
         self, root: Path, zone_geometry=box(1, 1, 4, 4)
     ) -> tuple[Path, Path]:

@@ -529,7 +529,14 @@ def export_dxf(
         if geometry is None or geometry.is_empty:
             continue
         for polygon in polygon_parts(geometry):
-            add_zone_polygon(modelspace, polygon, layer, color, 0.42)
+            add_zone_polygon(
+                modelspace,
+                polygon,
+                layer,
+                color,
+                0.42,
+                draw_interior_outlines=False,
+            )
 
     for point, properties in planting_points.get("tree", []):
         radius = max(

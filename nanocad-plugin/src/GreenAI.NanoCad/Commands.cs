@@ -998,7 +998,7 @@ public sealed partial class Commands
             for (var ringIndex = 0; ringIndex < polygon.NumInteriorRings; ringIndex++)
                 holes.Add(AddRingPolyline(
                     modelSpace, transaction, layer, colorIndex,
-                    polygon.GetInteriorRingN(ringIndex), area, zoneHandle));
+                    polygon.GetInteriorRingN(ringIndex), area, zoneHandle, visible: false));
             var hatch = new Hatch
             {
                 Layer = layer,
@@ -1025,14 +1025,16 @@ public sealed partial class Commands
         short colorIndex,
         NetTopologySuite.Geometries.LineString ring,
         PlantingArea metadata,
-        string zoneHandle)
+        string zoneHandle,
+        bool visible = true)
     {
         var polyline = new Polyline(ring.NumPoints)
         {
             Layer = layer,
             Color = CadColor.FromColorIndex(ColorMethod.ByAci, colorIndex),
             Closed = true,
-            ConstantWidth = 0.08
+            ConstantWidth = 0.08,
+            Visible = visible
         };
         var coordinates = ring.Coordinates;
         for (var index = 0; index < coordinates.Length - 1; index++)

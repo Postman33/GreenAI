@@ -1,4 +1,4 @@
-"""Add calculated planting zones to a copy of the original DXF."""
+"""Export calculated zones and plantings to a full DXF or a small overlay."""
 
 from __future__ import annotations
 
@@ -251,6 +251,7 @@ def add_zone_polygon(
     color: int,
     transparency: float,
     properties: dict[str, Any] | None = None,
+    draw_interior_outlines: bool = True,
 ) -> int:
     exterior = ring_vertices(polygon.exterior)
     if len(exterior) < 3:
@@ -280,18 +281,19 @@ def add_zone_polygon(
     )
     if properties is not None:
         attach_planting_metadata(outline, properties)
-    for interior in polygon.interiors:
-        hole = ring_vertices(interior)
-        if len(hole) >= 3:
-            modelspace.add_lwpolyline(
-                hole,
-                close=True,
-                dxfattribs={
-                    "layer": layer_name,
-                    "color": color,
-                    "lineweight": 50,
-                },
-            )
+    if draw_interior_outlines:
+        for interior in polygon.interiors:
+            hole = ring_vertices(interior)
+            if len(hole) >= 3:
+                modelspace.add_lwpolyline(
+                    hole,
+                    close=True,
+                    dxfattribs={
+                        "layer": layer_name,
+                        "color": color,
+                        "lineweight": 50,
+                    },
+                )
     return 1
 
 
@@ -355,11 +357,20 @@ def export_zones(
     planting_plan_path: Path | None = None,
     allow_version_fallback: bool = True,
     show_analysis_layers: bool | None = None,
+    overlay_only: bool = False,
+    insunits: int | None = None,
 ) -> None:
     if input_dxf.resolve() == output_dxf.resolve():
         raise ValueError("Output DXF must differ from the original input DXF")
-    zones = load_plant_zones(zones_path)
-    document = ezdxf.readfile(input_dxf)
+    if overlay_only and planting_plan_path is None:
+        raise ValueError("overlay_only requires a planting plan")
+    zones = {} if overlay_only else load_plant_zones(zones_path)
+    if overlay_only:
+        document = ezdxf.new("R2018")
+        if insunits is not None:
+            document.header["$INSUNITS"] = int(insunits)
+    else:
+        document = ezdxf.readfile(input_dxf)
     modelspace = document.modelspace()
     original_entity_count = len(modelspace)
     if show_analysis_layers is None:
@@ -371,7 +382,7 @@ def export_zones(
     if GREEN_AI_APPID not in document.appids:
         document.appids.add(GREEN_AI_APPID)
 
-    if constraint_map_path is not None:
+    if constraint_map_path is not None and not overlay_only:
         road_area = load_constraint_geometry(constraint_map_path, "road_area")
         road_layer_name, road_color = ROAD_LAYER
         ensure_layer(document, road_layer_name, road_color)
@@ -394,34 +405,35 @@ def export_zones(
         }
 
     # Add larger shrub zones first so tree zones remain visible above them.
-    order = ["shrub", "tree", "herbaceous", "groundcover"]
-    order.extend(sorted(set(zones) - set(order)))
-    for plant_type in order:
-        geometry = zones.get(plant_type)
-        if geometry is None or geometry.is_empty:
-            continue
-        layer_name, color = ZONE_LAYERS.get(
-            plant_type,
-            (f"GREEN_AI_ZONE_{plant_type.upper()}", 3),
-        )
-        ensure_layer(document, layer_name, color)
-        removed = remove_previous_entities(modelspace, layer_name)
-        polygon_count = sum(
-            add_zone_polygon(
-                modelspace,
-                polygon,
-                layer_name,
-                color,
-                transparency,
+    if not overlay_only:
+        order = ["shrub", "tree", "herbaceous", "groundcover"]
+        order.extend(sorted(set(zones) - set(order)))
+        for plant_type in order:
+            geometry = zones.get(plant_type)
+            if geometry is None or geometry.is_empty:
+                continue
+            layer_name, color = ZONE_LAYERS.get(
+                plant_type,
+                (f"GREEN_AI_ZONE_{plant_type.upper()}", 3),
             )
-            for polygon in polygon_parts(geometry)
-        )
-        exported[plant_type] = {
-            "layer": layer_name,
-            "polygons": polygon_count,
-            "area_in_dxf_square_units": geometry.area,
-            "previous_entities_removed": removed,
-        }
+            ensure_layer(document, layer_name, color)
+            removed = remove_previous_entities(modelspace, layer_name)
+            polygon_count = sum(
+                add_zone_polygon(
+                    modelspace,
+                    polygon,
+                    layer_name,
+                    color,
+                    transparency,
+                )
+                for polygon in polygon_parts(geometry)
+            )
+            exported[plant_type] = {
+                "layer": layer_name,
+                "polygons": polygon_count,
+                "area_in_dxf_square_units": geometry.area,
+                "previous_entities_removed": removed,
+            }
 
     if planting_plan_path is not None:
         plan_features = load_planting_plan(planting_plan_path)
@@ -455,6 +467,7 @@ def export_zones(
                             color,
                             min(0.82, max(transparency, 0.72)),
                             properties,
+                            False,
                         )
                         area += polygon.area
             exported[f"planting_{plant_type}"] = {
@@ -496,7 +509,10 @@ def export_zones(
         assert last_error is not None
         raise last_error
     print(f"Original DXF: {input_dxf}")
-    print(f"Plant zones: {zones_path}")
+    if overlay_only:
+        print("Export mode: planting-only coordinate overlay")
+    else:
+        print(f"Plant zones: {zones_path}")
     if planting_plan_path is not None:
         print(f"Planting plan: {planting_plan_path}")
     if constraint_map_path is not None:
@@ -514,7 +530,7 @@ def export_zones(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Add plant allow-zone layers to a copy of the original DXF."
+        description="Export plant allow zones and concrete plantings to DXF."
     )
     parser.add_argument("input_dxf", type=Path)
     parser.add_argument("plant_allow_zones_geojsonl", type=Path)
@@ -537,6 +553,19 @@ def main() -> None:
         "--strict-output",
         action="store_true",
         help="Fail when --output is locked instead of silently writing a versioned file.",
+    )
+    parser.add_argument(
+        "--overlay-only",
+        action="store_true",
+        help=(
+            "Create a small standalone DXF containing only planting result layers. "
+            "Coordinates are preserved, so it can be attached or copied over the source drawing."
+        ),
+    )
+    parser.add_argument(
+        "--insunits",
+        type=int,
+        help="DXF $INSUNITS code to store in an --overlay-only drawing.",
     )
     parser.add_argument(
         "--show-analysis-layers",
@@ -565,6 +594,8 @@ def main() -> None:
             args.planting_plan,
             not args.strict_output,
             True if args.show_analysis_layers else None,
+            args.overlay_only,
+            args.insunits,
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
         raise SystemExit(f"DXF export error: {error}") from error

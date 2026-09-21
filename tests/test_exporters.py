@@ -95,6 +95,105 @@ class ExporterTests(unittest.TestCase):
             area_metadata = areas[0].get_xdata("GREEN_AI")
             self.assertIn("id=H-0001", [value for code, value in area_metadata if code == 1000])
 
+    def test_overlay_export_contains_only_result_entities(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.dxf"
+            zones = root / "zones.jsonl"
+            plan = root / "plan.geojsonl"
+            output = root / "overlay.dxf"
+            document = ezdxf.new("R2013")
+            document.modelspace().add_line((0, 0), (1, 1), dxfattribs={"layer": "SOURCE"})
+            document.saveas(source)
+            write_jsonl(
+                zones,
+                [feature("plant_allow_zone", box(0, 0, 10, 10), plant_type="tree")],
+            )
+            write_jsonl(
+                plan,
+                [
+                    feature(
+                        "proposed_planting",
+                        Point(5, 5),
+                        planting_id="T-0001",
+                        plant_type="tree",
+                        species="Test tree",
+                        status="accepted",
+                        symbol_radius_m=2.0,
+                        dxf_units_per_meter=1.0,
+                    )
+                ],
+            )
+
+            dxf_exporter.export_zones(
+                source,
+                zones,
+                output,
+                0.65,
+                planting_plan_path=plan,
+                overlay_only=True,
+                insunits=6,
+            )
+
+            result = ezdxf.readfile(output)
+            self.assertEqual(result.header["$INSUNITS"], 6)
+            self.assertEqual(len(result.modelspace().query('*[layer=="SOURCE"]')), 0)
+            self.assertEqual(
+                len(result.modelspace().query('CIRCLE[layer=="GREEN_AI_PLANT_TREE"]')),
+                1,
+            )
+            self.assertNotIn("GREEN_AI_ZONE_TREE", result.layers)
+
+    def test_planting_area_keeps_hatch_hole_without_visible_inner_outline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.dxf"
+            zones = root / "zones.jsonl"
+            plan = root / "plan.geojsonl"
+            output = root / "overlay.dxf"
+            ezdxf.new("R2018").saveas(source)
+            write_jsonl(
+                zones,
+                [feature("plant_allow_zone", box(0, 0, 10, 10), plant_type="shrub")],
+            )
+            shrub_bed = Polygon(
+                [(0, 0), (10, 0), (10, 10), (0, 10)],
+                holes=[[(4, 4), (6, 4), (6, 6), (4, 6)]],
+            )
+            write_jsonl(
+                plan,
+                [
+                    feature(
+                        "proposed_planting_area",
+                        shrub_bed,
+                        planting_id="SA-0001",
+                        plant_type="shrub",
+                        species="Test shrub",
+                        status="accepted",
+                    )
+                ],
+            )
+
+            dxf_exporter.export_zones(
+                source,
+                zones,
+                output,
+                0.65,
+                planting_plan_path=plan,
+                overlay_only=True,
+            )
+
+            result = ezdxf.readfile(output)
+            hatches = list(
+                result.modelspace().query('HATCH[layer=="GREEN_AI_PLANT_SHRUB"]')
+            )
+            outlines = list(
+                result.modelspace().query('LWPOLYLINE[layer=="GREEN_AI_PLANT_SHRUB"]')
+            )
+            self.assertEqual(len(hatches), 1)
+            self.assertEqual(len(hatches[0].paths), 2)
+            self.assertEqual(len(outlines), 1)
+
     def test_debug_dxf_marks_raw_utilities_off(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "debug.dxf"

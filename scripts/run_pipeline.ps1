@@ -28,6 +28,10 @@
     [int]$DiagnosticRejectedMaxCount = -1,
 
     [Parameter(Mandatory = $false)]
+    [ValidateSet("auto", "full", "fast")]
+    [string]$PipelineMode = "auto",
+
+    [Parameter(Mandatory = $false)]
     [switch]$SkipDatabaseStart
 )
 
@@ -124,8 +128,11 @@ $debugDxf = Join-Path $outputPath "plant_allow_zones_debug.dxf"
 $debugPng = Join-Path $outputPath "plant_allow_zones_debug.png"
 $zoneVerificationReport = Join-Path $outputPath "zone_verification_report.json"
 $verificationReport = Join-Path $outputPath "verification_report.json"
-$resultDxf = Join-Path $outputPath "result_with_planting_plan.dxf"
+$fullResultDxf = Join-Path $outputPath "result_with_planting_plan.dxf"
+$overlayDxf = Join-Path $outputPath "planting_overlay.dxf"
 $runParametersReport = Join-Path $outputPath "pipeline_run_parameters.json"
+$cacheManifest = Join-Path $outputPath "preprocessing_cache.json"
+$cacheStatusReport = Join-Path $outputPath "preprocessing_cache_status.json"
 
 $detectorModelPath = if ([string]::IsNullOrWhiteSpace($UtilityDetectorModel)) {
     $defaultBundle = Join-Path $workspace "models\utility_detector\latest"
@@ -153,6 +160,44 @@ $plantingRequestPath = if ([string]::IsNullOrWhiteSpace($PlantingRequest)) {
     (Resolve-Path -LiteralPath $requestCandidate).Path
 }
 
+$unitsArgumentForCache = if ($PSBoundParameters.ContainsKey("DxfUnitsPerMeter")) {
+    $DxfUnitsPerMeter.ToString("R", [Globalization.CultureInfo]::InvariantCulture)
+} else {
+    "auto"
+}
+$cacheArguments = @(
+    ".\scripts\pipeline_cache.py", "check",
+    "--workspace", $workspace,
+    "--input-dxf", $inputPath,
+    "--output-directory", $outputPath,
+    "--manifest", $cacheManifest,
+    "--dxf-units-argument", $unitsArgumentForCache,
+    "--status-output", $cacheStatusReport
+)
+if ($null -ne $detectorModelPath) {
+    $cacheArguments += @("--detector-model", $detectorModelPath)
+}
+Push-Location $workspace
+try {
+    & $python @cacheArguments
+    if ($LASTEXITCODE -ne 0) { throw "Preprocessing cache validation failed" }
+} finally {
+    Pop-Location
+}
+$cacheStatus = Get-Content -LiteralPath $cacheStatusReport -Raw -Encoding UTF8 | ConvertFrom-Json
+$reusePreprocessing = switch ($PipelineMode) {
+    "full" { $false }
+    "fast" {
+        if (-not [bool]$cacheStatus.hit) {
+            throw "Fast mode requires a valid preprocessing cache: $($cacheStatus.reason). Run once with -PipelineMode full or auto."
+        }
+        $true
+    }
+    default { [bool]$cacheStatus.hit }
+}
+$actualPipelineMode = if ($reusePreprocessing) { "fast" } else { "full" }
+$resultDxf = if ($reusePreprocessing) { $overlayDxf } else { $fullResultDxf }
+
 [ordered]@{
     generated_at = (Get-Date).ToString("o")
     input_dxf = $inputPath
@@ -168,17 +213,29 @@ $plantingRequestPath = if ([string]::IsNullOrWhiteSpace($PlantingRequest)) {
     } else {
         $null
     }
+    requested_pipeline_mode = $PipelineMode
+    actual_pipeline_mode = $actualPipelineMode
+    preprocessing_cache_hit = [bool]$cacheStatus.hit
+    preprocessing_cache_reason = [string]$cacheStatus.reason
+    result_dxf = $resultDxf
 } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $runParametersReport -Encoding UTF8
 
+$pipelineStopwatch = [Diagnostics.Stopwatch]::StartNew()
 Push-Location $workspace
 try {
-    if (-not $SkipDatabaseStart) {
+    if ($reusePreprocessing) {
+        Write-Host "[1/14] Preprocessing cache hit; PostGIS and stages 2-11 are not needed"
+        $unitMetadata = Get-Content -LiteralPath $unitReport -Raw -Encoding UTF8 | ConvertFrom-Json
+        $DxfUnitsPerMeter = [double]$unitMetadata.dxf_units_per_meter
+    }
+    elseif (-not $SkipDatabaseStart) {
         Write-Host "[1/14] Starting PostGIS"
         docker compose up -d --wait
     } else {
         Write-Host "[1/14] PostGIS start skipped"
     }
 
+    if (-not $reusePreprocessing) {
     Write-Host "[2/14] Detecting and confirming DXF units"
     $unitArguments = @(".\scripts\detect_dxf_units.py", $inputPath, "--output", $unitReport)
     if ($PSBoundParameters.ContainsKey("DxfUnitsPerMeter")) {
@@ -258,17 +315,29 @@ try {
         --unit-metadata $unitReport
     if ($LASTEXITCODE -ne 0) { throw "Plant allow-zone calculation failed" }
 
-    Write-Host "[11/14] Rendering and verifying calculated zones"
-    & $python .\src\plant_allow_zone_debug.py $zones $constraints $normalized `
-        --dxf-output $debugDxf `
-        --png-output $debugPng `
-        --utility-geometries $reconstructedUtilities `
-        --raw-objects $objects
-    if ($LASTEXITCODE -ne 0) { throw "Debug export failed" }
+    Write-Host "[11/14] Verifying calculated zones"
     & $python .\scripts\verify_outputs.py $constraints $zones `
         --zone-report $zoneReport `
         --output $zoneVerificationReport
     if ($LASTEXITCODE -ne 0) { throw "Spatial verification failed" }
+
+    $writeCacheArguments = @(
+        ".\scripts\pipeline_cache.py", "write",
+        "--workspace", $workspace,
+        "--input-dxf", $inputPath,
+        "--output-directory", $outputPath,
+        "--manifest", $cacheManifest,
+        "--dxf-units-argument", $unitsArgumentForCache,
+        "--status-output", $cacheStatusReport
+    )
+    if ($null -ne $detectorModelPath) {
+        $writeCacheArguments += @("--detector-model", $detectorModelPath)
+    }
+    & $python @writeCacheArguments
+    if ($LASTEXITCODE -ne 0) { throw "Preprocessing cache write failed" }
+    } else {
+        Write-Host "[2-11/14] Reusing extraction, cleaned networks, constraints and allow zones"
+    }
 
     Write-Host "[12/14] Generating concrete planting points and explanations"
     $plantingArguments = @(
@@ -300,40 +369,64 @@ try {
     & $python @plantingArguments
     if ($LASTEXITCODE -ne 0) { throw "Planting plan generation failed" }
 
-    Write-Host "[12/14] Updating diagnostic DXF with accepted and rejected candidates"
-    & $python .\src\plant_allow_zone_debug.py $zones $constraints $normalized `
-        --dxf-output $debugDxf `
-        --png-output $debugPng `
-        --utility-geometries $reconstructedUtilities `
-        --raw-objects $objects `
-        --planting-plan $plantingPlan `
-        --planting-decisions $plantingDecisions `
-        --base-dxf $inputPath `
-        --zone-report $zoneReport
-    if ($LASTEXITCODE -ne 0) { throw "Planting diagnostics export failed" }
+    if ($reusePreprocessing) {
+        Write-Host "[12b/14] Large diagnostic DXF/PNG export skipped in fast mode"
+        Write-Host "[13/14] Writing lightweight planting overlay DXF"
+        & $python .\src\dxf_exporter.py $inputPath $zones `
+            --planting-plan $plantingPlan `
+            --output $resultDxf `
+            --overlay-only `
+            --insunits ([int]$unitMetadata.insert_units_code) `
+            --strict-output
+        if ($LASTEXITCODE -ne 0) { throw "Planting overlay DXF export failed" }
 
-    Write-Host "[13/14] Writing result layers into a copy of the source DXF"
-    & $python .\src\dxf_exporter.py $inputPath $zones `
-        --constraint-map $constraints `
-        --planting-plan $plantingPlan `
-        --output $resultDxf `
-        --strict-output
-    if ($LASTEXITCODE -ne 0) { throw "Final DXF export failed" }
+        Write-Host "[14/14] Verifying plan geometry, rules and explanations"
+        & $python .\scripts\verify_outputs.py $constraints $zones `
+            --planting-plan $plantingPlan `
+            --zone-report $zoneReport `
+            --plan-report $plantingPlanReport `
+            --output $verificationReport
+    } else {
+        Write-Host "[12b/14] Updating diagnostic DXF with accepted and rejected candidates"
+        & $python .\src\plant_allow_zone_debug.py $zones $constraints $normalized `
+            --dxf-output $debugDxf `
+            --png-output $debugPng `
+            --utility-geometries $reconstructedUtilities `
+            --raw-objects $objects `
+            --planting-plan $plantingPlan `
+            --planting-decisions $plantingDecisions `
+            --base-dxf $inputPath `
+            --zone-report $zoneReport
+        if ($LASTEXITCODE -ne 0) { throw "Planting diagnostics export failed" }
 
-    Write-Host "[14/14] Verifying plan, explanations and source-DXF preservation"
-    & $python .\scripts\verify_outputs.py $constraints $zones `
-        --planting-plan $plantingPlan `
-        --zone-report $zoneReport `
-        --plan-report $plantingPlanReport `
-        --input-dxf $inputPath `
-        --output-dxf $resultDxf `
-        --output $verificationReport
+        Write-Host "[13/14] Writing result layers into a copy of the source DXF"
+        & $python .\src\dxf_exporter.py $inputPath $zones `
+            --constraint-map $constraints `
+            --planting-plan $plantingPlan `
+            --output $resultDxf `
+            --strict-output
+        if ($LASTEXITCODE -ne 0) { throw "Final DXF export failed" }
+
+        Write-Host "[14/14] Verifying plan, explanations and source-DXF preservation"
+        & $python .\scripts\verify_outputs.py $constraints $zones `
+            --planting-plan $plantingPlan `
+            --zone-report $zoneReport `
+            --plan-report $plantingPlanReport `
+            --input-dxf $inputPath `
+            --output-dxf $resultDxf `
+            --output $verificationReport
+    }
     if ($LASTEXITCODE -ne 0) { throw "Final delivery verification failed" }
 
+    $pipelineStopwatch.Stop()
     Write-Host ""
     Write-Host "Pipeline completed"
+    Write-Host "Mode: $actualPipelineMode (requested: $PipelineMode)"
+    Write-Host ("Elapsed: {0:N1} s" -f $pipelineStopwatch.Elapsed.TotalSeconds)
     Write-Host "Final DXF: $resultDxf"
-    Write-Host "Preview PNG: $debugPng"
+    if (-not $reusePreprocessing) {
+        Write-Host "Preview PNG: $debugPng"
+    }
     Write-Host "Rule report: $zoneReport"
     Write-Host "Per-plant report: $plantingPlanReport"
     Write-Host "Planting explanations: $plantingExplanations"
