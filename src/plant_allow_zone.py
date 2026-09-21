@@ -240,6 +240,9 @@ def load_plants(
             name,
             plant_type,
             min_spacing_m,
+            recommended_spacing_m,
+            mature_crown_radius_m,
+            dimension_source,
             selection_priority,
             is_invasive,
             is_toxic,
@@ -266,10 +269,13 @@ def load_plants(
                 "name": row[1],
                 "plant_type": plant_type,
                 "min_spacing_m": float(row[3]) if row[3] is not None else None,
-                "selection_priority": row[4],
-                "is_invasive": row[5],
-                "is_toxic": row[6],
-                "is_thorny": row[7],
+                "recommended_spacing_m": float(row[4]) if row[4] is not None else None,
+                "mature_crown_radius_m": float(row[5]) if row[5] is not None else None,
+                "dimension_source": row[6],
+                "selection_priority": row[7],
+                "is_invasive": row[8],
+                "is_toxic": row[9],
+                "is_thorny": row[10],
             }
         )
     return dict(grouped)
@@ -446,6 +452,7 @@ def build_plant_allow_zones(
     plant_types: set[str] | None,
     dxf_units_per_meter: float,
     cleaned_utilities_path: Path | None = None,
+    unit_metadata_path: Path | None = None,
 ) -> None:
     """Build and write one provisional allow-zone feature per plant class."""
     base_allowed_area = as_polygonal(
@@ -506,12 +513,31 @@ def build_plant_allow_zones(
             )
             for object_type in utility_geometries
         })
-    plants_by_plant_type = load_plants(dsn, set(rules_by_plant_type))
+    # Keep the complete catalog in the report so the downstream planting
+    # service can offer species for area types (for example herbaceous cover)
+    # even when that type has no distance rule of its own.
+    plants_by_plant_type = load_plants(dsn, None)
+    unit_metadata: dict[str, Any] = {}
+    if unit_metadata_path is not None:
+        unit_metadata = json.loads(unit_metadata_path.read_text(encoding="utf-8-sig"))
+        if not unit_metadata.get("unit_scale_confirmed", False):
+            raise ValueError("DXF unit metadata does not confirm the drawing scale")
+        metadata_scale = float(unit_metadata["dxf_units_per_meter"])
+        if not math.isclose(
+            metadata_scale, dxf_units_per_meter, rel_tol=1e-9, abs_tol=1e-12
+        ):
+            raise ValueError(
+                "--dxf-units-per-meter does not match --unit-metadata: "
+                f"{dxf_units_per_meter:g} versus {metadata_scale:g}"
+            )
     report: dict[str, Any] = {
         "constraint_map_input": str(constraint_map_path),
         "normalized_input": str(normalized_path),
         "cleaned_utilities_input": (
             str(cleaned_utilities_path) if cleaned_utilities_path else None
+        ),
+        "unit_metadata_input": (
+            str(unit_metadata_path) if unit_metadata_path else None
         ),
         "utility_geometry_input": (
             str(cleaned_utilities_path) if cleaned_utilities_path else None
@@ -532,9 +558,21 @@ def build_plant_allow_zones(
         "output": str(output_path),
         "coordinate_reference": "local_dxf_coordinates",
         "dxf_units_per_meter": dxf_units_per_meter,
-        "unit_assumption_requires_confirmation": True,
+        "unit_scale_confirmed": bool(unit_metadata.get("unit_scale_confirmed", False)),
+        "unit_scale_source": unit_metadata.get("unit_scale_source"),
+        "insert_units_code": unit_metadata.get("insert_units_code"),
+        "insert_units_name": unit_metadata.get("insert_units_name"),
+        "unit_assumption_requires_confirmation": not bool(
+            unit_metadata.get("unit_scale_confirmed", False)
+        ),
         "base_allowed_area_in_dxf_square_units": base_allowed_area.area,
         "plant_types": {},
+        "plant_catalog": {
+            plant_type: [
+                plant for plant in plants if not plant["is_invasive"]
+            ]
+            for plant_type, plants in sorted(plants_by_plant_type.items())
+        },
     }
 
     features = []
@@ -555,6 +593,12 @@ def build_plant_allow_zones(
         missing_spacing = sum(
             plant["min_spacing_m"] is None for plant in selectable_plants
         )
+        missing_recommended_spacing = sum(
+            plant.get("recommended_spacing_m") is None for plant in selectable_plants
+        )
+        missing_crown_radius = sum(
+            plant.get("mature_crown_radius_m") is None for plant in selectable_plants
+        )
         missing_toxicity = sum(
             plant["is_toxic"] is None for plant in selectable_plants
         )
@@ -565,6 +609,16 @@ def build_plant_allow_zones(
             catalog_warnings.append(
                 f"{plant_type}: {missing_spacing} selectable plant(s) have "
                 "unverified min_spacing_m"
+            )
+        if missing_recommended_spacing:
+            catalog_warnings.append(
+                f"{plant_type}: {missing_recommended_spacing} selectable plant(s) have "
+                "unverified recommended_spacing_m"
+            )
+        if missing_crown_radius:
+            catalog_warnings.append(
+                f"{plant_type}: {missing_crown_radius} selectable plant(s) have "
+                "unverified mature_crown_radius_m"
             )
         if missing_toxicity:
             catalog_warnings.append(
@@ -637,6 +691,8 @@ def build_plant_allow_zones(
                 "selectable": selectable_plants,
                 "excluded_invasive": invasive_plants,
                 "missing_min_spacing_count": missing_spacing,
+                "missing_recommended_spacing_count": missing_recommended_spacing,
+                "missing_crown_radius_count": missing_crown_radius,
                 "missing_toxicity_count": missing_toxicity,
                 "missing_thorniness_count": missing_thorniness,
                 "warnings": catalog_warnings,
@@ -668,10 +724,17 @@ def build_plant_allow_zones(
             f"{len(result['plant_catalog']['excluded_invasive'])} invasive excluded "
             f"| {len(result['warnings'])} rule warning(s)"
         )
-    print(
-        "WARNING: one metre is assumed to equal "
-        f"{dxf_units_per_meter:g} DXF unit(s); confirm the drawing scale"
-    )
+    if report["unit_assumption_requires_confirmation"]:
+        print(
+            "WARNING: one metre is assumed to equal "
+            f"{dxf_units_per_meter:g} DXF unit(s); confirm the drawing scale"
+        )
+    else:
+        print(
+            "DXF unit scale confirmed: "
+            f"{dxf_units_per_meter:g} unit(s) per metre "
+            f"({report['unit_scale_source']})"
+        )
 
 
 def main() -> None:
@@ -708,6 +771,11 @@ def main() -> None:
         help="Scale for converting normative metres to drawing units (default: 1).",
     )
     parser.add_argument(
+        "--unit-metadata",
+        type=Path,
+        help="JSON report produced by scripts/detect_dxf_units.py",
+    )
+    parser.add_argument(
         "--dsn",
         default=os.getenv("DATABASE_URL", DEFAULT_DSN),
         help="PostgreSQL DSN; defaults to DATABASE_URL or local Docker Compose.",
@@ -730,6 +798,7 @@ def main() -> None:
             plant_types,
             args.dxf_units_per_meter,
             args.cleaned_utilities,
+            args.unit_metadata,
         )
     except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
         raise SystemExit(f"Plant allow-zone error: {error}") from error

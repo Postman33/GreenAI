@@ -192,6 +192,12 @@ class NormalizerTests(unittest.TestCase):
             self.assertAlmostEqual(shape(building["geometry"]).area, 4.0)
             self.assertEqual(summary["object_types"]["work_boundary"]["status"], "ok")
             self.assertEqual(summary["object_types"]["existing_tree"]["result_geometry"], "MultiPoint")
+            self.assertEqual(
+                summary["object_types"]["existing_tree"]["tree_symbol_reduction"][
+                    "tree_marker_count"
+                ],
+                1,
+            )
             well_footprint = next(
                 item for item in features
                 if item["properties"]["object_type"] == "utility_well_footprint"
@@ -203,6 +209,44 @@ class NormalizerTests(unittest.TestCase):
                 ],
                 1,
             )
+
+    def test_existing_tree_symbol_uses_one_circular_trunk_anchor(self) -> None:
+        records = [
+            {
+                "geometry": {
+                    "kind": "arc",
+                    "center": [10.0, 20.0],
+                    "radius": 0.21,
+                    "start_angle": 0.0,
+                    "end_angle": 359.999994,
+                }
+            },
+            {"geometry": {"kind": "ellipse", "center": [10.0, 21.088]}},
+            {
+                "geometry": {
+                    "kind": "line",
+                    "start": [9.8, 20.0],
+                    "end": [10.2, 20.0],
+                }
+            },
+            {
+                "geometry": {
+                    "kind": "arc",
+                    "center": [30.0, 40.0],
+                    "radius": 0.21,
+                    "start_angle": 10.0,
+                    "end_angle": 9.999994,
+                }
+            },
+        ]
+        fallback = [Point(10, 20), Point(10, 21.088), Point(10, 20), Point(30, 40)]
+
+        geometry, diagnostics = normalizer.existing_tree_geometry(records, fallback)
+
+        self.assertEqual(len(geometry.geoms), 2)
+        self.assertEqual(diagnostics["tree_marker_count"], 2)
+        self.assertEqual(diagnostics["ignored_symbol_decoration_count"], 2)
+        self.assertEqual(diagnostics["method"], "full_circle_trunk_marker_centres")
 
 
 if __name__ == "__main__":

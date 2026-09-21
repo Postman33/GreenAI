@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net6.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+    <Platforms>x64</Platforms>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <NanoCadDir Condition="'$(NanoCadDir)' == ''">F:\NanoCAD\bin</NanoCadDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\GreenAI.Core\GreenAI.Core.csproj" />
+    <Reference Include="hostmgd">
+      <HintPath>$(NanoCadDir)\hostmgd.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="hostdbmgd">
+      <HintPath>$(NanoCadDir)\hostdbmgd.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+  <Target Name="CheckNanoCadReferences" BeforeTargets="ResolveReferences">
+    <Error Condition="!Exists('$(NanoCadDir)\hostmgd.dll')" Text="hostmgd.dll not found. Pass /p:NanoCadDir=...\bin" />
+    <Error Condition="!Exists('$(NanoCadDir)\hostdbmgd.dll')" Text="hostdbmgd.dll not found. Pass /p:NanoCadDir=...\bin" />
+  </Target>
+</Project>

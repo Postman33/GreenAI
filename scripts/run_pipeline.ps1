@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $false)]
     [string]$InputDxf = "",
 
@@ -10,6 +10,22 @@ param(
 
     [Parameter(Mandatory = $false)]
     [string]$UtilityDetectorModel = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$PlantingRequest = "",
+
+    [Parameter(Mandatory = $false)]
+    [ValidateSet("balanced_mixed", "dense_mixed", "tree_lawn", "trees_only", "shrub_lawn", "shrubs_only", "lawn_only")]
+    [string]$PlantingPreset = "dense_mixed",
+
+    [Parameter(Mandatory = $false)]
+    [double]$TreeSpacingM = 0.0,
+
+    [Parameter(Mandatory = $false)]
+    [int]$TreeMaxCount = 0,
+
+    [Parameter(Mandatory = $false)]
+    [int]$DiagnosticRejectedMaxCount = -1,
 
     [Parameter(Mandatory = $false)]
     [switch]$SkipDatabaseStart
@@ -50,6 +66,26 @@ if (
 ) {
     throw "DxfUnitsPerMeter must be greater than zero."
 }
+if (
+    [double]::IsNaN($TreeSpacingM) -or
+    [double]::IsInfinity($TreeSpacingM) -or
+    $TreeSpacingM -lt 0
+) {
+    throw "TreeSpacingM must be zero (preset default) or a positive finite number."
+}
+if ($TreeMaxCount -lt 0) {
+    throw "TreeMaxCount must be zero (no override) or a positive integer."
+}
+if ($DiagnosticRejectedMaxCount -lt -1) {
+    throw "DiagnosticRejectedMaxCount must be -1 (config default), zero, or a positive integer."
+}
+if (-not [string]::IsNullOrWhiteSpace($PlantingRequest)) {
+    foreach ($parameterName in @("PlantingPreset", "TreeSpacingM", "TreeMaxCount")) {
+        if ($PSBoundParameters.ContainsKey($parameterName)) {
+            throw "PlantingRequest cannot be combined with $parameterName. Put the override into the request JSON."
+        }
+    }
+}
 
 $outputPath = [IO.Path]::GetFullPath((Join-Path $workspace $OutputDirectory))
 if (-not $outputPath.StartsWith($workspace + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
@@ -61,6 +97,7 @@ $objects = Join-Path $outputPath "extracted_objects.jsonl"
 $surfaces = Join-Path $outputPath "surface_candidates_raw.jsonl"
 $normalized = Join-Path $outputPath "normalized_objects.geojsonl"
 $normalizationReport = Join-Path $outputPath "normalization_report.json"
+$unitReport = Join-Path $outputPath "dxf_units_report.json"
 $cleanedUtilities = Join-Path $outputPath "cleaned_utilities.geojsonl"
 $reviewUtilities = Join-Path $outputPath "review_utility_graphics.geojsonl"
 $rejectedUtilities = Join-Path $outputPath "rejected_utility_graphics.geojsonl"
@@ -79,10 +116,16 @@ $constraints = Join-Path $outputPath "constraint_map.geojsonl"
 $constraintReport = Join-Path $outputPath "constraint_report.json"
 $zones = Join-Path $outputPath "plant_allow_zones.geojsonl"
 $zoneReport = Join-Path $outputPath "plant_allow_zones_report.json"
+$plantingPlan = Join-Path $outputPath "planting_plan.geojsonl"
+$plantingDecisions = Join-Path $outputPath "planting_decisions.geojsonl"
+$plantingPlanReport = Join-Path $outputPath "planting_plan_report.json"
+$plantingExplanations = Join-Path $outputPath "planting_explanations.md"
 $debugDxf = Join-Path $outputPath "plant_allow_zones_debug.dxf"
 $debugPng = Join-Path $outputPath "plant_allow_zones_debug.png"
+$zoneVerificationReport = Join-Path $outputPath "zone_verification_report.json"
 $verificationReport = Join-Path $outputPath "verification_report.json"
-$resultDxf = Join-Path $outputPath "result_with_plant_zones.dxf"
+$resultDxf = Join-Path $outputPath "result_with_planting_plan.dxf"
+$runParametersReport = Join-Path $outputPath "pipeline_run_parameters.json"
 
 $detectorModelPath = if ([string]::IsNullOrWhiteSpace($UtilityDetectorModel)) {
     $defaultBundle = Join-Path $workspace "models\utility_detector\latest"
@@ -99,29 +142,66 @@ $detectorModelPath = if ([string]::IsNullOrWhiteSpace($UtilityDetectorModel)) {
     }
     (Resolve-Path -LiteralPath $modelCandidate).Path
 }
+$plantingRequestPath = if ([string]::IsNullOrWhiteSpace($PlantingRequest)) {
+    $null
+} else {
+    $requestCandidate = if ([IO.Path]::IsPathRooted($PlantingRequest)) {
+        $PlantingRequest
+    } else {
+        Join-Path $workspace $PlantingRequest
+    }
+    (Resolve-Path -LiteralPath $requestCandidate).Path
+}
+
+[ordered]@{
+    generated_at = (Get-Date).ToString("o")
+    input_dxf = $inputPath
+    output_directory = $outputPath
+    requested_dxf_units_per_meter = $DxfUnitsPerMeter
+    utility_detector_model = $detectorModelPath
+    planting_request = $plantingRequestPath
+    planting_preset = if ($null -eq $plantingRequestPath) { $PlantingPreset } else { $null }
+    tree_spacing_m = if ($TreeSpacingM -gt 0) { $TreeSpacingM } else { $null }
+    tree_max_count = if ($TreeMaxCount -gt 0) { $TreeMaxCount } else { $null }
+    diagnostic_rejected_max_count = if ($DiagnosticRejectedMaxCount -ge 0) {
+        $DiagnosticRejectedMaxCount
+    } else {
+        $null
+    }
+} | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $runParametersReport -Encoding UTF8
 
 Push-Location $workspace
 try {
     if (-not $SkipDatabaseStart) {
-        Write-Host "[1/11] Starting PostGIS"
+        Write-Host "[1/14] Starting PostGIS"
         docker compose up -d --wait
     } else {
-        Write-Host "[1/11] PostGIS start skipped"
+        Write-Host "[1/14] PostGIS start skipped"
     }
 
-    Write-Host "[2/11] Extracting semantic DXF objects"
+    Write-Host "[2/14] Detecting and confirming DXF units"
+    $unitArguments = @(".\scripts\detect_dxf_units.py", $inputPath, "--output", $unitReport)
+    if ($PSBoundParameters.ContainsKey("DxfUnitsPerMeter")) {
+        $unitArguments += @("--dxf-units-per-meter", $DxfUnitsPerMeter)
+    }
+    & $python @unitArguments
+    if ($LASTEXITCODE -ne 0) { throw "DXF unit detection failed" }
+    $unitMetadata = Get-Content -LiteralPath $unitReport -Raw -Encoding UTF8 | ConvertFrom-Json
+    $DxfUnitsPerMeter = [double]$unitMetadata.dxf_units_per_meter
+
+    Write-Host "[3/14] Extracting semantic DXF objects"
     & $extractor --config .\src\core\config.yaml --output $objects $inputPath
     if ($LASTEXITCODE -ne 0) { throw "Semantic extraction failed" }
 
-    Write-Host "[3/11] Extracting surface candidates"
+    Write-Host "[4/14] Extracting surface candidates"
     & $extractor --config .\src\core\surface_inspector_config.yaml --output $surfaces $inputPath
     if ($LASTEXITCODE -ne 0) { throw "Surface extraction failed" }
 
-    Write-Host "[4/11] Normalizing semantic geometry"
+    Write-Host "[5/14] Normalizing semantic geometry"
     & $python .\src\normalizer.py $objects --output $normalized --report $normalizationReport
     if ($LASTEXITCODE -ne 0) { throw "Normalization failed" }
 
-    Write-Host "[5/11] Cleaning engineering utility geometry"
+    Write-Host "[6/14] Cleaning engineering utility geometry"
     if ($null -ne $detectorModelPath) {
         Write-Host "       Using supervised ONNX utility detector: $detectorModelPath"
         & $python .\utility_detector\detector.py predict $objects `
@@ -145,7 +225,7 @@ try {
     }
     if ($LASTEXITCODE -ne 0) { throw "Utility cleaning failed" }
 
-    Write-Host "[6/11] Reconstructing utility gaps and junctions"
+    Write-Host "[7/14] Reconstructing utility gaps and junctions"
     & $python .\src\network_reconstructor.py $cleanedUtilities `
         --output $reconstructedUtilities `
         --inferred-output $inferredUtilityConnections `
@@ -155,50 +235,111 @@ try {
         --dxf-units-per-meter $DxfUnitsPerMeter
     if ($LASTEXITCODE -ne 0) { throw "Utility network reconstruction failed" }
 
-    Write-Host "[7/11] Rendering source surface diagnostics"
+    Write-Host "[8/14] Rendering source surface diagnostics"
     & $python .\src\surface_inspector.py $surfaces $normalized `
         --dxf-output $surfaceDxf `
         --png-output $surfacePng `
         --report $surfaceReport
     if ($LASTEXITCODE -ne 0) { throw "Surface inspection failed" }
 
-    Write-Host "[8/11] Building common constraints and reconstructed road"
+    Write-Host "[9/14] Building common constraints and reconstructed road"
     & $python .\src\constraint_builder.py $normalized $surfaces `
         --output $constraints `
-        --report $constraintReport
+        --report $constraintReport `
+        --unit-metadata $unitReport
     if ($LASTEXITCODE -ne 0) { throw "Constraint building failed" }
 
-    Write-Host "[9/11] Applying plant rules to reconstructed utility geometry"
+    Write-Host "[10/14] Applying plant rules to reconstructed utility geometry"
     & $python .\src\plant_allow_zone.py $constraints $normalized `
         --output $zones `
         --report $zoneReport `
         --utility-geometries $reconstructedUtilities `
-        --dxf-units-per-meter $DxfUnitsPerMeter
+        --dxf-units-per-meter $DxfUnitsPerMeter `
+        --unit-metadata $unitReport
     if ($LASTEXITCODE -ne 0) { throw "Plant allow-zone calculation failed" }
 
-    Write-Host "[10/11] Rendering and verifying calculated zones"
+    Write-Host "[11/14] Rendering and verifying calculated zones"
     & $python .\src\plant_allow_zone_debug.py $zones $constraints $normalized `
         --dxf-output $debugDxf `
         --png-output $debugPng `
         --utility-geometries $reconstructedUtilities `
         --raw-objects $objects
     if ($LASTEXITCODE -ne 0) { throw "Debug export failed" }
-    & $python .\scripts\verify_outputs.py $constraints $zones --output $verificationReport
+    & $python .\scripts\verify_outputs.py $constraints $zones `
+        --zone-report $zoneReport `
+        --output $zoneVerificationReport
     if ($LASTEXITCODE -ne 0) { throw "Spatial verification failed" }
 
-    Write-Host "[11/11] Writing result layers into a copy of the source DXF"
+    Write-Host "[12/14] Generating concrete planting points and explanations"
+    $plantingArguments = @(
+        ".\src\planting_service.py", $zones, $zoneReport, $normalized, $constraints,
+        "--utilities", $reconstructedUtilities,
+        "--config", ".\nanocad-plugin\config\greenai.plugin.json",
+        "--output", $plantingPlan,
+        "--decisions-output", $plantingDecisions,
+        "--report", $plantingPlanReport,
+        "--explanations-output", $plantingExplanations
+    )
+    if ($null -ne $plantingRequestPath) {
+        $plantingArguments += @("--request", $plantingRequestPath)
+    }
+    else {
+        $plantingArguments += @("--preset", $PlantingPreset)
+        if ($TreeSpacingM -gt 0) {
+            $plantingArguments += @("--tree-spacing-m", $TreeSpacingM)
+        }
+        if ($TreeMaxCount -gt 0) {
+            $plantingArguments += @("--tree-max-count", $TreeMaxCount)
+        }
+    }
+    if ($DiagnosticRejectedMaxCount -ge 0) {
+        $plantingArguments += @(
+            "--diagnostic-rejected-max-count", $DiagnosticRejectedMaxCount
+        )
+    }
+    & $python @plantingArguments
+    if ($LASTEXITCODE -ne 0) { throw "Planting plan generation failed" }
+
+    Write-Host "[12/14] Updating diagnostic DXF with accepted and rejected candidates"
+    & $python .\src\plant_allow_zone_debug.py $zones $constraints $normalized `
+        --dxf-output $debugDxf `
+        --png-output $debugPng `
+        --utility-geometries $reconstructedUtilities `
+        --raw-objects $objects `
+        --planting-plan $plantingPlan `
+        --planting-decisions $plantingDecisions `
+        --base-dxf $inputPath `
+        --zone-report $zoneReport
+    if ($LASTEXITCODE -ne 0) { throw "Planting diagnostics export failed" }
+
+    Write-Host "[13/14] Writing result layers into a copy of the source DXF"
     & $python .\src\dxf_exporter.py $inputPath $zones `
         --constraint-map $constraints `
-        --output $resultDxf
+        --planting-plan $plantingPlan `
+        --output $resultDxf `
+        --strict-output
     if ($LASTEXITCODE -ne 0) { throw "Final DXF export failed" }
+
+    Write-Host "[14/14] Verifying plan, explanations and source-DXF preservation"
+    & $python .\scripts\verify_outputs.py $constraints $zones `
+        --planting-plan $plantingPlan `
+        --zone-report $zoneReport `
+        --plan-report $plantingPlanReport `
+        --input-dxf $inputPath `
+        --output-dxf $resultDxf `
+        --output $verificationReport
+    if ($LASTEXITCODE -ne 0) { throw "Final delivery verification failed" }
 
     Write-Host ""
     Write-Host "Pipeline completed"
     Write-Host "Final DXF: $resultDxf"
     Write-Host "Preview PNG: $debugPng"
     Write-Host "Rule report: $zoneReport"
+    Write-Host "Per-plant report: $plantingPlanReport"
+    Write-Host "Planting explanations: $plantingExplanations"
     Write-Host "Network reconstruction: $networkReconstructionReport"
     Write-Host "Verification: $verificationReport"
+    Write-Host "Run parameters: $runParametersReport"
 } finally {
     Pop-Location
 }

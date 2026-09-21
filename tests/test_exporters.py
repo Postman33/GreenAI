@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 import ezdxf
-from shapely.geometry import LineString, Point, Polygon, box
+from shapely.geometry import LineString, Point, Polygon, box, mapping
 
 from tests import ROOT  # noqa: F401 - initializes script-module import paths
 from src import debug_export, dxf_exporter, plant_allow_zone_debug
@@ -38,6 +38,63 @@ class ExporterTests(unittest.TestCase):
             self.assertEqual(len(modelspace.query('HATCH[layer=="GREEN_AI_ZONE_TREE"]')), 1)
             self.assertEqual(len(modelspace.query('HATCH[layer=="GREEN_AI_RECONSTRUCTED_ROAD"]')), 1)
 
+    def test_final_dxf_export_adds_concrete_planting_with_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.dxf"
+            zones = root / "zones.jsonl"
+            plan = root / "plan.geojsonl"
+            output = root / "result.dxf"
+            document = ezdxf.new("R2013")
+            document.modelspace().add_line((0, 0), (1, 1), dxfattribs={"layer": "SOURCE"})
+            document.saveas(source)
+            write_jsonl(zones, [feature("plant_allow_zone", box(0, 0, 10, 10), plant_type="tree")])
+            plan.write_text(
+                json.dumps({
+                    "type": "Feature",
+                    "id": "T-0001",
+                    "properties": {
+                        "object_type": "proposed_planting",
+                        "planting_id": "T-0001",
+                        "plant_type": "tree",
+                        "species": "Test tree",
+                        "status": "accepted",
+                        "symbol_radius_m": 2.5,
+                        "dxf_units_per_meter": 1.0,
+                    },
+                    "geometry": mapping(Point(5, 5)),
+                }) + "\n" + json.dumps({
+                    "type": "Feature",
+                    "id": "H-0001",
+                    "properties": {
+                        "object_type": "proposed_planting_area",
+                        "planting_id": "H-0001",
+                        "plant_type": "herbaceous",
+                        "species": "Test grass",
+                        "status": "accepted",
+                    },
+                    "geometry": mapping(box(1, 1, 4, 4)),
+                }) + "\n",
+                encoding="utf-8",
+            )
+
+            dxf_exporter.export_zones(
+                source, zones, output, 0.65, planting_plan_path=plan
+            )
+
+            result = ezdxf.readfile(output)
+            trees = list(result.modelspace().query('CIRCLE[layer=="GREEN_AI_PLANT_TREE"]'))
+            self.assertEqual(len(trees), 1)
+            self.assertAlmostEqual(trees[0].dxf.radius, 2.5)
+            self.assertTrue(result.layers.get("GREEN_AI_ZONE_TREE").is_off())
+            self.assertFalse(result.layers.get("GREEN_AI_PLANT_TREE").is_off())
+            metadata = trees[0].get_xdata("GREEN_AI")
+            self.assertIn("id=T-0001", [value for code, value in metadata if code == 1000])
+            areas = list(result.modelspace().query('HATCH[layer=="GREEN_AI_HERBACEOUS"]'))
+            self.assertEqual(len(areas), 1)
+            area_metadata = areas[0].get_xdata("GREEN_AI")
+            self.assertIn("id=H-0001", [value for code, value in area_metadata if code == 1000])
+
     def test_debug_dxf_marks_raw_utilities_off(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "debug.dxf"
@@ -68,6 +125,119 @@ class ExporterTests(unittest.TestCase):
                 0,
             )
             self.assertGreater(len(result.modelspace().query('*[layer=="DEBUG_ALLOW_TREE"]')), 0)
+
+    def test_debug_dxf_separates_planted_uncovered_and_unused_areas(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "debug_plan.dxf"
+            actual = plant_allow_zone_debug.export_dxf(
+                output,
+                box(0, 0, 10, 10),
+                Polygon(),
+                Polygon(),
+                Polygon(),
+                LineString(),
+                {},
+                {
+                    "tree": box(0, 0, 10, 10),
+                    "shrub": box(0, 0, 10, 10),
+                },
+                box(0, 0, 10, 10),
+                {
+                    "shrub": box(0, 0, 8, 10),
+                    "herbaceous": box(8, 0, 10, 10),
+                },
+                {
+                    "tree": [
+                        (
+                            Point(5, 5),
+                            {
+                                "symbol_radius_m": 1.0,
+                                "dxf_units_per_meter": 1.0,
+                            },
+                        )
+                    ]
+                },
+            )
+            result = ezdxf.readfile(actual)
+            modelspace = result.modelspace()
+            self.assertGreater(
+                len(modelspace.query('HATCH[layer=="DEBUG_PLANT_SHRUB"]')), 0
+            )
+            self.assertGreater(
+                len(modelspace.query('HATCH[layer=="DEBUG_SHRUB_UNCOVERED"]')), 0
+            )
+            self.assertGreater(
+                len(modelspace.query('HATCH[layer=="DEBUG_TREE_ALLOWED_UNUSED"]')), 0
+            )
+            self.assertEqual(
+                len(modelspace.query('CIRCLE[layer=="DEBUG_PLANT_TREE"]')), 1
+            )
+            self.assertTrue(result.layers.get("DEBUG_SHRUB_UNCOVERED").is_off())
+            self.assertFalse(result.layers.get("DEBUG_PLANT_SHRUB").is_off())
+
+    def test_debug_dxf_draws_rejected_candidates_in_red_with_reason_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "debug_rejected.dxf"
+            rejected = {
+                "tree": [
+                    (
+                        Point(4, 5),
+                        {
+                            "candidate_id": "R-T-0001",
+                            "planting_id": "R-T-0001",
+                            "plant_type": "tree",
+                            "species": "Test tree",
+                            "status": "rejected",
+                            "checks": [
+                                {
+                                    "code": "PLANT_FOOTPRINT_INSIDE_ZONE",
+                                    "status": "failed",
+                                    "actual_distance_m": 1.0,
+                                    "required_distance_m": 2.5,
+                                    "norm_reference": "project parameter",
+                                    "explanation": "Footprint crosses the zone boundary.",
+                                }
+                            ],
+                        },
+                    )
+                ]
+            }
+            actual = plant_allow_zone_debug.export_dxf(
+                output,
+                box(0, 0, 10, 10),
+                Polygon(),
+                Polygon(),
+                Polygon(),
+                LineString(),
+                {},
+                {"tree": box(0, 0, 10, 10)},
+                rejected_points=rejected,
+            )
+            result = ezdxf.readfile(actual)
+            modelspace = result.modelspace()
+            markers = list(
+                modelspace.query('CIRCLE[layer=="DEBUG_REJECTED_TREE"]')
+            )
+            self.assertEqual(len(markers), 1)
+            self.assertEqual(markers[0].dxf.color, 1)
+            self.assertTrue(markers[0].has_xdata("GREEN_AI"))
+            metadata_values = [
+                str(item.value) for item in markers[0].get_xdata("GREEN_AI")
+            ]
+            self.assertIn(
+                "title_1=Крона растения не помещается в допустимой зоне",
+                metadata_values,
+            )
+            self.assertIn(
+                "metric_1=Фактически 1.00 м; требуется 2.50 м; не хватает 1.50 м.",
+                metadata_values,
+            )
+            self.assertTrue(
+                any(value.startswith("advice_1=Сдвиньте центр растения") for value in metadata_values)
+            )
+            self.assertIn("norm_1=project parameter", metadata_values)
+            self.assertIn("DEBUG_REJECT_REASON_R_T_0001", result.layers)
+            self.assertTrue(result.layers.get("DEBUG_REJECT_REASON_R_T_0001").is_off())
 
     def test_debug_surface_hypothesis_separates_hard_and_lawn(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

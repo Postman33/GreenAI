@@ -157,9 +157,11 @@ class PlantAllowZoneTests(unittest.TestCase):
                 )
 
             zone = json.loads(output.read_text(encoding="utf-8").splitlines()[0])
+            report_data = json.loads(report.read_text(encoding="utf-8"))
             self.assertAlmostEqual(shape(zone["geometry"]).area, 80.0, places=5)
             self.assertEqual(zone["properties"]["verification_status"], "verified_by_available_rules")
             self.assertEqual(zone["properties"]["selectable_plants"][0]["name"], "Test tree")
+            self.assertEqual(report_data["plant_catalog"]["tree"][0]["name"], "Test tree")
 
 
 if __name__ == "__main__":

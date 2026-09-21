@@ -4,3 +4,5 @@ __pycache__/
 .gotmp/
 .test-cache/
 .tools/
+nanocad-plugin/**/bin/
+nanocad-plugin/**/obj/

@@ -649,7 +649,17 @@ def reconstruct(
     }
     for object_type, lines in sorted(grouped.items()):
         rules = scaled_rules(config, object_type, dxf_units_per_meter)
-        accepted, review, endpoints = reconstruct_type(lines, rules)
+        reconstruction_enabled = bool(rules.get("reconstruction_enabled", True))
+        if reconstruction_enabled:
+            accepted, review, endpoints = reconstruct_type(lines, rules)
+            free_endpoint_count: int | None = len(free_endpoint_indices(
+                lines, endpoints, float(rules["snap_tolerance"])
+            ))
+        else:
+            # Preserve the accepted source geometry for audit/export, but do not
+            # spend minutes inferring connections that no active rule consumes.
+            accepted, review, endpoints = [], [], build_endpoints(lines)
+            free_endpoint_count = None
         accepted_by_type[object_type] = accepted
         review_by_type[object_type] = review
         endpoints_by_type[object_type] = endpoints
@@ -667,9 +677,8 @@ def reconstruct(
         kinds = Counter(item.kind for item in accepted)
         report["network_types"][object_type] = {
             "source_part_count": len(lines),
-            "free_endpoint_count": len(free_endpoint_indices(
-                lines, endpoints, float(rules["snap_tolerance"])
-            )),
+            "reconstruction_enabled": reconstruction_enabled,
+            "free_endpoint_count": free_endpoint_count,
             "accepted_connection_count": len(accepted),
             "review_connection_count": len(review),
             "accepted_by_kind": dict(kinds),

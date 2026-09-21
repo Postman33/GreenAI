@@ -17,5 +17,29 @@ services:
       timeout: 5s
       retries: 10
 
+  seed:
+    build:
+      context: .
+    profiles: ["tools"]
+    entrypoint: ["python", "/app/scripts/seed.py"]
+    environment:
+      DATABASE_URL: postgresql://admin:admin@postgis:5432/admin
+    depends_on:
+      postgis:
+        condition: service_healthy
+
+  planner:
+    build:
+      context: .
+    profiles: ["pipeline"]
+    environment:
+      DATABASE_URL: postgresql://admin:admin@postgis:5432/admin
+      DXF_UNITS_PER_METER: ${DXF_UNITS_PER_METER:-1.0}
+    volumes:
+      - ${GREENAI_DATA_DIR:-./docker-data}:/data
+    depends_on:
+      postgis:
+        condition: service_healthy
+
 volumes:
   postgis_data:

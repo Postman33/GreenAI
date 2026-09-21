@@ -45,6 +45,8 @@ BUILDING_MISSING_WALL_ANGLE_TOLERANCE_DEG = 18.0
 BUILDING_MIN_REPAIRED_AREA_DXF_SQ_UNITS = 10.0
 BUILDING_MIN_REPAIRED_WIDTH_DXF_UNITS = 3.0
 UTILITY_WELL_MIN_FULL_CIRCLE_SWEEP_DEG = 350.0
+EXISTING_TREE_MARKER_MIN_FULL_CIRCLE_SWEEP_DEG = 350.0
+EXISTING_TREE_CENTER_DEDUPLICATION_DXF_UNITS = 0.01
 
 
 def xy(point: list[float] | tuple[float, ...]) -> tuple[float, float]:
@@ -475,6 +477,74 @@ def point_geometry(geometries: Iterable[Any]):
     return MultiPoint(points) if points else None
 
 
+def existing_tree_geometry(
+    records: Iterable[dict[str, Any]],
+    fallback_geometries: Iterable[Any],
+) -> tuple[Any | None, dict[str, Any]]:
+    """Reduce every compound CAD tree sign to its trunk marker centre.
+
+    The supplied geobases draw one tree with several primitives: normally a
+    small full-circle ARC for the trunk, an offset ELLIPSE for the crown and
+    several LINE decorations. Treating the centroid of every primitive as a
+    separate tree multiplied the source tree count and made their 2.5 m
+    protection buffers merge into false exclusion fields.
+
+    A full circular ARC/CIRCLE is the stable anchor shared by the source
+    drawings, so only those centres are used when they exist. Near-identical
+    centres are collapsed to remove duplicate XREF graphics. If a drawing has
+    no circular anchors at all, retain the former centroid fallback and report
+    that lower-confidence method explicitly.
+    """
+    anchors: dict[tuple[int, int], Point] = {}
+    source_primitive_count = 0
+    circular_anchor_primitive_count = 0
+    ignored_decorations = 0
+    scale = 1.0 / EXISTING_TREE_CENTER_DEDUPLICATION_DXF_UNITS
+    for record in records:
+        source_primitive_count += 1
+        raw = record.get("geometry") or {}
+        kind = raw.get("kind")
+        center = raw.get("center")
+        is_anchor = kind == "circle"
+        if kind == "arc":
+            start = float(raw.get("start_angle", 0.0))
+            end = float(raw.get("end_angle", 0.0))
+            sweep = (end - start) % 360.0
+            is_anchor = sweep >= EXISTING_TREE_MARKER_MIN_FULL_CIRCLE_SWEEP_DEG
+        if not is_anchor or not center:
+            ignored_decorations += 1
+            continue
+        circular_anchor_primitive_count += 1
+        center_x, center_y = xy(center)
+        key = (round(center_x * scale), round(center_y * scale))
+        anchors.setdefault(key, Point(center_x, center_y))
+
+    if anchors:
+        geometry = MultiPoint(list(anchors.values()))
+        diagnostics = {
+            "method": "full_circle_trunk_marker_centres",
+            "source_primitive_count": source_primitive_count,
+            "circular_anchor_primitive_count": circular_anchor_primitive_count,
+            "tree_marker_count": len(anchors),
+            "deduplicated_anchor_count": circular_anchor_primitive_count - len(anchors),
+            "ignored_symbol_decoration_count": ignored_decorations,
+            "centre_deduplication_in_dxf_units": (
+                EXISTING_TREE_CENTER_DEDUPLICATION_DXF_UNITS
+            ),
+        }
+        return geometry, diagnostics
+
+    geometry = point_geometry(fallback_geometries)
+    diagnostics = {
+        "method": "primitive_centroid_fallback_no_circular_anchor",
+        "source_primitive_count": source_primitive_count,
+        "tree_marker_count": len(geometry.geoms) if geometry is not None else 0,
+        "ignored_symbol_decoration_count": 0,
+        "requires_visual_confirmation": True,
+    }
+    return geometry, diagnostics
+
+
 def utility_well_footprint(
     records: Iterable[dict[str, Any]],
 ) -> tuple[Any | None, dict[str, Any]]:
@@ -610,6 +680,10 @@ def normalize(
                 )
                 summary_closure_diagnostics = closure_diagnostics
                 extra_properties.update(closure_diagnostics)
+            elif object_type == "existing_tree":
+                normalized, tree_diagnostics = existing_tree_geometry(records, primitives)
+                summary_closure_diagnostics = None
+                extra_properties.update(tree_diagnostics)
             else:
                 normalized = normalize_group(object_type, primitives)
                 summary_closure_diagnostics = None
@@ -621,6 +695,8 @@ def normalize(
             }
             if summary_closure_diagnostics is not None:
                 summary["endpoint_chain_closure"] = summary_closure_diagnostics
+            if object_type == "existing_tree":
+                summary["tree_symbol_reduction"] = tree_diagnostics
             if normalized is None or normalized.is_empty:
                 summary["status"] = "no_usable_geometry"
                 report["warnings"].append(

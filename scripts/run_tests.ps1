@@ -7,7 +7,8 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
 
-$testTemp = Join-Path ([System.IO.Path]::GetTempPath()) "green-dxf-tests-$PID"
+$testTempRoot = Join-Path $root "tmp\test-runs"
+$testTemp = Join-Path $testTempRoot "green-dxf-tests-$PID"
 try {
     if (-not $SkipPython) {
         $python = Join-Path $root ".venv\Scripts\python.exe"
@@ -36,11 +37,9 @@ try {
     Pop-Location
     if (Test-Path -LiteralPath $testTemp) {
         $resolvedTestTemp = (Resolve-Path -LiteralPath $testTemp).Path
-        $resolvedSystemTemp = [System.IO.Path]::GetFullPath(
-            [System.IO.Path]::GetTempPath()
-        )
+        $resolvedTestRoot = [System.IO.Path]::GetFullPath($testTempRoot)
         if ($resolvedTestTemp.StartsWith(
-            $resolvedSystemTemp,
+            $resolvedTestRoot + [System.IO.Path]::DirectorySeparatorChar,
             [System.StringComparison]::OrdinalIgnoreCase
         )) {
             Remove-Item -LiteralPath $resolvedTestTemp -Recurse -Force

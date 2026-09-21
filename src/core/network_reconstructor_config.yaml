@@ -41,7 +41,11 @@ network_types:
   gas_pipe: {}
   water_pipe: {}
   heat_pipe: {}
-  power_cable: {}
+  power_cable:
+    # The cleaned cable geometry is retained, but it is not used by an automatic
+    # placement rule yet. Avoid the expensive gap search across tens of thousands
+    # of graphical fragments until the cable rule is approved.
+    reconstruction_enabled: false
   sewer_pipe: {}
   storm_drain: {}
   telecom_cable: {}

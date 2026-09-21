@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import Any, Iterable
 
 import ezdxf
 from ezdxf.colors import float2transparency
-from shapely.geometry import GeometryCollection, MultiPolygon, Polygon, shape
+from shapely.geometry import GeometryCollection, MultiPolygon, Point, Polygon, shape
 from shapely.ops import unary_union
 from shapely.validation import make_valid
 
@@ -22,6 +23,117 @@ ZONE_LAYERS = {
     "groundcover": ("GREEN_AI_ZONE_GROUNDCOVER", 6),
 }
 ROAD_LAYER = ("GREEN_AI_RECONSTRUCTED_ROAD", 8)
+PLANTING_LAYERS = {
+    "tree": ("GREEN_AI_PLANT_TREE", 3),
+    "shrub": ("GREEN_AI_PLANT_SHRUB", 2),
+    "herbaceous": ("GREEN_AI_HERBACEOUS", 94),
+}
+GREEN_AI_APPID = "GREEN_AI"
+
+
+CHECK_TITLES = {
+    "ALLOWED_ZONE": "Точка находится вне итоговой допустимой зоны",
+    "PLANT_FOOTPRINT_INSIDE_ZONE": "Крона растения не помещается в допустимой зоне",
+    "NEW_PLANT_SPACING": "Недостаточное расстояние до новой посадки",
+    "EXISTING_TREE_CLEARANCE": "Недостаточное расстояние до существующего дерева",
+    "EXISTING_TREE_BELT_CLEARANCE": "Недостаточное расстояние до существующей древесной полосы",
+}
+
+TARGET_TITLES = {
+    "building": "здания",
+    "sidewalk": "тротуара",
+    "road_edge": "проезжей части",
+    "water_pipe": "водопровода",
+    "gas_pipe": "газопровода",
+    "heat_pipe": "теплосети",
+    "sewer_pipe": "канализации",
+    "storm_drain": "ливневой канализации",
+    "power_cable": "силового кабеля",
+    "telecom_cable": "кабеля связи",
+    "overhead_power_line": "воздушной ЛЭП",
+    "existing_tree": "существующего дерева",
+    "existing_tree_belt": "существующей древесной полосы",
+    "tree": "другой новой посадки",
+    "shrub": "другой новой посадки",
+}
+
+
+def _finite_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _check_title(check: dict[str, Any]) -> str:
+    code = str(check.get("code") or "CHECK")
+    if code in CHECK_TITLES:
+        return CHECK_TITLES[code]
+    target = str(check.get("target") or "ограничения")
+    target_title = TARGET_TITLES.get(target, target.replace("_", " "))
+    return f"Нарушен требуемый отступ от {target_title}"
+
+
+def _check_advice(check: dict[str, Any], deficit: float | None) -> str:
+    code = str(check.get("code") or "")
+    target = str(check.get("target") or "")
+    amount = f" минимум на {deficit:.2f} м" if deficit is not None and deficit > 0 else ""
+    if code == "ALLOWED_ZONE":
+        return "Выберите точку внутри зелёной допустимой зоны; конкретное ограничение указано ниже."
+    if code == "PLANT_FOOTPRINT_INSIDE_ZONE":
+        return (
+            f"Сдвиньте центр растения внутрь допустимой зоны{amount} либо выберите "
+            "растение с меньшим радиусом кроны."
+        )
+    if code == "NEW_PLANT_SPACING":
+        return f"Разнесите центры новых посадок{amount}."
+    if code in {"EXISTING_TREE_CLEARANCE", "EXISTING_TREE_BELT_CLEARANCE"}:
+        return f"Сдвиньте точку дальше от существующей растительности{amount}."
+    target_title = TARGET_TITLES.get(target, target.replace("_", " "))
+    return f"Сдвиньте точку дальше от {target_title}{amount}."
+
+
+def build_failure_details(properties: dict[str, Any]) -> list[dict[str, str]]:
+    """Return complete, human-readable explanations for failed checks."""
+    result: list[dict[str, str]] = []
+    failed = [
+        check for check in properties.get("checks", []) if check.get("status") == "failed"
+    ]
+    # ALLOWED_ZONE is the aggregate result of the concrete checks below it.
+    # Showing it as a second cause makes the passport look contradictory.
+    if any(str(check.get("code")) != "ALLOWED_ZONE" for check in failed):
+        failed = [check for check in failed if str(check.get("code")) != "ALLOWED_ZONE"]
+    for check in failed:
+        actual = _finite_number(check.get("actual_distance_m"))
+        required = _finite_number(check.get("required_distance_m"))
+        deficit = (
+            max(0.0, required - actual)
+            if actual is not None and required is not None
+            else None
+        )
+        if actual is not None and required is not None:
+            metric = (
+                f"Фактически {actual:.2f} м; требуется {required:.2f} м; "
+                f"не хватает {deficit:.2f} м."
+            )
+        elif required is not None:
+            metric = f"Требуемое расстояние или радиус: {required:.2f} м."
+        elif actual is not None:
+            metric = f"Измеренное расстояние: {actual:.2f} м."
+        else:
+            metric = "Численное расстояние для этой проверки не определено."
+        result.append(
+            {
+                "code": str(check.get("code") or "CHECK"),
+                "title": _check_title(check),
+                "metric": metric,
+                "detail": str(check.get("explanation") or "").strip(),
+                "advice": _check_advice(check, deficit),
+                "norm": str(check.get("norm_reference") or "").strip(),
+            }
+        )
+    return result
 
 
 def polygon_parts(geometry: Any) -> Iterable[Polygon]:
@@ -85,6 +197,27 @@ def load_constraint_geometry(path: Path, object_type: str) -> Polygonal:
     return unary_union(parts)
 
 
+def load_planting_plan(path: Path) -> list[dict[str, Any]]:
+    """Read concrete point and area planting features."""
+    features: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8-sig") as source:
+        for line_number, line in enumerate(source, start=1):
+            if not line.strip():
+                continue
+            try:
+                feature = json.loads(line)
+                object_type = feature.get("properties", {}).get("object_type")
+                if object_type not in {"proposed_planting", "proposed_planting_area"}:
+                    continue
+                feature["_geometry"] = make_valid(shape(feature["geometry"]))
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+                raise ValueError(f"Line {line_number}: invalid planting-plan feature") from error
+            features.append(feature)
+    if not features:
+        raise ValueError(f"No proposed planting features were found in {path}")
+    return features
+
+
 def ensure_layer(document: ezdxf.document.Drawing, name: str, color: int) -> None:
     if name in document.layers:
         layer = document.layers.get(name)
@@ -117,6 +250,7 @@ def add_zone_polygon(
     layer_name: str,
     color: int,
     transparency: float,
+    properties: dict[str, Any] | None = None,
 ) -> int:
     exterior = ring_vertices(polygon.exterior)
     if len(exterior) < 3:
@@ -136,11 +270,16 @@ def add_zone_polygon(
         if len(hole) >= 3:
             hatch.paths.add_polyline_path(hole, is_closed=True, flags=0)
 
-    modelspace.add_lwpolyline(
+    if properties is not None:
+        attach_planting_metadata(hatch, properties)
+
+    outline = modelspace.add_lwpolyline(
         exterior,
         close=True,
         dxfattribs={"layer": layer_name, "color": color, "lineweight": 50},
     )
+    if properties is not None:
+        attach_planting_metadata(outline, properties)
     for interior in polygon.interiors:
         hole = ring_vertices(interior)
         if len(hole) >= 3:
@@ -156,12 +295,66 @@ def add_zone_polygon(
     return 1
 
 
+def attach_planting_metadata(entity: Any, properties: dict[str, Any]) -> None:
+    """Attach identity and complete rejection diagnostics for GREENAI_INSPECT."""
+    failed_checks = ",".join(str(value) for value in properties.get("failed_checks", []))
+    rejection_reasons = properties.get("rejection_reasons", [])
+    specific_reasons = [
+        str(check.get("explanation") or "")
+        for check in properties.get("checks", [])
+        if check.get("status") == "failed" and check.get("code") != "ALLOWED_ZONE"
+    ]
+    primary_reason = "; ".join(value for value in specific_reasons if value)
+    if not primary_reason and rejection_reasons:
+        primary_reason = str(rejection_reasons[0])
+    values = [
+        (1000, f"id={properties.get('planting_id', '')}"),
+        (1000, f"type={properties.get('plant_type', '')}"),
+        (1000, f"species={properties.get('species', '')}"[:250]),
+        (1000, f"status={properties.get('status', '')}"),
+        (1000, f"zone={properties.get('zone_handle', '')}"),
+        (1000, f"failed={failed_checks}"[:250]),
+        (1000, f"reason={primary_reason}"[:250]),
+    ]
+    for index, failure in enumerate(build_failure_details(properties), start=1):
+        for key in ("code", "title", "metric", "detail", "advice", "norm"):
+            value = failure.get(key, "")
+            if value:
+                values.append((1000, f"{key}_{index}={value}"[:250]))
+    manual_checks = [
+        str(value) for value in properties.get("manual_review_checks", []) if value
+    ]
+    if manual_checks:
+        values.append((1000, f"manual={','.join(manual_checks)}"[:250]))
+    entity.set_xdata(GREEN_AI_APPID, values)
+
+
+def add_point_planting(
+    modelspace: Any,
+    point: Point,
+    properties: dict[str, Any],
+    layer_name: str,
+    color: int,
+) -> None:
+    units_per_meter = float(properties.get("dxf_units_per_meter", 1.0))
+    radius = max(0.05, float(properties.get("symbol_radius_m", 0.25)) * units_per_meter)
+    circle = modelspace.add_circle(
+        (float(point.x), float(point.y)),
+        radius,
+        dxfattribs={"layer": layer_name, "color": color, "lineweight": 50},
+    )
+    attach_planting_metadata(circle, properties)
+
+
 def export_zones(
     input_dxf: Path,
     zones_path: Path,
     output_dxf: Path,
     transparency: float,
     constraint_map_path: Path | None = None,
+    planting_plan_path: Path | None = None,
+    allow_version_fallback: bool = True,
+    show_analysis_layers: bool | None = None,
 ) -> None:
     if input_dxf.resolve() == output_dxf.resolve():
         raise ValueError("Output DXF must differ from the original input DXF")
@@ -169,7 +362,14 @@ def export_zones(
     document = ezdxf.readfile(input_dxf)
     modelspace = document.modelspace()
     original_entity_count = len(modelspace)
+    if show_analysis_layers is None:
+        # A zone-only/debug export is meant for inspecting the calculation.
+        # A final planting plan should open as a readable design, while the
+        # supporting zones remain available in the layer manager.
+        show_analysis_layers = planting_plan_path is None
     exported: dict[str, dict[str, Any]] = {}
+    if GREEN_AI_APPID not in document.appids:
+        document.appids.add(GREEN_AI_APPID)
 
     if constraint_map_path is not None:
         road_area = load_constraint_geometry(constraint_map_path, "road_area")
@@ -223,10 +423,61 @@ def export_zones(
             "previous_entities_removed": removed,
         }
 
-    candidates = [output_dxf, *(
-        output_dxf.with_name(f"{output_dxf.stem}_v{version}{output_dxf.suffix}")
-        for version in range(2, 100)
-    )]
+    if planting_plan_path is not None:
+        plan_features = load_planting_plan(planting_plan_path)
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for feature in plan_features:
+            grouped.setdefault(feature["properties"]["plant_type"], []).append(feature)
+        for plant_type, features in grouped.items():
+            layer_name, color = PLANTING_LAYERS.get(
+                plant_type,
+                (f"GREEN_AI_PLANT_{plant_type.upper()}", 3),
+            )
+            ensure_layer(document, layer_name, color)
+            removed = remove_previous_entities(modelspace, layer_name)
+            point_count = 0
+            polygon_count = 0
+            area = 0.0
+            for feature in features:
+                geometry = feature["_geometry"]
+                properties = feature["properties"]
+                if properties["object_type"] == "proposed_planting":
+                    if not isinstance(geometry, Point):
+                        raise ValueError(f"{feature.get('id')}: point planting is not a Point")
+                    add_point_planting(modelspace, geometry, properties, layer_name, color)
+                    point_count += 1
+                else:
+                    for polygon in polygon_parts(geometry):
+                        polygon_count += add_zone_polygon(
+                            modelspace,
+                            polygon,
+                            layer_name,
+                            color,
+                            min(0.82, max(transparency, 0.72)),
+                            properties,
+                        )
+                        area += polygon.area
+            exported[f"planting_{plant_type}"] = {
+                "layer": layer_name,
+                "points": point_count,
+                "polygons": polygon_count,
+                "area_in_dxf_square_units": area,
+                "previous_entities_removed": removed,
+            }
+
+    if planting_plan_path is not None and not show_analysis_layers:
+        analysis_layer_names = {ROAD_LAYER[0]}
+        analysis_layer_names.update(layer_name for layer_name, _color in ZONE_LAYERS.values())
+        for layer_name in analysis_layer_names:
+            if layer_name in document.layers:
+                document.layers.get(layer_name).off()
+
+    candidates = [output_dxf]
+    if allow_version_fallback:
+        candidates.extend(
+            output_dxf.with_name(f"{output_dxf.stem}_v{version}{output_dxf.suffix}")
+            for version in range(2, 100)
+        )
     actual_output = output_dxf
     last_error: PermissionError | None = None
     for candidate in candidates:
@@ -246,16 +497,19 @@ def export_zones(
         raise last_error
     print(f"Original DXF: {input_dxf}")
     print(f"Plant zones: {zones_path}")
+    if planting_plan_path is not None:
+        print(f"Planting plan: {planting_plan_path}")
     if constraint_map_path is not None:
         print(f"Constraint map: {constraint_map_path}")
     print(f"Output DXF: {actual_output}")
     print(f"Original modelspace entities: {original_entity_count}")
     for plant_type, result in exported.items():
-        print(
-            f"  {plant_type}: {result['layer']} | "
-            f"{result['polygons']} polygon(s) | "
-            f"area {result['area_in_dxf_square_units']:.3f}"
-        )
+        details = []
+        if "points" in result:
+            details.append(f"{result['points']} point(s)")
+        details.append(f"{result.get('polygons', 0)} polygon(s)")
+        details.append(f"area {result['area_in_dxf_square_units']:.3f}")
+        print(f"  {plant_type}: {result['layer']} | " + " | ".join(details))
 
 
 def main() -> None:
@@ -275,6 +529,24 @@ def main() -> None:
         help="Optional constraint GeoJSONL; adds reconstructed road layer.",
     )
     parser.add_argument(
+        "--planting-plan",
+        type=Path,
+        help="Optional concrete planting-plan GeoJSONL; writes tree/shrub/coverage layers.",
+    )
+    parser.add_argument(
+        "--strict-output",
+        action="store_true",
+        help="Fail when --output is locked instead of silently writing a versioned file.",
+    )
+    parser.add_argument(
+        "--show-analysis-layers",
+        action="store_true",
+        help=(
+            "Keep reconstructed roads and allow-zone layers visible in a final plan. "
+            "By default they remain in the DXF but open switched off."
+        ),
+    )
+    parser.add_argument(
         "--transparency",
         type=float,
         default=0.65,
@@ -290,6 +562,9 @@ def main() -> None:
             args.output,
             args.transparency,
             args.constraint_map,
+            args.planting_plan,
+            not args.strict_output,
+            True if args.show_analysis_layers else None,
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
         raise SystemExit(f"DXF export error: {error}") from error

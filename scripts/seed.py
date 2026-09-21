@@ -40,6 +40,9 @@ class Plant:
     name: str
     plant_type: str
     min_spacing_m: float | None = None
+    recommended_spacing_m: float | None = None
+    mature_crown_radius_m: float | None = None
+    dimension_source: str | None = None
     selection_priority: int = 100
     is_invasive: bool = False
     is_toxic: bool | None = None
@@ -116,15 +119,31 @@ NORM_DOCUMENTS = (
 
 
 # Names and classes are transcribed from the 3rd Parkovaya project schedule.
-# The source does not specify per-species spacing or toxicity; those fields
-# remain NULL until a separate horticultural source is recorded. The invasive
-# flags follow Moscow Government Resolution No. 369-PP (2026).
+# The schedule does not specify per-species dimensions, so unverified values
+# remain NULL. The two species used by the MVP have explicit project assumptions
+# matching the checked plugin configuration; they are deliberately labelled as
+# assumptions rather than normative requirements. The invasive flags follow
+# Moscow Government Resolution No. 369-PP (2026).
+MVP_DIMENSION_SOURCE = (
+    "Проектное допущение MVP из greenai.plugin.json; "
+    "перед рабочим проектированием уточнить по данным питомника и дендролога"
+)
+
+
 PLANTS = (
     Plant("Сосна обыкновенная", "tree"),
     Plant("Ель колючая", "tree"),
     Plant("Береза бумажная", "tree"),
     Plant("Клён остролистный 'Drummondii'", "tree"),
-    Plant("Липа мелколистная 'Winter Orange'", "tree"),
+    Plant(
+        "Липа мелколистная 'Winter Orange'",
+        "tree",
+        min_spacing_m=5.0,
+        recommended_spacing_m=6.0,
+        mature_crown_radius_m=2.5,
+        dimension_source=MVP_DIMENSION_SOURCE,
+        selection_priority=10,
+    ),
     Plant("Клён Гиннала", "shrub"),
     Plant("Можжевельник казацкий", "shrub"),
     Plant("Можжевельник средний", "shrub"),
@@ -134,7 +153,15 @@ PLANTS = (
     Plant("Сирень обыкновенная", "shrub"),
     Plant("Сирень венгерская", "shrub"),
     Plant("Ирга Ламарка", "shrub"),
-    Plant("Спирея серая", "shrub"),
+    Plant(
+        "Спирея серая",
+        "shrub",
+        min_spacing_m=1.5,
+        recommended_spacing_m=2.0,
+        mature_crown_radius_m=0.75,
+        dimension_source=MVP_DIMENSION_SOURCE,
+        selection_priority=10,
+    ),
     Plant("Гортензия древовидная", "shrub"),
     Plant("Гортензия метельчатая", "shrub"),
     Plant("Дёрен белый", "shrub", is_invasive=True),
@@ -147,6 +174,10 @@ PLANTS = (
     Plant("Пузыреплодник калинолистный", "shrub", is_invasive=True),
     Plant("Спирея березолистная Тор", "shrub"),
     Plant("Боярышник Поль Скарлет", "shrub", is_thorny=True),
+    # Functional grass-cover option required by the case in addition to the
+    # species list extracted from the project planting schedules. Its exact
+    # seed mix must be specified by the landscape designer before construction.
+    Plant("Газонная травосмесь для городских территорий", "herbaceous", min_spacing_m=0.0, selection_priority=10),
     Plant("Астильба китайская", "herbaceous"),
     Plant("Бруннера крупнолистная", "herbaceous"),
     Plant("Бузульник Пржевальского", "herbaceous"),
@@ -357,15 +388,21 @@ INSERT INTO plant_catalog (
     name,
     plant_type,
     min_spacing_m,
+    recommended_spacing_m,
+    mature_crown_radius_m,
+    dimension_source,
     selection_priority,
     is_invasive,
     is_toxic,
     is_thorny
 )
-VALUES (%s, %s, %s, %s, %s, %s, %s)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (name) DO UPDATE SET
     plant_type = EXCLUDED.plant_type,
     min_spacing_m = EXCLUDED.min_spacing_m,
+    recommended_spacing_m = EXCLUDED.recommended_spacing_m,
+    mature_crown_radius_m = EXCLUDED.mature_crown_radius_m,
+    dimension_source = EXCLUDED.dimension_source,
     selection_priority = EXCLUDED.selection_priority,
     is_invasive = EXCLUDED.is_invasive,
     is_toxic = EXCLUDED.is_toxic,
@@ -415,6 +452,37 @@ def ensure_compatible_schema(
             ) THEN
                 EXECUTE 'ALTER TABLE plant_catalog '
                         'ALTER COLUMN min_spacing_m DROP NOT NULL';
+            END IF;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'plant_catalog'
+                  AND column_name = 'recommended_spacing_m'
+            ) THEN
+                EXECUTE 'ALTER TABLE plant_catalog ADD COLUMN '
+                        'recommended_spacing_m NUMERIC(5,2) '
+                        'CHECK (recommended_spacing_m >= 0)';
+            END IF;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'plant_catalog'
+                  AND column_name = 'mature_crown_radius_m'
+            ) THEN
+                EXECUTE 'ALTER TABLE plant_catalog ADD COLUMN '
+                        'mature_crown_radius_m NUMERIC(5,2) '
+                        'CHECK (mature_crown_radius_m >= 0)';
+            END IF;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'plant_catalog'
+                  AND column_name = 'dimension_source'
+            ) THEN
+                EXECUTE 'ALTER TABLE plant_catalog ADD COLUMN dimension_source TEXT';
             END IF;
 
             IF EXISTS (
@@ -534,6 +602,9 @@ def ensure_compatible_schema(
         "name",
         "plant_type",
         "min_spacing_m",
+        "recommended_spacing_m",
+        "mature_crown_radius_m",
+        "dimension_source",
         "selection_priority",
         "is_invasive",
         "is_toxic",
@@ -585,6 +656,9 @@ def seed(dsn: str) -> tuple[int, int, int]:
                         plant.name,
                         plant.plant_type,
                         plant.min_spacing_m,
+                        plant.recommended_spacing_m,
+                        plant.mature_crown_radius_m,
+                        plant.dimension_source,
                         plant.selection_priority,
                         plant.is_invasive,
                         plant.is_toxic,
@@ -639,7 +713,10 @@ def main() -> None:
     print(f"Placement rules in database: {rule_count}")
     print(f"Plants in database: {plant_count}")
     print(f"Plant catalog source: {PLANT_CATALOG_SOURCE}")
-    print("Plant spacing and toxicity remain NULL until separately verified")
+    print(
+        "Unverified plant dimensions and safety attributes remain NULL; "
+        "MVP assumptions are explicitly labelled in dimension_source"
+    )
 
 
 if __name__ == "__main__":

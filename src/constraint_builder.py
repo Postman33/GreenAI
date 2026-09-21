@@ -699,6 +699,7 @@ def build(
     min_area: float = 0.01,
     road_stitch_tolerance: float = 0.30,
     road_min_seed_overlap_area: float = 0.50,
+    unit_metadata_path: Path | None = None,
 ) -> None:
     """Calculate and persist the common base area for all plant types."""
     work_boundary = as_polygonal(
@@ -1003,12 +1004,24 @@ def build(
         - base_allowed_area.area
         - excluded_from_candidate_area
     )
+    unit_metadata: dict[str, Any] = {}
+    if unit_metadata_path is not None:
+        unit_metadata = json.loads(unit_metadata_path.read_text(encoding="utf-8-sig"))
+        if not unit_metadata.get("unit_scale_confirmed", False):
+            raise ValueError("DXF unit metadata does not confirm the drawing scale")
     report = {
         "normalized_input": str(normalized_path),
         "surface_candidates_input": str(surface_candidates_path),
         "output": str(output_path),
         "coordinate_reference": "local_dxf_coordinates",
-        "units_confirmed_as_metres": False,
+        "dxf_units_per_meter": unit_metadata.get("dxf_units_per_meter"),
+        "unit_scale_confirmed": bool(unit_metadata.get("unit_scale_confirmed", False)),
+        "unit_scale_source": unit_metadata.get("unit_scale_source"),
+        "insert_units_code": unit_metadata.get("insert_units_code"),
+        "insert_units_name": unit_metadata.get("insert_units_name"),
+        "units_confirmed_as_metres": bool(
+            unit_metadata.get("units_confirmed_as_metres", False)
+        ),
         "formula": formula,
         "planting_candidate_source": planting_candidate_source,
         "areas_in_dxf_square_units": {
@@ -1092,6 +1105,11 @@ def main() -> None:
     parser.add_argument(
         "--report", type=Path, default=Path("constraint_report.json")
     )
+    parser.add_argument(
+        "--unit-metadata",
+        type=Path,
+        help="JSON report produced by scripts/detect_dxf_units.py",
+    )
     parser.add_argument("--curve-tolerance", type=float, default=0.1)
     parser.add_argument("--min-area", type=float, default=0.01)
     parser.add_argument(
@@ -1124,6 +1142,7 @@ def main() -> None:
             args.min_area,
             args.road_stitch_tolerance,
             args.road_min_seed_overlap_area,
+            args.unit_metadata,
         )
     except (OSError, ValueError, json.JSONDecodeError) as error:
         raise SystemExit(f"Constraint builder error: {error}") from error

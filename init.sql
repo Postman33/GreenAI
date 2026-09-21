@@ -17,6 +17,9 @@ CREATE TABLE plant_catalog (
     name TEXT NOT NULL UNIQUE,
     plant_type TEXT NOT NULL CHECK (plant_type IN ('tree', 'shrub', 'herbaceous', 'groundcover')),
     min_spacing_m NUMERIC(5,2) CHECK (min_spacing_m >= 0),
+    recommended_spacing_m NUMERIC(5,2) CHECK (recommended_spacing_m >= 0),
+    mature_crown_radius_m NUMERIC(5,2) CHECK (mature_crown_radius_m >= 0),
+    dimension_source TEXT,
     selection_priority SMALLINT NOT NULL DEFAULT 100 CHECK (selection_priority >= 0),
     is_invasive BOOLEAN NOT NULL DEFAULT FALSE,
     is_toxic BOOLEAN,
@@ -37,6 +40,15 @@ COMMENT ON COLUMN plant_catalog.plant_type IS
 
 COMMENT ON COLUMN plant_catalog.min_spacing_m IS
     'Минимальное расстояние в метрах до другой новой посадки; NULL, если значение ещё не подтверждено.';
+
+COMMENT ON COLUMN plant_catalog.recommended_spacing_m IS
+    'Проектный шаг между центрами посадок, который алгоритм использует по умолчанию; это не нормативный отступ.';
+
+COMMENT ON COLUMN plant_catalog.mature_crown_radius_m IS
+    'Расчётный радиус взрослой кроны в метрах; полный круг должен оставаться внутри допустимой зоны.';
+
+COMMENT ON COLUMN plant_catalog.dimension_source IS
+    'Источник или статус параметров шага и кроны; позволяет отличать проектное допущение от проверенного справочника.';
 
 COMMENT ON COLUMN plant_catalog.selection_priority IS
     'Приоритет выбора: меньшее число означает более предпочтительный вид.';
