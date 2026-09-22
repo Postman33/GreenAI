@@ -20,6 +20,7 @@ from typing import Any, Iterable
 import ezdxf
 import matplotlib
 import numpy as np
+from shapely import buffer as shapely_buffer
 from shapely.geometry import LineString, MultiLineString, mapping
 from shapely.ops import linemerge, unary_union
 from shapely.strtree import STRtree
@@ -186,6 +187,7 @@ def load_jsonl(
     tolerance: float,
 ) -> dict[str, list[Primitive]]:
     grouped: dict[str, list[Primitive]] = defaultdict(list)
+    dataset_id = str(path.resolve())
     with path.open(encoding="utf-8") as source:
         for line in source:
             if not line.strip():
@@ -207,7 +209,7 @@ def load_jsonl(
                     dxf_type=str(record.get("dxf_type", "")),
                     source_layer=str(record.get("source_layer", "")),
                     handle=(str(record["handle"]) if record.get("handle") else None),
-                    dataset_id=str(path.resolve()),
+                    dataset_id=dataset_id,
                 )
             )
     return grouped
@@ -265,12 +267,44 @@ def build_feature_matrix(
             )
         return matrix
     lines = [item.geometry for item in primitives]
+    # Feature extraction used to materialize ``line.coords`` repeatedly for
+    # every neighbouring primitive.  A primitive may be visited hundreds of
+    # times, so the same GEOS-to-Python coordinate conversion dominated ONNX
+    # prediction.  Cache immutable per-line values once; all formulas below
+    # remain unchanged.
+    coordinates = [list(line.coords) for line in lines]
+    starts = [item[0][:2] for item in coordinates]
+    ends = [item[-1][:2] for item in coordinates]
+
+    def cached_outward(item: list[tuple[float, ...]], at_start: bool) -> tuple[float, float]:
+        origin = item[0] if at_start else item[-1]
+        candidates = item[1:] if at_start else reversed(item[:-1])
+        for point in candidates:
+            dx, dy = point[0] - origin[0], point[1] - origin[1]
+            norm = math.hypot(dx, dy)
+            if norm > 1e-9:
+                return dx / norm, dy / norm
+        return 0.0, 0.0
+
+    outward_vectors = [
+        (cached_outward(item, True), cached_outward(item, False))
+        for item in coordinates
+    ]
+    chord_vectors = []
+    for start, end in zip(starts, ends):
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        norm = math.hypot(dx, dy)
+        chord_vectors.append(
+            (dx / norm, dy / norm) if norm > 1e-9 else (0.0, 0.0)
+        )
+    lengths = [line.length for line in lines]
+    bounds_by_line = [line.bounds for line in lines]
+    is_rings = [line.is_ring for line in lines]
     endpoint_points = []
     endpoint_owner: list[tuple[int, bool]] = []
     from shapely.geometry import Point
 
-    for index, line in enumerate(lines):
-        start, end = endpoints(line)
+    for index, (start, end) in enumerate(zip(starts, ends)):
         endpoint_points.extend((Point(start), Point(end)))
         endpoint_owner.extend(((index, True), (index, False)))
     endpoint_tree = STRtree(endpoint_points)
@@ -278,26 +312,34 @@ def build_feature_matrix(
     union = UnionFind(len(lines))
     endpoint_neighbors: list[set[int]] = [set() for _ in endpoint_points]
 
-    for endpoint_index, point in enumerate(endpoint_points):
+    endpoint_searches = shapely_buffer(
+        endpoint_points,
+        connect_tolerance,
+        quad_segs=16,
+    )
+    endpoint_pairs = endpoint_tree.query(endpoint_searches, predicate="intersects")
+    for raw_endpoint_index, raw_other_endpoint in zip(
+        endpoint_pairs[0], endpoint_pairs[1]
+    ):
+        endpoint_index = int(raw_endpoint_index)
+        other_endpoint = int(raw_other_endpoint)
         owner, _ = endpoint_owner[endpoint_index]
-        for raw_other in endpoint_tree.query(point.buffer(connect_tolerance), predicate="intersects"):
-            other_endpoint = int(raw_other)
-            other_owner, _ = endpoint_owner[other_endpoint]
-            if other_owner == owner:
-                continue
-            endpoint_neighbors[endpoint_index].add(other_owner)
-            union.union(owner, other_owner)
+        other_owner, _ = endpoint_owner[other_endpoint]
+        if other_owner == owner:
+            continue
+        endpoint_neighbors[endpoint_index].add(other_owner)
+        union.union(owner, other_owner)
 
     members: dict[int, list[int]] = defaultdict(list)
     for index in range(len(lines)):
         members[union.find(index)].append(index)
     component_values: dict[int, tuple[float, float, int, float]] = {}
     for root, indices in members.items():
-        total_length = sum(lines[index].length for index in indices)
-        minx = min(lines[index].bounds[0] for index in indices)
-        miny = min(lines[index].bounds[1] for index in indices)
-        maxx = max(lines[index].bounds[2] for index in indices)
-        maxy = max(lines[index].bounds[3] for index in indices)
+        total_length = sum(lengths[index] for index in indices)
+        minx = min(bounds_by_line[index][0] for index in indices)
+        miny = min(bounds_by_line[index][1] for index in indices)
+        maxx = max(bounds_by_line[index][2] for index in indices)
+        maxy = max(bounds_by_line[index][3] for index in indices)
         component_span = math.hypot(maxx - minx, maxy - miny)
         component_values[root] = (
             total_length,
@@ -306,58 +348,67 @@ def build_feature_matrix(
             component_span / total_length if total_length else 0.0,
         )
 
+    line_searches = shapely_buffer(
+        lines,
+        connect_tolerance,
+        quad_segs=16,
+        cap_style="flat",
+    )
+    line_pairs = line_tree.query(line_searches, predicate="intersects")
+    nearby_by_line: list[set[int]] = [set() for _ in lines]
+    short_perpendicular_by_line = [0] * len(lines)
+    for raw_index, raw_other_index in zip(line_pairs[0], line_pairs[1]):
+        index = int(raw_index)
+        other_index = int(raw_other_index)
+        if other_index == index:
+            continue
+        nearby_by_line[index].add(other_index)
+        direction = chord_vectors[index]
+        other_direction = chord_vectors[other_index]
+        absolute_dot = abs(
+            direction[0] * other_direction[0]
+            + direction[1] * other_direction[1]
+        )
+        if lengths[other_index] <= marker_max_length and absolute_dot <= 0.35:
+            short_perpendicular_by_line[index] += 1
+
     rows: list[list[float]] = []
     for index, line in enumerate(lines):
-        start, end = endpoints(line)
+        start, end = starts[index], ends[index]
         chord = math.dist(start, end)
-        line_span = span(line)
-        minx, miny, maxx, maxy = line.bounds
+        minx, miny, maxx, maxy = bounds_by_line[index]
+        line_span = math.hypot(maxx - minx, maxy - miny)
         width, height = maxx - minx, maxy - miny
         short_side, long_side = sorted((width, height))
         start_neighbors = endpoint_neighbors[index * 2]
         end_neighbors = endpoint_neighbors[index * 2 + 1]
-        current_vectors = (
-            outward_vector(line, True),
-            outward_vector(line, False),
-        )
+        current_vectors = outward_vectors[index]
         best_continuation = 0.0
         collinear_count = 0
         for endpoint_offset, neighbors in enumerate((start_neighbors, end_neighbors)):
             for other_index in neighbors:
-                other = lines[other_index]
-                other_start, other_end = endpoints(other)
+                other_start, other_end = starts[other_index], ends[other_index]
                 point = start if endpoint_offset == 0 else end
                 at_other_start = math.dist(point, other_start) <= math.dist(point, other_end)
-                other_vector = outward_vector(other, at_other_start)
+                other_vector = outward_vectors[other_index][0 if at_other_start else 1]
                 dot = current_vectors[endpoint_offset][0] * other_vector[0] + current_vectors[endpoint_offset][1] * other_vector[1]
                 continuation = max(0.0, min(1.0, (1.0 - dot) / 2.0))
                 best_continuation = max(best_continuation, continuation)
                 if continuation >= 0.933:  # approximately 150 degrees
                     collinear_count += 1
 
-        nearby: set[int] = set()
-        short_perpendicular = 0
-        direction = chord_vector(line)
-        search = line.buffer(connect_tolerance, cap_style=2)
-        for raw_other in line_tree.query(search, predicate="intersects"):
-            other_index = int(raw_other)
-            if other_index == index:
-                continue
-            nearby.add(other_index)
-            other = lines[other_index]
-            other_direction = chord_vector(other)
-            absolute_dot = abs(direction[0] * other_direction[0] + direction[1] * other_direction[1])
-            if other.length <= marker_max_length and absolute_dot <= 0.35:
-                short_perpendicular += 1
+        nearby = nearby_by_line[index]
+        short_perpendicular = short_perpendicular_by_line[index]
 
         component_length, component_span, component_size, component_straightness = component_values[union.find(index)]
+        line_length = lengths[index]
         rows.append(
             [
-                math.log1p(line.length),
-                chord / line.length if line.length else 0.0,
+                math.log1p(line_length),
+                chord / line_length if line_length else 0.0,
                 math.log1p(line_span),
-                math.log1p(len(line.coords)),
-                float(line.is_ring),
+                math.log1p(len(coordinates[index])),
+                float(is_rings[index]),
                 math.log1p(short_side),
                 math.log1p(long_side),
                 short_side / long_side if long_side else 0.0,

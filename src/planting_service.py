@@ -399,9 +399,17 @@ def _point_decision(
     units: float,
     profiles: dict[str, PlantingProfile],
     occupied: list[tuple[str, float, float]],
+    geometry_cache: dict[str, Any | None] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     checks = build_checks(
-        point, profile, plant_report, constraints, normalized, utilities, units
+        point,
+        profile,
+        plant_report,
+        constraints,
+        normalized,
+        utilities,
+        units,
+        geometry_cache,
     )
     checks[0] = _scope_check(point, scope, profile, units)
     if selection.area is not None:
@@ -781,6 +789,7 @@ def plan(
     counters: Counter[str] = Counter()
     diagnostic_counters: Counter[str] = Counter()
     summary: dict[str, Any] = {}
+    rule_geometry_cache: dict[str, Any | None] = {}
     prefixes = {"tree": "T", "shrub": "S", "herbaceous": "H"}
 
     ordered = sorted(
@@ -847,6 +856,7 @@ def plan(
                 units,
                 point_profiles,
                 occupied,
+                rule_geometry_cache,
             )
             decisions.append(_decision_feature(candidate_id, point, selection, status, checks))
             if status == "rejected":
@@ -878,6 +888,7 @@ def plan(
                     units,
                     point_profiles,
                     occupied,
+                    rule_geometry_cache,
                 )
                 if status != "rejected":
                     continue

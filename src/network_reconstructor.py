@@ -26,6 +26,7 @@ from shapely.geometry import (
     LineString,
     MultiLineString,
     Point,
+    box,
     mapping,
     shape,
 )
@@ -207,17 +208,47 @@ def add_parallel_pipe_support(
     max_gap_delta = float(rules["parallel_gap_difference"])
     max_direction_delta = float(rules["parallel_direction_difference_deg"])
     bonus = float(rules["parallel_support_bonus"])
+    continuation_indexes = [
+        index
+        for index, candidate in enumerate(candidates)
+        if candidate.kind == "continuation" and candidate.target_endpoint is not None
+    ]
+    if len(continuation_indexes) < 2:
+        return candidates
+
+    # The former implementation compared every continuation with every other
+    # continuation.  Real drawings contain thousands of candidates, making
+    # this O(n²) loop the dominant pipeline cost.  A matching parallel route
+    # must have both corresponding endpoints within ``max_width``; therefore
+    # its connector bbox necessarily intersects the expanded bbox below.
+    # STRtree removes distant pairs without changing any acceptance formula.
+    connectors = []
+    for candidate_index in continuation_indexes:
+        candidate = candidates[candidate_index]
+        start = endpoints[candidate.source_endpoint].point
+        end = endpoints[candidate.target_endpoint].point
+        connectors.append(LineString([(start.x, start.y), (end.x, end.y)]))
+    tree = STRtree(connectors)
+
     supported: set[int] = set()
-    for left_index, left in enumerate(candidates):
-        if left.kind != "continuation" or left.target_endpoint is None:
-            continue
+    for local_left_index, left_index in enumerate(continuation_indexes):
+        left = candidates[left_index]
         left_start = endpoints[left.source_endpoint].point
         left_end = endpoints[left.target_endpoint].point
         left_vector = unit_vector(left_end.x - left_start.x, left_end.y - left_start.y)
-        for right_index in range(left_index + 1, len(candidates)):
-            right = candidates[right_index]
-            if right.kind != "continuation" or right.target_endpoint is None:
+        bounds = connectors[local_left_index].bounds
+        search = box(
+            bounds[0] - max_width,
+            bounds[1] - max_width,
+            bounds[2] + max_width,
+            bounds[3] + max_width,
+        )
+        for raw_local_right_index in tree.query(search):
+            local_right_index = int(raw_local_right_index)
+            if local_right_index <= local_left_index:
                 continue
+            right_index = continuation_indexes[local_right_index]
+            right = candidates[right_index]
             if len({
                 left.source_endpoint,
                 left.target_endpoint,

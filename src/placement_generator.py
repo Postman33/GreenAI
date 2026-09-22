@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
+from shapely import from_geojson
 from shapely.geometry import GeometryCollection, MultiPoint, MultiPolygon, Point, Polygon, mapping, shape
 from shapely.ops import unary_union
 from shapely.prepared import prep
@@ -56,7 +57,14 @@ def load_geojsonl_by_object_type(path: Path) -> dict[str, Any]:
                 feature = json.loads(line)
                 object_type = feature.get("properties", {}).get("object_type")
                 if object_type and feature.get("geometry"):
-                    grouped[object_type].append(make_valid(shape(feature["geometry"])))
+                    # Let GEOS construct coordinate arrays directly.  Going
+                    # through ``shape()`` first creates one Python object per
+                    # coordinate sequence and dominates loading for large CAD
+                    # networks with hundreds of thousands of segments.
+                    geometry = from_geojson(line)
+                    if geometry is None:
+                        raise ValueError("GeoJSON geometry is null")
+                    grouped[object_type].append(make_valid(geometry))
             except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
                 raise ValueError(f"{path}, line {line_number}: invalid GeoJSON feature") from error
     return {key: unary_union(items) for key, items in grouped.items()}
@@ -301,6 +309,7 @@ def build_checks(
     normalized: dict[str, Any],
     utilities: dict[str, Any],
     units_per_meter: float,
+    geometry_cache: dict[str, Any | None] | None = None,
 ) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = [
         {
@@ -324,7 +333,12 @@ def build_checks(
     ]
     for evaluation in plant_report.get("rules", []):
         target_type = str(evaluation.get("target_object_type", ""))
-        geometry = rule_geometry(target_type, constraints, normalized, utilities)
+        if geometry_cache is not None and target_type in geometry_cache:
+            geometry = geometry_cache[target_type]
+        else:
+            geometry = rule_geometry(target_type, constraints, normalized, utilities)
+            if geometry_cache is not None:
+                geometry_cache[target_type] = geometry
         status = str(evaluation.get("status", "unavailable"))
         required = evaluation.get("min_distance_m")
         actual = None
@@ -378,6 +392,7 @@ def generate_plan(
     accepted: list[tuple[str, float, float]] = []
     features: list[dict[str, Any]] = []
     summary: dict[str, Any] = {}
+    geometry_cache: dict[str, Any | None] = {}
     prefixes = {"tree": "T", "shrub": "S"}
     ordered = sorted(
         (profile for profile in profiles.values() if profile.plant_type in zones),
@@ -417,6 +432,7 @@ def generate_plan(
                 normalized,
                 utilities,
                 units_per_meter,
+                geometry_cache,
             )
             failed = [check for check in checks if check["status"] == "failed"]
             if failed:
