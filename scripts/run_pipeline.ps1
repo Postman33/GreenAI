@@ -28,7 +28,7 @@
     [int]$DiagnosticRejectedMaxCount = -1,
 
     [Parameter(Mandatory = $false)]
-    [ValidateSet("auto", "full", "fast")]
+    [ValidateSet("auto", "full", "lean", "fast")]
     [string]$PipelineMode = "auto",
 
     [Parameter(Mandatory = $false)]
@@ -36,6 +36,170 @@
 )
 
 $ErrorActionPreference = "Stop"
+
+$stageTimings = [Collections.Generic.List[object]]::new()
+$pipelineStopwatch = [Diagnostics.Stopwatch]::StartNew()
+
+function Invoke-TimedPipelineStage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Id,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$Action,
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$Artifacts = @()
+    )
+
+    $startedAt = Get-Date
+    $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+    $status = "passed"
+    $errorMessage = $null
+    try {
+        & $Action
+    }
+    catch {
+        $status = "failed"
+        $errorMessage = $_.Exception.Message
+        throw
+    }
+    finally {
+        $stopwatch.Stop()
+        $artifactDetails = @(
+            foreach ($artifact in $Artifacts) {
+                if ([string]::IsNullOrWhiteSpace($artifact)) { continue }
+                $item = Get-Item -LiteralPath $artifact -ErrorAction SilentlyContinue
+                [pscustomobject][ordered]@{
+                    path = $artifact
+                    exists = $null -ne $item
+                    bytes = if ($null -ne $item -and -not $item.PSIsContainer) { [long]$item.Length } else { $null }
+                }
+            }
+        )
+        $artifactBytes = [long](($artifactDetails | ForEach-Object {
+            if ($null -ne $_.bytes) { [long]$_.bytes }
+        } | Measure-Object -Sum).Sum)
+        $stageTimings.Add([pscustomobject][ordered]@{
+            id = $Id
+            name = $Name
+            status = $status
+            started_at = $startedAt.ToString("o")
+            elapsed_seconds = [math]::Round($stopwatch.Elapsed.TotalSeconds, 6)
+            artifact_bytes = $artifactBytes
+            artifacts = $artifactDetails
+            error = $errorMessage
+        })
+    }
+}
+
+function Add-SkippedPipelineStage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Id,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("cached", "skipped")]
+        [string]$Status
+    )
+    $stageTimings.Add([pscustomobject][ordered]@{
+        id = $Id
+        name = $Name
+        status = $Status
+        started_at = $null
+        elapsed_seconds = 0.0
+        artifact_bytes = 0
+        artifacts = @()
+        error = $null
+    })
+}
+
+function Write-PipelineTimingReports {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$OutputDirectory,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Mode,
+
+        [Parameter(Mandatory = $true)]
+        [string]$InputFile,
+
+        [Parameter(Mandatory = $false)]
+        [string]$FinalStatus = "passed"
+    )
+
+    if (-not (Test-Path -LiteralPath $OutputDirectory)) {
+        New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+    }
+    $pipelineStopwatch.Stop()
+    $executedSeconds = [double](
+        ($stageTimings | Where-Object { $_.status -in @("passed", "failed") } |
+            Measure-Object -Property elapsed_seconds -Sum).Sum
+    )
+    $totalSeconds = $pipelineStopwatch.Elapsed.TotalSeconds
+    $rows = @(
+        foreach ($stage in $stageTimings) {
+            $share = if ($totalSeconds -gt 0 -and $stage.status -in @("passed", "failed")) {
+                100.0 * [double]$stage.elapsed_seconds / $totalSeconds
+            } else { 0.0 }
+            [pscustomobject][ordered]@{
+                id = $stage.id
+                name = $stage.name
+                status = $stage.status
+                elapsed_seconds = [math]::Round([double]$stage.elapsed_seconds, 3)
+                share_percent = [math]::Round($share, 2)
+                artifact_megabytes = [math]::Round([double]$stage.artifact_bytes / 1MB, 3)
+            }
+        }
+    )
+    $report = [ordered]@{
+        schema_version = 1
+        generated_at = (Get-Date).ToString("o")
+        status = $FinalStatus
+        mode = $Mode
+        input_dxf = $InputFile
+        total_elapsed_seconds = [math]::Round($totalSeconds, 6)
+        measured_stage_seconds = [math]::Round($executedSeconds, 6)
+        orchestration_seconds = [math]::Round([math]::Max(0.0, $totalSeconds - $executedSeconds), 6)
+        stages = @($stageTimings)
+    }
+    $jsonPath = Join-Path $OutputDirectory "pipeline_stage_timings.json"
+    $csvPath = Join-Path $OutputDirectory "pipeline_stage_timings.csv"
+    $markdownPath = Join-Path $OutputDirectory "pipeline_stage_timings.md"
+    $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
+    $rows | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding UTF8
+
+    $markdown = [Collections.Generic.List[string]]::new()
+    $markdown.Add("# Pipeline stage timings")
+    $markdown.Add("")
+    $markdown.Add("- Status: ``$FinalStatus``")
+    $markdown.Add("- Mode: ``$Mode``")
+    $markdown.Add(("- Total: {0:N3} s" -f $totalSeconds))
+    $markdown.Add(("- Measured stages: {0:N3} s" -f $executedSeconds))
+    $markdown.Add("")
+    $markdown.Add("| Stage | Status | Seconds | Share | Artifacts, MB |")
+    $markdown.Add("|---|---:|---:|---:|---:|")
+    foreach ($row in $rows) {
+        $markdown.Add(("| {0} {1} | {2} | {3:N3} | {4:N2}% | {5:N3} |" -f `
+            $row.id, $row.name, $row.status, $row.elapsed_seconds, $row.share_percent, $row.artifact_megabytes))
+    }
+    $markdown.Add("")
+    $markdown.Add("Artifact size is the sum of files produced by the stage; it is not peak memory usage.")
+    $markdown | Set-Content -LiteralPath $markdownPath -Encoding UTF8
+
+    return [ordered]@{
+        json = $jsonPath
+        csv = $csvPath
+        markdown = $markdownPath
+    }
+}
 
 $workspace = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $python = Join-Path $workspace ".venv\Scripts\python.exe"
@@ -189,16 +353,20 @@ $cacheArguments = @(
 if ($null -ne $detectorModelPath) {
     $cacheArguments += @("--detector-model", $detectorModelPath)
 }
-Push-Location $workspace
-try {
-    & $python @cacheArguments
-    if ($LASTEXITCODE -ne 0) { throw "Preprocessing cache validation failed" }
-} finally {
-    Pop-Location
-}
+Invoke-TimedPipelineStage -Id "00" -Name "Preprocessing cache validation" `
+    -Artifacts @($cacheStatusReport) -Action {
+        Push-Location $workspace
+        try {
+            & $python @cacheArguments
+            if ($LASTEXITCODE -ne 0) { throw "Preprocessing cache validation failed" }
+        } finally {
+            Pop-Location
+        }
+    }
 $cacheStatus = Get-Content -LiteralPath $cacheStatusReport -Raw -Encoding UTF8 | ConvertFrom-Json
 $reusePreprocessing = switch ($PipelineMode) {
     "full" { $false }
+    "lean" { $false }
     "fast" {
         if (-not [bool]$cacheStatus.hit) {
             throw "Fast mode requires a valid preprocessing cache: $($cacheStatus.reason). Run once with -PipelineMode full or auto."
@@ -207,8 +375,14 @@ $reusePreprocessing = switch ($PipelineMode) {
     }
     default { [bool]$cacheStatus.hit }
 }
-$actualPipelineMode = if ($reusePreprocessing) { "fast" } else { "full" }
-$resultDxf = if ($reusePreprocessing) { $overlayDxf } else { $fullResultDxf }
+$actualPipelineMode = if ($reusePreprocessing) {
+    "fast"
+} elseif ($PipelineMode -eq "lean") {
+    "lean"
+} else {
+    "full"
+}
+$resultDxf = if ($actualPipelineMode -in @("fast", "lean")) { $overlayDxf } else { $fullResultDxf }
 
 [ordered]@{
     generated_at = (Get-Date).ToString("o")
@@ -232,19 +406,24 @@ $resultDxf = if ($reusePreprocessing) { $overlayDxf } else { $fullResultDxf }
     result_dxf = $resultDxf
 } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $runParametersReport -Encoding UTF8
 
-$pipelineStopwatch = [Diagnostics.Stopwatch]::StartNew()
 Push-Location $workspace
+$pipelineSucceeded = $false
 try {
     if ($reusePreprocessing) {
         Write-Host "[1/14] Preprocessing cache hit; PostGIS and stages 2-11 are not needed"
         $unitMetadata = Get-Content -LiteralPath $unitReport -Raw -Encoding UTF8 | ConvertFrom-Json
         $DxfUnitsPerMeter = [double]$unitMetadata.dxf_units_per_meter
+        Add-SkippedPipelineStage -Id "01" -Name "PostGIS startup" -Status "cached"
     }
     elseif (-not $SkipDatabaseStart) {
         Write-Host "[1/14] Starting PostGIS"
-        docker compose up -d --wait
+        Invoke-TimedPipelineStage -Id "01" -Name "PostGIS startup" -Action {
+            docker compose up -d --wait
+            if ($LASTEXITCODE -ne 0) { throw "PostGIS startup failed" }
+        }
     } else {
         Write-Host "[1/14] PostGIS start skipped"
+        Add-SkippedPipelineStage -Id "01" -Name "PostGIS startup" -Status "skipped"
     }
 
     if (-not $reusePreprocessing) {
@@ -253,96 +432,158 @@ try {
     if ($PSBoundParameters.ContainsKey("DxfUnitsPerMeter")) {
         $unitArguments += @("--dxf-units-per-meter", $DxfUnitsPerMeter)
     }
-    & $python @unitArguments
-    if ($LASTEXITCODE -ne 0) { throw "DXF unit detection failed" }
+    Invoke-TimedPipelineStage -Id "02" -Name "DXF unit detection" `
+        -Artifacts @($unitReport) -Action {
+            & $python @unitArguments
+            if ($LASTEXITCODE -ne 0) { throw "DXF unit detection failed" }
+        }
     $unitMetadata = Get-Content -LiteralPath $unitReport -Raw -Encoding UTF8 | ConvertFrom-Json
     $DxfUnitsPerMeter = [double]$unitMetadata.dxf_units_per_meter
 
     Write-Host "[3/14] Extracting semantic DXF objects"
-    & $extractor --config .\src\core\config.yaml --output $objects $inputPath
-    if ($LASTEXITCODE -ne 0) { throw "Semantic extraction failed" }
+    Invoke-TimedPipelineStage -Id "03" -Name "Semantic DXF extraction (Go)" `
+        -Artifacts @($objects) -Action {
+            & $extractor --config .\src\core\config.yaml --output $objects $inputPath
+            if ($LASTEXITCODE -ne 0) { throw "Semantic extraction failed" }
+        }
 
     Write-Host "[4/14] Extracting surface candidates"
-    & $extractor --config .\src\core\surface_inspector_config.yaml --output $surfaces $inputPath
-    if ($LASTEXITCODE -ne 0) { throw "Surface extraction failed" }
+    Invoke-TimedPipelineStage -Id "04" -Name "Surface DXF extraction (Go)" `
+        -Artifacts @($surfaces) -Action {
+            & $extractor --config .\src\core\surface_inspector_config.yaml --output $surfaces $inputPath
+            if ($LASTEXITCODE -ne 0) { throw "Surface extraction failed" }
+        }
 
     Write-Host "[5/14] Normalizing semantic geometry"
-    & $python .\src\normalizer.py $objects --output $normalized --report $normalizationReport
-    if ($LASTEXITCODE -ne 0) { throw "Normalization failed" }
+    Invoke-TimedPipelineStage -Id "05" -Name "Geometry normalization" `
+        -Artifacts @($normalized, $normalizationReport) -Action {
+            & $python .\src\normalizer.py $objects --output $normalized --report $normalizationReport
+            if ($LASTEXITCODE -ne 0) { throw "Normalization failed" }
+        }
 
     Write-Host "[6/14] Cleaning engineering utility geometry"
-    if ($null -ne $detectorModelPath) {
-        Write-Host "       Using supervised ONNX utility detector: $detectorModelPath"
-        & $python .\utility_detector\detector.py predict $objects `
-            --model $detectorModelPath `
-            --output $cleanedUtilities `
-            --review-output $reviewUtilities `
-            --rejected-output $rejectedUtilities `
-            --report $utilityCleaningReport `
-            --debug-dxf $utilityDebugDxf `
-            --debug-png $utilityDebugPng
-    } else {
-        & $python .\utility_cleaner\clean_utilities.py $objects `
-            --work-boundary $normalized `
-            --output $cleanedUtilities `
-            --review-output $reviewUtilities `
-            --rejected-output $rejectedUtilities `
-            --report $utilityCleaningReport `
-            --debug-dxf $utilityDebugDxf `
-            --debug-png $utilityDebugPng `
-            --dxf-units-per-meter $DxfUnitsPerMeter
-    }
-    if ($LASTEXITCODE -ne 0) { throw "Utility cleaning failed" }
+    Invoke-TimedPipelineStage -Id "06" -Name "Engineering utility cleaning and ONNX inference" `
+        -Artifacts @($cleanedUtilities, $reviewUtilities, $rejectedUtilities, $utilityCleaningReport, $utilityDebugDxf, $utilityDebugPng) -Action {
+            if ($null -ne $detectorModelPath) {
+                Write-Host "       Using supervised ONNX utility detector: $detectorModelPath"
+                $detectorArguments = @(
+                    ".\utility_detector\detector.py", "predict", $objects,
+                    "--model", $detectorModelPath,
+                    "--output", $cleanedUtilities,
+                    "--review-output", $reviewUtilities,
+                    "--rejected-output", $rejectedUtilities,
+                    "--report", $utilityCleaningReport
+                )
+                if ($actualPipelineMode -ne "lean") {
+                    $detectorArguments += @(
+                        "--debug-dxf", $utilityDebugDxf,
+                        "--debug-png", $utilityDebugPng
+                    )
+                }
+                & $python @detectorArguments
+            } else {
+                $cleanerArguments = @(
+                    ".\utility_cleaner\clean_utilities.py", $objects,
+                    "--work-boundary", $normalized,
+                    "--output", $cleanedUtilities,
+                    "--review-output", $reviewUtilities,
+                    "--rejected-output", $rejectedUtilities,
+                    "--report", $utilityCleaningReport,
+                    "--dxf-units-per-meter", $DxfUnitsPerMeter
+                )
+                if ($actualPipelineMode -ne "lean") {
+                    $cleanerArguments += @(
+                        "--debug-dxf", $utilityDebugDxf,
+                        "--debug-png", $utilityDebugPng
+                    )
+                }
+                & $python @cleanerArguments
+            }
+            if ($LASTEXITCODE -ne 0) { throw "Utility cleaning failed" }
+        }
 
     Write-Host "[7/14] Reconstructing utility gaps and junctions"
-    & $python .\src\network_reconstructor.py $cleanedUtilities `
-        --output $reconstructedUtilities `
-        --inferred-output $inferredUtilityConnections `
-        --review-output $reviewUtilityConnections `
-        --report $networkReconstructionReport `
-        --debug-dxf $networkReconstructionDebugDxf `
-        --dxf-units-per-meter $DxfUnitsPerMeter
-    if ($LASTEXITCODE -ne 0) { throw "Utility network reconstruction failed" }
+    Invoke-TimedPipelineStage -Id "07" -Name "Utility network reconstruction" `
+        -Artifacts @($reconstructedUtilities, $inferredUtilityConnections, $reviewUtilityConnections, $networkReconstructionReport, $networkReconstructionDebugDxf) -Action {
+            $networkArguments = @(
+                ".\src\network_reconstructor.py", $cleanedUtilities,
+                "--output", $reconstructedUtilities,
+                "--inferred-output", $inferredUtilityConnections,
+                "--review-output", $reviewUtilityConnections,
+                "--report", $networkReconstructionReport,
+                "--dxf-units-per-meter", $DxfUnitsPerMeter
+            )
+            if ($actualPipelineMode -ne "lean") {
+                $networkArguments += @("--debug-dxf", $networkReconstructionDebugDxf)
+            }
+            & $python @networkArguments
+            if ($LASTEXITCODE -ne 0) { throw "Utility network reconstruction failed" }
+        }
 
     Write-Host "[7b/14] Reconstructing overhead power-line hypotheses from arrows"
-    & $python .\src\overhead_power_reconstructor.py $inputPath `
-        --objects $objects `
-        --base-utilities $reconstructedUtilities `
-        --output $reconstructedUtilities `
-        --review-output $overheadPowerReview `
-        --report $overheadPowerReport `
-        --debug-dxf $overheadPowerDebugDxf `
-        --dxf-units-per-meter $DxfUnitsPerMeter
-    if ($LASTEXITCODE -ne 0) { throw "Overhead power-line reconstruction failed" }
+    Invoke-TimedPipelineStage -Id "07b" -Name "Overhead power reconstruction" `
+        -Artifacts @($reconstructedUtilities, $overheadPowerReview, $overheadPowerReport, $overheadPowerDebugDxf) -Action {
+            $overheadArguments = @(
+                ".\src\overhead_power_reconstructor.py", $inputPath,
+                "--objects", $objects,
+                "--base-utilities", $reconstructedUtilities,
+                "--output", $reconstructedUtilities,
+                "--review-output", $overheadPowerReview,
+                "--report", $overheadPowerReport,
+                "--dxf-units-per-meter", $DxfUnitsPerMeter
+            )
+            if ($actualPipelineMode -ne "lean") {
+                $overheadArguments += @("--debug-dxf", $overheadPowerDebugDxf)
+            }
+            & $python @overheadArguments
+            if ($LASTEXITCODE -ne 0) { throw "Overhead power-line reconstruction failed" }
+        }
 
-    Write-Host "[8/14] Rendering source surface diagnostics"
-    & $python .\src\surface_inspector.py $surfaces $normalized `
-        --dxf-output $surfaceDxf `
-        --png-output $surfacePng `
-        --report $surfaceReport
-    if ($LASTEXITCODE -ne 0) { throw "Surface inspection failed" }
+    if ($actualPipelineMode -eq "lean") {
+        Write-Host "[8/14] Source surface diagnostics skipped in lean mode"
+        Add-SkippedPipelineStage -Id "08" -Name "Surface diagnostics rendering" -Status "skipped"
+    } else {
+        Write-Host "[8/14] Rendering source surface diagnostics"
+        Invoke-TimedPipelineStage -Id "08" -Name "Surface diagnostics rendering" `
+            -Artifacts @($surfaceDxf, $surfacePng, $surfaceReport) -Action {
+                & $python .\src\surface_inspector.py $surfaces $normalized `
+                    --dxf-output $surfaceDxf `
+                    --png-output $surfacePng `
+                    --report $surfaceReport
+                if ($LASTEXITCODE -ne 0) { throw "Surface inspection failed" }
+            }
+    }
 
     Write-Host "[9/14] Building common constraints and reconstructed road"
-    & $python .\src\constraint_builder.py $normalized $surfaces `
-        --output $constraints `
-        --report $constraintReport `
-        --unit-metadata $unitReport
-    if ($LASTEXITCODE -ne 0) { throw "Constraint building failed" }
+    Invoke-TimedPipelineStage -Id "09" -Name "Constraint and road construction" `
+        -Artifacts @($constraints, $constraintReport) -Action {
+            & $python .\src\constraint_builder.py $normalized $surfaces `
+                --output $constraints `
+                --report $constraintReport `
+                --unit-metadata $unitReport
+            if ($LASTEXITCODE -ne 0) { throw "Constraint building failed" }
+        }
 
     Write-Host "[10/14] Applying plant rules to reconstructed utility geometry"
-    & $python .\src\plant_allow_zone.py $constraints $normalized `
-        --output $zones `
-        --report $zoneReport `
-        --utility-geometries $reconstructedUtilities `
-        --dxf-units-per-meter $DxfUnitsPerMeter `
-        --unit-metadata $unitReport
-    if ($LASTEXITCODE -ne 0) { throw "Plant allow-zone calculation failed" }
+    Invoke-TimedPipelineStage -Id "10" -Name "Plant allow-zone calculation" `
+        -Artifacts @($zones, $zoneReport) -Action {
+            & $python .\src\plant_allow_zone.py $constraints $normalized `
+                --output $zones `
+                --report $zoneReport `
+                --utility-geometries $reconstructedUtilities `
+                --dxf-units-per-meter $DxfUnitsPerMeter `
+                --unit-metadata $unitReport
+            if ($LASTEXITCODE -ne 0) { throw "Plant allow-zone calculation failed" }
+        }
 
     Write-Host "[11/14] Verifying calculated zones"
-    & $python .\scripts\verify_outputs.py $constraints $zones `
-        --zone-report $zoneReport `
-        --output $zoneVerificationReport
-    if ($LASTEXITCODE -ne 0) { throw "Spatial verification failed" }
+    Invoke-TimedPipelineStage -Id "11" -Name "Calculated-zone verification" `
+        -Artifacts @($zoneVerificationReport) -Action {
+            & $python .\scripts\verify_outputs.py $constraints $zones `
+                --zone-report $zoneReport `
+                --output $zoneVerificationReport
+            if ($LASTEXITCODE -ne 0) { throw "Spatial verification failed" }
+        }
 
     $writeCacheArguments = @(
         ".\scripts\pipeline_cache.py", "write",
@@ -356,10 +597,25 @@ try {
     if ($null -ne $detectorModelPath) {
         $writeCacheArguments += @("--detector-model", $detectorModelPath)
     }
-    & $python @writeCacheArguments
-    if ($LASTEXITCODE -ne 0) { throw "Preprocessing cache write failed" }
+    Invoke-TimedPipelineStage -Id "11b" -Name "Preprocessing cache write" `
+        -Artifacts @($cacheManifest, $cacheStatusReport) -Action {
+            & $python @writeCacheArguments
+            if ($LASTEXITCODE -ne 0) { throw "Preprocessing cache write failed" }
+        }
     } else {
         Write-Host "[2-11/14] Reusing extraction, cleaned networks, constraints and allow zones"
+        Add-SkippedPipelineStage -Id "02" -Name "DXF unit detection" -Status "cached"
+        Add-SkippedPipelineStage -Id "03" -Name "Semantic DXF extraction (Go)" -Status "cached"
+        Add-SkippedPipelineStage -Id "04" -Name "Surface DXF extraction (Go)" -Status "cached"
+        Add-SkippedPipelineStage -Id "05" -Name "Geometry normalization" -Status "cached"
+        Add-SkippedPipelineStage -Id "06" -Name "Engineering utility cleaning and ONNX inference" -Status "cached"
+        Add-SkippedPipelineStage -Id "07" -Name "Utility network reconstruction" -Status "cached"
+        Add-SkippedPipelineStage -Id "07b" -Name "Overhead power reconstruction" -Status "cached"
+        Add-SkippedPipelineStage -Id "08" -Name "Surface diagnostics rendering" -Status "cached"
+        Add-SkippedPipelineStage -Id "09" -Name "Constraint and road construction" -Status "cached"
+        Add-SkippedPipelineStage -Id "10" -Name "Plant allow-zone calculation" -Status "cached"
+        Add-SkippedPipelineStage -Id "11" -Name "Calculated-zone verification" -Status "cached"
+        Add-SkippedPipelineStage -Id "11b" -Name "Preprocessing cache write" -Status "cached"
     }
 
     Write-Host "[12/14] Generating concrete planting points and explanations"
@@ -389,65 +645,86 @@ try {
             "--diagnostic-rejected-max-count", $DiagnosticRejectedMaxCount
         )
     }
-    & $python @plantingArguments
-    if ($LASTEXITCODE -ne 0) { throw "Planting plan generation failed" }
+    Invoke-TimedPipelineStage -Id "12" -Name "Planting plan generation" `
+        -Artifacts @($plantingPlan, $plantingDecisions, $plantingPlanReport, $plantingExplanations) -Action {
+            & $python @plantingArguments
+            if ($LASTEXITCODE -ne 0) { throw "Planting plan generation failed" }
+        }
 
-    if ($reusePreprocessing) {
-        Write-Host "[12b/14] Large diagnostic DXF/PNG export skipped in fast mode"
+    if ($actualPipelineMode -in @("fast", "lean")) {
+        Write-Host "[12b/14] Large diagnostic DXF/PNG export skipped in $actualPipelineMode mode"
+        Add-SkippedPipelineStage -Id "12b" -Name "Full diagnostic DXF and PNG export" -Status "skipped"
         Write-Host "[13/14] Writing lightweight planting overlay DXF"
-        & $python .\src\dxf_exporter.py $inputPath $zones `
-            --planting-plan $plantingPlan `
-            --output $resultDxf `
-            --overlay-only `
-            --insunits ([int]$unitMetadata.insert_units_code) `
-            --strict-output
-        if ($LASTEXITCODE -ne 0) { throw "Planting overlay DXF export failed" }
+        Invoke-TimedPipelineStage -Id "13" -Name "Lightweight planting overlay DXF export" `
+            -Artifacts @($resultDxf) -Action {
+                & $python .\src\dxf_exporter.py $inputPath $zones `
+                    --planting-plan $plantingPlan `
+                    --output $resultDxf `
+                    --overlay-only `
+                    --insunits ([int]$unitMetadata.insert_units_code) `
+                    --strict-output
+                if ($LASTEXITCODE -ne 0) { throw "Planting overlay DXF export failed" }
+            }
 
         Write-Host "[14/14] Verifying plan geometry, rules and explanations"
-        & $python .\scripts\verify_outputs.py $constraints $zones `
-            --planting-plan $plantingPlan `
-            --zone-report $zoneReport `
-            --plan-report $plantingPlanReport `
-            --output $verificationReport
+        Invoke-TimedPipelineStage -Id "14" -Name "Final geometry and rule verification" `
+            -Artifacts @($verificationReport) -Action {
+                & $python .\scripts\verify_outputs.py $constraints $zones `
+                    --planting-plan $plantingPlan `
+                    --zone-report $zoneReport `
+                    --plan-report $plantingPlanReport `
+                    --output $verificationReport
+                if ($LASTEXITCODE -ne 0) { throw "Final delivery verification failed" }
+            }
     } else {
         Write-Host "[12b/14] Updating diagnostic DXF with accepted and rejected candidates"
-        & $python .\src\plant_allow_zone_debug.py $zones $constraints $normalized `
-            --dxf-output $debugDxf `
-            --png-output $debugPng `
-            --utility-geometries $reconstructedUtilities `
-            --raw-objects $objects `
-            --planting-plan $plantingPlan `
-            --planting-decisions $plantingDecisions `
-            --base-dxf $inputPath `
-            --zone-report $zoneReport
-        if ($LASTEXITCODE -ne 0) { throw "Planting diagnostics export failed" }
+        Invoke-TimedPipelineStage -Id "12b" -Name "Full diagnostic DXF and PNG export" `
+            -Artifacts @($debugDxf, $debugPng) -Action {
+                & $python .\src\plant_allow_zone_debug.py $zones $constraints $normalized `
+                    --dxf-output $debugDxf `
+                    --png-output $debugPng `
+                    --utility-geometries $reconstructedUtilities `
+                    --raw-objects $objects `
+                    --planting-plan $plantingPlan `
+                    --planting-decisions $plantingDecisions `
+                    --base-dxf $inputPath `
+                    --zone-report $zoneReport
+                if ($LASTEXITCODE -ne 0) { throw "Planting diagnostics export failed" }
+            }
 
         Write-Host "[13/14] Writing result layers into a copy of the source DXF"
-        & $python .\src\dxf_exporter.py $inputPath $zones `
-            --constraint-map $constraints `
-            --planting-plan $plantingPlan `
-            --output $resultDxf `
-            --strict-output
-        if ($LASTEXITCODE -ne 0) { throw "Final DXF export failed" }
+        Invoke-TimedPipelineStage -Id "13" -Name "Full result DXF export" `
+            -Artifacts @($resultDxf) -Action {
+                & $python .\src\dxf_exporter.py $inputPath $zones `
+                    --constraint-map $constraints `
+                    --planting-plan $plantingPlan `
+                    --output $resultDxf `
+                    --strict-output
+                if ($LASTEXITCODE -ne 0) { throw "Final DXF export failed" }
+            }
 
         Write-Host "[14/14] Verifying plan, explanations and source-DXF preservation"
-        & $python .\scripts\verify_outputs.py $constraints $zones `
-            --planting-plan $plantingPlan `
-            --zone-report $zoneReport `
-            --plan-report $plantingPlanReport `
-            --input-dxf $inputPath `
-            --output-dxf $resultDxf `
-            --output $verificationReport
+        Invoke-TimedPipelineStage -Id "14" -Name "Final DXF preservation and rule verification" `
+            -Artifacts @($verificationReport) -Action {
+                & $python .\scripts\verify_outputs.py $constraints $zones `
+                    --planting-plan $plantingPlan `
+                    --zone-report $zoneReport `
+                    --plan-report $plantingPlanReport `
+                    --input-dxf $inputPath `
+                    --output-dxf $resultDxf `
+                    --output $verificationReport
+                if ($LASTEXITCODE -ne 0) { throw "Final delivery verification failed" }
+            }
     }
-    if ($LASTEXITCODE -ne 0) { throw "Final delivery verification failed" }
-
-    $pipelineStopwatch.Stop()
+    $pipelineSucceeded = $true
+    $timingReports = Write-PipelineTimingReports -OutputDirectory $outputPath `
+        -Mode $actualPipelineMode -InputFile $inputPath -FinalStatus "passed"
     Write-Host ""
     Write-Host "Pipeline completed"
     Write-Host "Mode: $actualPipelineMode (requested: $PipelineMode)"
     Write-Host ("Elapsed: {0:N1} s" -f $pipelineStopwatch.Elapsed.TotalSeconds)
     Write-Host "Final DXF: $resultDxf"
-    if (-not $reusePreprocessing) {
+    if ($actualPipelineMode -eq "full") {
         Write-Host "Preview PNG: $debugPng"
     }
     Write-Host "Rule report: $zoneReport"
@@ -457,6 +734,12 @@ try {
     Write-Host "Overhead power reconstruction: $overheadPowerReport"
     Write-Host "Verification: $verificationReport"
     Write-Host "Run parameters: $runParametersReport"
+    Write-Host "Stage timings: $($timingReports.markdown)"
 } finally {
     Pop-Location
+    if (-not $pipelineSucceeded) {
+        $failedMode = if ($null -ne $actualPipelineMode) { $actualPipelineMode } else { "unknown" }
+        Write-PipelineTimingReports -OutputDirectory $outputPath `
+            -Mode $failedMode -InputFile $inputPath -FinalStatus "failed" | Out-Null
+    }
 }
