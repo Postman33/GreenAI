@@ -88,6 +88,7 @@ def load_utility_geometries(
             "source_feature_count": 0,
             "source_part_count": 0,
             "inferred_connection_count": 0,
+            "manual_review_required": False,
             "statuses": set(),
             "reasons": set(),
         }
@@ -136,6 +137,8 @@ def load_utility_geometries(
                     item["statuses"].add(str(status))
                 if reason:
                     item["reasons"].add(str(reason))
+                if properties.get("manual_review_required") is True:
+                    item["manual_review_required"] = True
                 if (
                     status == "algorithmic_reconstruction"
                     or reason == "accepted_with_reconstructed_gaps"
@@ -484,17 +487,16 @@ def build_plant_allow_zones(
         loaded_utility_geometries, loaded_utility_metadata = load_utility_geometries(
             cleaned_utilities_path
         )
-        automatic_utility_targets = {
+        referenced_utility_targets = {
             rule["target_object_type"]
             for rules in rules_by_plant_type.values()
             for rule in rules
-            if (rule.get("conditions") or {}).get("check") == "min_distance"
-            and rule["target_object_type"] in UTILITY_OBJECT_TYPES
+            if rule["target_object_type"] in UTILITY_OBJECT_TYPES
         }
         utility_geometries = {
             object_type: geometry
             for object_type, geometry in loaded_utility_geometries.items()
-            if object_type in automatic_utility_targets
+            if object_type in referenced_utility_targets
         }
         utility_geometry_metadata = {
             object_type: loaded_utility_metadata[object_type]
@@ -506,10 +508,14 @@ def build_plant_allow_zones(
         normalized_objects.update(utility_geometries)
         geometry_sources.update({
             object_type: (
-                "reconstructed_high_confidence_geometry"
-                if utility_geometry_metadata[object_type]["source_kind"]
-                == "reconstructed"
-                else "cleaned_high_confidence_geometry"
+                "reconstructed_review_geometry"
+                if utility_geometry_metadata[object_type]["manual_review_required"]
+                else (
+                    "reconstructed_high_confidence_geometry"
+                    if utility_geometry_metadata[object_type]["source_kind"]
+                    == "reconstructed"
+                    else "cleaned_high_confidence_geometry"
+                )
             )
             for object_type in utility_geometries
         })

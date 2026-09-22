@@ -37,8 +37,8 @@
 .\nanocad-plugin\build.ps1
 .\nanocad-plugin\test.ps1
 .\nanocad-plugin\validate_nanocad.ps1 `
-  -Drawing ".\output\verification_final_20260920\result_with_planting_plan.dxf" `
-  -DataDirectory ".\output\verification_final_20260920"
+  -Drawing ".\output\latest\result_with_planting_plan.dxf" `
+  -DataDirectory ".\output\latest"
 ```
 
 Визуальная проверка нативного меню:
@@ -47,9 +47,9 @@
 .\.venv\Scripts\python.exe .\nanocad-plugin\tools\visual_verify.py `
   "F:\NanoCAD\nCad.exe" `
   ".\nanocad-plugin\build\GreenAI.NanoCad.dll" `
-  ".\output\verification_final_20260920\result_with_planting_plan.dxf" `
-  ".\output\verification_final_20260920\nanocad_context_menu_20260920.png" `
-  ".\output\verification_final_20260920\nanocad_context_menu_20260920.json"
+  ".\output\latest\result_with_planting_plan.dxf" `
+  ".\output\latest\nanocad_context_menu.png" `
+  ".\output\latest\nanocad_context_menu.json"
 ```
 
 ## Текущие результаты
@@ -91,9 +91,7 @@ Core smoke-тест:
 
 ## Артефакты
 
-- `output/verification_final_20260920/nanocad_smoke_20260920_204921.json`;
-- `output/verification_final_20260920/nanocad_probe_20260920_204921.json`;
-- `output/verification_final_20260920/nanocad_context_menu_20260920.json`;
-- `output/verification_final_20260920/nanocad_context_menu_20260920.png`.
+Каждый запуск `validate_nanocad.ps1` создаёт в `output/latest`
+новые `nanocad_probe_<timestamp>.json` и `nanocad_smoke_<timestamp>.json`.
 
 Сборка сохраняет предупреждение о конфликте `WindowsBase` 4.0.0.0/6.0.2.0 из SDK nanoCAD. Ошибок сборки и runtime-сбоя на nanoCAD 26.0 оно не вызвало.

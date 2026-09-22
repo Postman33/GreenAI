@@ -3,7 +3,7 @@
     [string]$InputDxf = "",
 
     [Parameter(Mandatory = $false)]
-    [string]$OutputDirectory = ".\output",
+    [string]$OutputDirectory = ".\output\latest",
 
     [Parameter(Mandatory = $false)]
     [double]$DxfUnitsPerMeter = 1.0,
@@ -39,7 +39,8 @@ $ErrorActionPreference = "Stop"
 
 $workspace = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $python = Join-Path $workspace ".venv\Scripts\python.exe"
-$extractor = Join-Path $workspace "dxf_extract_go.exe"
+$extractorDirectory = Join-Path $workspace ".gotmp"
+$extractor = Join-Path $extractorDirectory "dxf_extract_go.exe"
 $inputPath = if ([string]::IsNullOrWhiteSpace($InputDxf)) {
     $inputMatches = @(
         Get-ChildItem -LiteralPath $workspace -Filter "input_10001759_bound.dxf" -File -Recurse
@@ -61,7 +62,15 @@ if (-not (Test-Path -LiteralPath $python)) {
     throw "Python environment was not found: $python. Create .venv and install requirements.txt first."
 }
 if (-not (Test-Path -LiteralPath $extractor)) {
-    throw "Go extractor was not found: $extractor. Build parser/dxf_extract_go first."
+    $go = Get-Command go -ErrorAction SilentlyContinue
+    if (-not $go) {
+        throw "Go was not found. Install Go to build parser/dxf_extract_go."
+    }
+    New-Item -ItemType Directory -Path $extractorDirectory -Force | Out-Null
+    & $go.Source build -buildvcs=false -o $extractor (Join-Path $workspace "parser\dxf_extract_go")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to build the Go DXF extractor."
+    }
 }
 if (
     [double]::IsNaN($DxfUnitsPerMeter) -or
@@ -113,6 +122,9 @@ $inferredUtilityConnections = Join-Path $outputPath "inferred_utility_connection
 $reviewUtilityConnections = Join-Path $outputPath "review_utility_connections.geojsonl"
 $networkReconstructionReport = Join-Path $outputPath "network_reconstruction_report.json"
 $networkReconstructionDebugDxf = Join-Path $outputPath "network_reconstruction_debug.dxf"
+$overheadPowerReview = Join-Path $outputPath "overhead_power_review.geojsonl"
+$overheadPowerReport = Join-Path $outputPath "overhead_power_reconstruction_report.json"
+$overheadPowerDebugDxf = Join-Path $outputPath "overhead_power_reconstruction_debug.dxf"
 $surfaceDxf = Join-Path $outputPath "surface_candidates.dxf"
 $surfacePng = Join-Path $outputPath "surface_candidates.png"
 $surfaceReport = Join-Path $outputPath "surface_candidates_report.json"
@@ -292,6 +304,17 @@ try {
         --dxf-units-per-meter $DxfUnitsPerMeter
     if ($LASTEXITCODE -ne 0) { throw "Utility network reconstruction failed" }
 
+    Write-Host "[7b/14] Reconstructing overhead power-line hypotheses from arrows"
+    & $python .\src\overhead_power_reconstructor.py $inputPath `
+        --objects $objects `
+        --base-utilities $reconstructedUtilities `
+        --output $reconstructedUtilities `
+        --review-output $overheadPowerReview `
+        --report $overheadPowerReport `
+        --debug-dxf $overheadPowerDebugDxf `
+        --dxf-units-per-meter $DxfUnitsPerMeter
+    if ($LASTEXITCODE -ne 0) { throw "Overhead power-line reconstruction failed" }
+
     Write-Host "[8/14] Rendering source surface diagnostics"
     & $python .\src\surface_inspector.py $surfaces $normalized `
         --dxf-output $surfaceDxf `
@@ -431,6 +454,7 @@ try {
     Write-Host "Per-plant report: $plantingPlanReport"
     Write-Host "Planting explanations: $plantingExplanations"
     Write-Host "Network reconstruction: $networkReconstructionReport"
+    Write-Host "Overhead power reconstruction: $overheadPowerReport"
     Write-Host "Verification: $verificationReport"
     Write-Host "Run parameters: $runParametersReport"
 } finally {

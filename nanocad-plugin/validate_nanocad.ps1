@@ -11,13 +11,7 @@ $pluginRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $pluginRoot
 
 if ([string]::IsNullOrWhiteSpace($Drawing)) {
-    $verifiedDrawing = Join-Path $projectRoot "output\verification_final_20260920\result_with_planting_plan.dxf"
-    $Drawing = if (Test-Path -LiteralPath $verifiedDrawing -PathType Leaf) {
-        $verifiedDrawing
-    }
-    else {
-        Join-Path $projectRoot "output\result_with_planting_plan.dxf"
-    }
+    $Drawing = Join-Path $projectRoot "output\latest\result_with_planting_plan.dxf"
 }
 
 if ([string]::IsNullOrWhiteSpace($PluginDll)) {

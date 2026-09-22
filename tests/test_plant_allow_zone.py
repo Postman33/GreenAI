@@ -24,6 +24,17 @@ def rule(code: str, target: str, distance: float) -> dict:
     }
 
 
+def manual_rule(code: str, target: str) -> dict:
+    return {
+        "rule_code": code,
+        "plant_type": "tree",
+        "target_object_type": target,
+        "conditions": {"check": "manual_review", "reason": "Confirm source legend"},
+        "norm_reference": "TEST 1",
+        "norm_document": {"code": "TEST"},
+    }
+
+
 class PlantAllowZoneTests(unittest.TestCase):
     def test_validate_distance_rule_rejects_bool_and_negative(self) -> None:
         with self.assertRaises(ValueError):
@@ -162,6 +173,73 @@ class PlantAllowZoneTests(unittest.TestCase):
             self.assertEqual(zone["properties"]["verification_status"], "verified_by_available_rules")
             self.assertEqual(zone["properties"]["selectable_plants"][0]["name"], "Test tree")
             self.assertEqual(report_data["plant_catalog"]["tree"][0]["name"], "Test tree")
+
+    def test_manual_utility_rule_reports_reconstructed_geometry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            constraints = root / "constraints.jsonl"
+            normalized = root / "normalized.jsonl"
+            reconstructed = root / "reconstructed.jsonl"
+            output = root / "zones.jsonl"
+            report = root / "report.json"
+            write_jsonl(constraints, [feature("base_allowed_area", box(0, 0, 10, 10))])
+            write_jsonl(
+                normalized,
+                [feature("overhead_power_line", LineString([(0, 0), (1, 0)]))],
+            )
+            write_jsonl(
+                reconstructed,
+                [
+                    feature(
+                        "overhead_power_line",
+                        LineString([(2, 5), (8, 5)]),
+                        decision="accepted",
+                        reason="reconstructed_from_reciprocal_arrow_evidence",
+                        status="algorithmic_reconstruction",
+                        manual_review_required=True,
+                        source_part_count=2,
+                        inferred_connection_count=1,
+                    )
+                ],
+            )
+            catalog = {
+                "tree": [
+                    {
+                        "id": 1,
+                        "name": "Test tree",
+                        "plant_type": "tree",
+                        "min_spacing_m": 3.0,
+                        "selection_priority": 1,
+                        "is_invasive": False,
+                        "is_toxic": False,
+                        "is_thorny": False,
+                    }
+                ]
+            }
+            with patch.object(
+                plant_allow_zone,
+                "load_rules",
+                return_value={"tree": [manual_rule("TREE_LEP", "overhead_power_line")]},
+            ), patch.object(plant_allow_zone, "load_plants", return_value=catalog):
+                plant_allow_zone.build_plant_allow_zones(
+                    constraints,
+                    normalized,
+                    output,
+                    report,
+                    "unused",
+                    {"tree"},
+                    1.0,
+                    reconstructed,
+                )
+
+            report_data = json.loads(report.read_text(encoding="utf-8"))
+            evaluation = report_data["plant_types"]["tree"]["rules"][0]
+            self.assertEqual(evaluation["status"], "manual_review")
+            self.assertEqual(
+                evaluation["geometry_source"],
+                "reconstructed_review_geometry",
+            )
+            self.assertEqual(evaluation["source_geometry_type"], "LineString")
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ specific fragment is required.
 
 ```powershell
 .\scripts\run_visualization.ps1 `
-  -PipelineOutput .\output\catalog_dimensions_smoke `
+  -PipelineOutput .\output\latest `
   -VisualizationOutput .\output\visualization `
   -Quality draft
 ```

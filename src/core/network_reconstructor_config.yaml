@@ -50,7 +50,7 @@ network_types:
   storm_drain: {}
   telecom_cable: {}
   overhead_power_line:
-    # Для ЛЭП направление по разрозненным стрелкам пока нельзя считать
-    # подтверждённой геометрией линии.
-    max_gap_m: 0.0
-    enable_junctions: false
+    # Обычный поиск разрывов не отличает стрелочные символы от оси ЛЭП.
+    # Их отдельно обрабатывает overhead_power_reconstructor.py: взаимные
+    # стрелки дают геометрическую гипотезу, остальные уходят на ручную проверку.
+    reconstruction_enabled: false

@@ -294,7 +294,7 @@ PLACEMENT_RULES = (
         "TREE_OVERHEAD_POWER_MANUAL",
         "tree",
         "overhead_power_line",
-        "Охранная зона зависит от напряжения ЛЭП, которого нет во входном DXF.",
+        "Стрелки ЛЭП неоднозначны, а напряжение нужно подтвердить по условным обозначениям или пояснительной записке.",
     ),
     distance_rule("SHRUB_BUILDING_1_5", "shrub", "building", 1.5),
     distance_rule("SHRUB_SIDEWALK_0_5", "shrub", "sidewalk", 0.5),
@@ -344,7 +344,7 @@ PLACEMENT_RULES = (
         "SHRUB_OVERHEAD_POWER_MANUAL",
         "shrub",
         "overhead_power_line",
-        "Охранная зона зависит от напряжения ЛЭП, которого нет во входном DXF.",
+        "Стрелки ЛЭП неоднозначны, а напряжение нужно подтвердить по условным обозначениям или пояснительной записке.",
     ),
 )
 

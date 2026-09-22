@@ -1,0 +1,13 @@
+Use case: photorealistic-natural
+Asset type: presentation visualization of an urban landscaping proposal
+Primary request: Transform the supplied Blender technical render into a convincing photorealistic architectural visualization of the same Moscow street landscaping proposal.
+Input image: exact geometry and camera reference. Preserve the road, sidewalks, building masses, planting-bed outlines, every proposed tree position, existing tree positions, shrub-bed footprint, camera position, perspective, and image framing.
+Scene/backdrop: contemporary Moscow urban street in summer, maintained municipal landscaping.
+Subject: young and mature deciduous trees, dense but realistic gray spirea shrub masses, lawn, asphalt road, paving, neutral residential building facades.
+Style/medium: high-end architectural visualization with natural photographic detail.
+Composition/framing: preserve the input view exactly.
+Lighting/mood: clear soft summer daylight, realistic shadows, neutral color balance.
+Materials/textures: detailed leaves and branching, varied natural crowns, visible trunks, believable shrub foliage, asphalt grain, concrete paving joints, subtle facade detail.
+Constraints: geometry-locked edit; do not move, add, or remove planting locations; keep all road and planting boundaries unchanged; maintain exact camera and perspective; no labels, no text, no people, no cars, no watermark.
+Avoid: fantasy vegetation, topiary spheres, low-poly facets, altered roads, altered buildings, excessive saturation, duplicated trees outside the supplied positions.
+

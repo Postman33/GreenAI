@@ -1,5 +1,5 @@
 param(
-    [string]$DataDirectory = "..\output"
+    [string]$DataDirectory = "..\output\latest"
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,5 +14,5 @@ $config = Join-Path $root "config\greenai.plugin.json"
 $data = [IO.Path]::GetFullPath((Join-Path $root $DataDirectory))
 
 & $dotnet run --project (Join-Path $root "tests\GreenAI.Core.SmokeTests\GreenAI.Core.SmokeTests.csproj") `
-    --configuration Release --no-restore -- $config $data
+    --configuration Release -- $config $data
 exit $LASTEXITCODE
