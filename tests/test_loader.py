@@ -27,6 +27,10 @@ class LoaderTests(unittest.TestCase):
         self.assertTrue(loader.mapping_matches(mapping, line, "geobase_blocks"))
         self.assertFalse(loader.mapping_matches(mapping, line, "modelspace"))
 
+        mapping["source"] = "both"
+        self.assertTrue(loader.mapping_matches(mapping, line, "geobase_blocks"))
+        self.assertTrue(loader.mapping_matches(mapping, line, "modelspace"))
+
     def test_geometry_extracts_common_entities(self) -> None:
         doc = ezdxf.new()
         modelspace = doc.modelspace()

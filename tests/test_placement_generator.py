@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from shapely.geometry import MultiPoint, box, mapping, shape
+from shapely.geometry import MultiPoint, Point, box, mapping, shape
 
 from src import placement_generator
 
@@ -18,6 +18,32 @@ def write_jsonl(path: Path, features: list[dict]) -> None:
 
 
 class PlacementGeneratorTests(unittest.TestCase):
+    def test_linear_layout_keeps_one_row_phase_across_an_obstacle(self) -> None:
+        profile = placement_generator.PlantingProfile(
+            plant_type="tree", species="Test tree", spacing_m=5.0,
+            footprint_radius_m=2.5, symbol_radius_m=2.5,
+            avoid_other_plantings_m=0.0, max_count=100,
+            catalog_reference="test", selection_reasons=(),
+        )
+        band = box(0, 0, 50, 3)
+        safe = band.difference(box(20, -1, 25, 4))
+        points = placement_generator.best_linear_layout(
+            safe, band, profile, {"tree": profile}, [], 100
+        )
+        self.assertIsNotNone(points)
+        self.assertGreaterEqual(len(points), 7)
+        self.assertEqual(len({round(y, 7) for _x, y in points}), 1)
+        self.assertTrue(all(safe.covers(Point(x, y)) for x, y in points))
+        self.assertTrue(all(not 20 < x < 25 for x, _y in points))
+        self.assertIsNone(
+            placement_generator.best_linear_layout(
+                box(0, 0, 20, 20), box(0, 0, 20, 20),
+                profile, {"tree": profile}, [], 100,
+            )
+        )
+        bent = box(0, 0, 5, 35).union(box(0, 0, 30, 5))
+        self.assertIsNone(placement_generator.linear_reference(bent, 5.0))
+
     def test_generates_spaced_points_and_protects_existing_tree(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

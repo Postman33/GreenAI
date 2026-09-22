@@ -485,6 +485,15 @@ def export_zones(
             if layer_name in document.layers:
                 document.layers.get(layer_name).off()
 
+    # A source DXF can contain invalid dictionary ownership even when its
+    # modelspace geometry is readable.  Carrying those records into the final
+    # drawing makes nanoCAD ask to recover the file on open.
+    auditor = document.audit()
+    if auditor.errors:
+        raise ValueError(f"DXF export has {len(auditor.errors)} unrepaired audit errors")
+    if auditor.fixes:
+        print(f"WARNING: DXF export repaired {len(auditor.fixes)} invalid source records")
+
     candidates = [output_dxf]
     if allow_version_fallback:
         candidates.extend(

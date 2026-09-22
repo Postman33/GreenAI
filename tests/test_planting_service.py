@@ -28,6 +28,43 @@ def feature(object_type: str, geometry, **properties) -> dict:
 
 
 class PlantingServiceTests(unittest.TestCase):
+    def test_auto_tree_uses_linear_rows_in_an_elongated_band(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            band = box(0, 0, 50, 8)
+            zones = root / "zones.geojsonl"
+            normalized = root / "normalized.geojsonl"
+            constraints = root / "constraints.geojsonl"
+            zone_report = root / "zone_report.json"
+            config = root / "config.json"
+            output = root / "plan.geojsonl"
+            write_jsonl(zones, [feature("plant_allow_zone", band, plant_type="tree")])
+            normalized.write_text("", encoding="utf-8")
+            write_jsonl(constraints, [feature("base_allowed_area", band)])
+            zone_report.write_text(json.dumps({
+                "dxf_units_per_meter": 1.0, "plant_types": {"tree": {"rules": []}},
+            }), encoding="utf-8")
+            config.write_text(json.dumps({
+                "diagnosticRejectedMaxCount": 0,
+                "plantingProfiles": [{
+                    "plantType": "tree", "species": "Test tree", "geometryKind": "point",
+                    "spacingM": 5.0, "footprintRadiusM": 2.5,
+                    "symbolRadiusM": 2.5, "catalogReference": "test catalog",
+                }],
+            }), encoding="utf-8")
+            planting_service.plan(
+                zones, zone_report, normalized, constraints,
+                root / "missing_utilities.geojsonl", config, output,
+                root / "report.json", root / "decisions.geojsonl",
+            )
+            points = [
+                item for item in map(json.loads, output.read_text(encoding="utf-8").splitlines())
+                if item["properties"]["object_type"] == "proposed_planting"
+            ]
+            self.assertGreaterEqual(len(points), 8)
+            self.assertEqual({item["properties"]["layout_style"] for item in points}, {"linear"})
+            self.assertEqual(len({round(item["geometry"]["coordinates"][1], 6) for item in points}), 1)
+
     def test_catalog_dimensions_control_default_spacing_and_crown(self) -> None:
         base = planting_service.PlantingProfile(
             plant_type="tree",

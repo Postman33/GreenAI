@@ -189,6 +189,14 @@ def classify_surface_layer(layer_name: str) -> str:
     normalized = layer_name.casefold()
     if any(word in normalized for word in REFERENCE_WORDS):
         return "reference_geometry"
+    # In names like "ТРТ за ГАЗОН" or "ПЧ за ГАЗОН", the first material is
+    # the proposed one.  The lawn after "за" is the surface being replaced.
+    if re.search(r"(?:^|[_\s])(?:трт|тротуар|пч)\s+за\s+газон", normalized):
+        return "hard_surface"
+    # A road widening made *at the expense of* lawn replaces the lawn; the
+    # word "газон" describes the former surface, not the proposed one.
+    if "уширен" in normalized and "за счет" in normalized:
+        return "hard_surface"
     plantable = any(word in normalized for word in PLANTABLE_WORDS)
     hard_surface = any(word in normalized for word in HARD_SURFACE_WORDS)
     if plantable and hard_surface:
@@ -811,12 +819,14 @@ def build(
             "unambiguous_plantable_surface",
         ]
     except ValueError as error:
-        # Explicit road HATCH polygons still remain part of hard_surface_area.
-        # Reconstruction is an enhancement and must not make the base stage
-        # unusable for a DXF that lacks suitable curb or seed geometry.
+        # Keep explicitly drawn carriageway surfaces even when curb-based
+        # reconstruction has no usable faces.  They are confirmed road area,
+        # and downstream verification expects a road feature when one exists.
+        road_area = road_seed_area
         road_reconstruction = {
-            "status": "unavailable",
+            "status": "explicit_surface_fallback" if not road_seed_area.is_empty else "unavailable",
             "reason": str(error),
+            "method": "explicit_surface_only" if not road_seed_area.is_empty else None,
             "requires_visual_confirmation": True,
         }
 
@@ -897,7 +907,11 @@ def build(
                 road_area,
                 {
                     "stage": "base_constraint_builder",
-                    "source_object_type": "road_edge",
+                    "source_object_type": (
+                        "road_surface_candidate"
+                        if road_reconstruction["status"] == "explicit_surface_fallback"
+                        else "road_edge"
+                    ),
                     "road_seed_source": str(surface_candidates_path),
                     "reconstruction_method": road_reconstruction.get("method"),
                     "requires_visual_confirmation": True,

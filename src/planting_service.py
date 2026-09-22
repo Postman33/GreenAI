@@ -24,6 +24,7 @@ try:  # Supports both `python src/planting_service.py` and package imports.
     from .placement_generator import (
         PlantingProfile,
         best_component_layout,
+        best_linear_layout,
         build_checks,
         configured_existing_tree_clearance_m,
         grid_candidates,
@@ -38,6 +39,7 @@ except ImportError:  # pragma: no cover - exercised by CLI integration
     from placement_generator import (  # type: ignore
         PlantingProfile,
         best_component_layout,
+        best_linear_layout,
         build_checks,
         configured_existing_tree_clearance_m,
         grid_candidates,
@@ -446,6 +448,7 @@ def _point_feature(
     status: str,
     checks: list[dict[str, Any]],
     units: float,
+    layout_style: str,
 ) -> dict[str, Any]:
     return {
         "type": "Feature",
@@ -455,6 +458,7 @@ def _point_feature(
             "planting_id": planting_id,
             "request_id": selection.request_id,
             "selection_mode": selection.mode,
+            "layout_style": layout_style,
             "plant_type": profile.plant_type,
             "species": profile.species,
             "status": status,
@@ -764,6 +768,9 @@ def plan(
     )
     if diagnostic_rejected_max < 0:
         raise ValueError("diagnosticRejectedMaxCount must be non-negative")
+    tree_layout_mode = str(config.get("treeLayoutMode", "linear_preferred"))
+    if tree_layout_mode not in {"linear_preferred", "area_fill"}:
+        raise ValueError("treeLayoutMode must be linear_preferred or area_fill")
 
     resolved = {
         selection.plant_type: resolve_profile(selection, base_profiles, config, zone_report)
@@ -814,34 +821,56 @@ def plan(
             existing_tree_clearance,
             units,
         )
-        candidates: list[Point]
+        candidates: list[tuple[Point, str]]
         if selection.mode == "points":
-            candidates = list(selection.points)
+            candidates = [(point, "manual") for point in selection.points]
         else:
-            generated: list[tuple[float, float]] = []
-            for component in sorted(polygon_parts(scope), key=lambda item: item.area, reverse=True):
+            generated: list[tuple[float, float, str]] = []
+            use_linear = selection.plant_type == "tree" and tree_layout_mode == "linear_preferred"
+            parents = (
+                sorted(polygon_parts(selected_zone), key=lambda item: item.area, reverse=True)
+                if use_linear else [scope]
+            )
+            for parent in parents:
                 remaining = profile.max_count - len(generated)
                 if remaining <= 0:
                     break
-                inset = component.buffer(-max(0.02 * units, 1e-5))
+                parent_scope = scope.intersection(parent) if use_linear else scope
+                if parent_scope.is_empty:
+                    continue
+                inset = parent_scope.buffer(-max(0.02 * units, 1e-5))
                 if inset.is_empty:
                     continue
-                generated.extend(
-                    best_component_layout(
-                        inset,
-                        layout_profile,
-                        layout_profiles,
-                        occupied + [(profile.plant_type, x, y) for x, y in generated],
+                occupied_now = occupied + [
+                    (profile.plant_type, x, y) for x, y, _style in generated
+                ]
+                linear = (
+                    best_linear_layout(
+                        inset, parent, layout_profile, layout_profiles,
+                        occupied_now, remaining,
+                    ) if use_linear else None
+                )
+                if linear:
+                    generated.extend((x, y, "linear") for x, y in linear)
+                    continue
+                for component in sorted(polygon_parts(inset), key=lambda item: item.area, reverse=True):
+                    remaining = profile.max_count - len(generated)
+                    if remaining <= 0:
+                        break
+                    area_points = best_component_layout(
+                        component, layout_profile, layout_profiles,
+                        occupied + [(profile.plant_type, x, y) for x, y, _style in generated],
                         remaining,
                     )
-                )
-            candidates = [Point(x, y) for x, y in generated]
+                    generated.extend((x, y, "area_fill") for x, y in area_points)
+            candidates = [(Point(x, y), style) for x, y, style in generated]
 
         accepted_count = 0
         rejected_count = 0
         accepted_selection_points: list[Point] = []
         plant_report = zone_report.get("plant_types", {}).get(selection.plant_type, {})
-        for point in candidates:
+        layout_style_counts: Counter[str] = Counter()
+        for point, layout_style in candidates:
             counters[selection.plant_type] += 1
             candidate_id = f"{prefixes.get(selection.plant_type, 'P')}-{counters[selection.plant_type]:04d}"
             status, checks = _point_decision(
@@ -863,7 +892,8 @@ def plan(
                 rejected_count += 1
                 continue
             accepted_count += 1
-            features.append(_point_feature(candidate_id, point, profile, selection, status, checks, units))
+            features.append(_point_feature(candidate_id, point, profile, selection, status, checks, units, layout_style))
+            layout_style_counts[layout_style] += 1
             occupied.append((profile.plant_type, point.x, point.y))
             accepted_selection_points.append(point)
 
@@ -927,6 +957,7 @@ def plan(
             "accepted_count": accepted_count,
             "rejected_count": rejected_count,
             "diagnostic_rejected_count": diagnostic_rejected_count,
+            "layout_style_counts": dict(layout_style_counts),
             "safe_scope_area_in_dxf_square_units": scope.area,
         }
 

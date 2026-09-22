@@ -8,16 +8,36 @@ from pathlib import Path
 from unittest.mock import patch
 
 import ezdxf
+from ezdxf.lldxf.tagwriter import TagCollector
+from ezdxf.lldxf.types import DXFTag
 from shapely.geometry import Point, box
 
 from tests import ROOT
 import inspect_dxf
-from scripts import pipeline_cache, seed, verify_outputs
+from scripts import dxf_manifest, pipeline_cache, seed, verify_outputs
 from src import loader, utils
 from tests.helpers import feature, write_jsonl
 
 
 class ScriptTests(unittest.TestCase):
+    def test_manifest_treats_explicit_default_ellipse_extrusion_as_unchanged(self) -> None:
+        ellipse = ezdxf.new("R2018").modelspace().add_ellipse(
+            (1, 2), major_axis=(2, 0), ratio=0.8
+        )
+        collector = TagCollector(dxfversion="AC1032")
+        ellipse.export_dxf(collector)
+        without_extrusion = [tag for tag in collector.tags if tag.code not in {210, 220, 230}]
+        with_extrusion = [
+            *without_extrusion,
+            DXFTag(210, 0.0),
+            DXFTag(220, 0.0),
+            DXFTag(230, 1.0),
+        ]
+        self.assertEqual(
+            dxf_manifest.semantic_fingerprint("ELLIPSE", without_extrusion, "AC1032"),
+            dxf_manifest.semantic_fingerprint("ELLIPSE", with_extrusion, "AC1032"),
+        )
+
     def test_pipeline_cache_reuses_only_unchanged_complete_preprocessing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

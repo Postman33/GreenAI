@@ -14,6 +14,27 @@ from tests.helpers import feature, raw_hatch, write_jsonl
 
 
 class ExporterTests(unittest.TestCase):
+    def test_export_repairs_invalid_source_dictionary_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.dxf"
+            zones = root / "zones.jsonl"
+            output = root / "result.dxf"
+            document = ezdxf.new("R2013")
+            dictionary = document.rootdict.add_new_dict("TestBad")
+            record = document.objects.add_xrecord(owner="FFFF")
+            dictionary["wrong_owner"] = record
+            document.modelspace().add_line((0, 0), (1, 1))
+            document.saveas(source)
+            write_jsonl(zones, [feature("plant_allow_zone", box(2, 2, 4, 4), plant_type="tree")])
+            self.assertEqual(len(ezdxf.readfile(source).audit().fixes), 1)
+
+            dxf_exporter.export_zones(source, zones, output, 0.5)
+
+            result = ezdxf.readfile(output)
+            self.assertEqual(len(result.audit().fixes), 0)
+            self.assertEqual(len(result.modelspace().query("LINE")), 1)
+
     def test_final_dxf_export_adds_zone_and_road_layers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

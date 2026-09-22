@@ -3,6 +3,7 @@ __pycache__/
 .gocache/
 .gotmp/
 .test-cache/
+.validation/
 .tools/
 .idea/
 .venv/

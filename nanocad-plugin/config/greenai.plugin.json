@@ -14,6 +14,7 @@
   "dxfUnitsPerMeter": 1.0,
   "maxPlacementsPerType": 5000,
   "diagnosticRejectedMaxCount": 300,
+  "treeLayoutMode": "linear_preferred",
   "protectExistingVegetation": true,
   "existingTreeCanopyRadiusM": 2.5,
   "existingTreeClearanceM": 2.0,

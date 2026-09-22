@@ -2,9 +2,9 @@
 
 The module is deliberately independent from nanoCAD so the mandatory
 DXF -> calculation -> DXF path can run on Linux/MosTech.OS.  It consumes the
-same zones and normative report as the rule engine, packs deterministic
-hexagonal layouts, protects existing vegetation and writes one GeoJSON Feature
-per proposed planting plus a machine-readable verification report.
+same zones and normative report as the rule engine, supports aligned rows and
+area layouts, protects existing vegetation and writes one GeoJSON Feature per
+proposed planting plus a machine-readable verification report.
 """
 
 from __future__ import annotations
@@ -35,6 +35,11 @@ class PlantingProfile:
     max_count: int
     catalog_reference: str
     selection_reasons: tuple[str, ...]
+
+
+LINEAR_MIN_ASPECT_RATIO = 2.5
+LINEAR_MIN_ENVELOPE_FILL = 0.55
+LINEAR_COUNT_RETENTION = 0.9
 
 
 def polygon_parts(geometry: Any) -> Iterator[Polygon]:
@@ -230,6 +235,112 @@ def best_component_layout(
                 if len(packed) > len(best):
                     best = packed
     return best
+
+
+def linear_reference(geometry: Polygon, spacing: float) -> tuple[float, float, float, float, float] | None:
+    """Return a stable long-axis frame for an elongated planting band."""
+    rectangle = geometry.minimum_rotated_rectangle
+    if not isinstance(rectangle, Polygon) or rectangle.is_empty:
+        return None
+    corners = list(rectangle.exterior.coords)
+    edges = [
+        (math.hypot(corners[i + 1][0] - corners[i][0], corners[i + 1][1] - corners[i][1]), i)
+        for i in range(4)
+    ]
+    length, longest = max(edges)
+    width = min(value for value, _index in edges)
+    # A long bounding box alone is not enough: L-shaped plots need separate
+    # local layouts, not a single axis cutting through empty space.
+    if (
+        length < 2 * spacing or width <= 0 or length / width < LINEAR_MIN_ASPECT_RATIO
+        or geometry.area / rectangle.area < LINEAR_MIN_ENVELOPE_FILL
+    ):
+        return None
+    start, end = corners[longest], corners[longest + 1]
+    angle = math.atan2(end[1] - start[1], end[0] - start[0]) % math.pi
+    cos_angle, sin_angle = math.cos(angle), math.sin(angle)
+    projections = [
+        (x * cos_angle + y * sin_angle, -x * sin_angle + y * cos_angle)
+        for x, y in corners[:-1]
+    ]
+    return angle, min(u for u, _ in projections), max(u for u, _ in projections), min(v for _, v in projections), max(v for _, v in projections)
+
+
+def linear_grid_candidates(
+    scope: Any,
+    frame: tuple[float, float, float, float, float],
+    spacing: float,
+    phase_u: float,
+    phase_v: float,
+) -> Iterator[tuple[float, float]]:
+    """Place aligned rows using one phase across all safe pieces of a band."""
+    angle, min_u, max_u, min_v, max_v = frame
+    cos_angle, sin_angle = math.cos(angle), math.sin(angle)
+    prepared = prep(scope)
+    first_u = math.ceil(min_u / spacing - phase_u)
+    last_u = math.floor(max_u / spacing - phase_u)
+    first_v = math.ceil(min_v / spacing - phase_v)
+    last_v = math.floor(max_v / spacing - phase_v)
+    for row in range(first_v, last_v + 1):
+        v = (row + phase_v) * spacing
+        for column in range(first_u, last_u + 1):
+            u = (column + phase_u) * spacing
+            x, y = u * cos_angle - v * sin_angle, u * sin_angle + v * cos_angle
+            if prepared.covers(Point(x, y)):
+                yield x, y
+
+
+def best_linear_layout(
+    scope: Any,
+    reference: Polygon,
+    profile: PlantingProfile,
+    profiles: dict[str, PlantingProfile],
+    occupied: list[tuple[str, float, float]],
+    max_count: int,
+) -> list[tuple[float, float]] | None:
+    """Prefer long, aligned runs over a few extra staggered trees."""
+    frame = linear_reference(reference, profile.spacing_m)
+    if frame is None:
+        return None
+    angle, min_u, max_u, min_v, max_v = frame
+    cos_angle, sin_angle = math.cos(angle), math.sin(angle)
+    variants: list[tuple[list[tuple[float, float]], int, int, float]] = []
+    for phase_u in (0.0, 0.25, 0.5, 0.75):
+        for phase_v in (0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875):
+            packed = pack_candidates(
+                linear_grid_candidates(scope, frame, profile.spacing_m, phase_u, phase_v),
+                profile,
+                profiles,
+                occupied,
+                max_count,
+            )
+            if not packed:
+                continue
+            rows: dict[int, list[float]] = defaultdict(list)
+            for x, y in packed:
+                u, v = x * cos_angle + y * sin_angle, -x * sin_angle + y * cos_angle
+                rows[round(v / profile.spacing_m - phase_v)].append(u)
+            adjacent_pairs = 0
+            for values in rows.values():
+                stations = sorted(values)
+                adjacent_pairs += sum(
+                    abs(right - left - profile.spacing_m) < 1e-5
+                    for left, right in zip(stations, stations[1:])
+                )
+            isolated_rows = sum(len(values) == 1 for values in rows.values())
+            u_values = [x * cos_angle + y * sin_angle for x, y in packed]
+            v_values = [-x * sin_angle + y * cos_angle for x, y in packed]
+            margin_imbalance = abs((min(u_values) - min_u) - (max_u - max(u_values)))
+            margin_imbalance += abs((min(v_values) - min_v) - (max_v - max(v_values)))
+            variants.append((packed, adjacent_pairs, isolated_rows, margin_imbalance))
+    if not variants:
+        return []
+    best_count = max(len(item[0]) for item in variants)
+    eligible = (item for item in variants if len(item[0]) >= math.ceil(best_count * LINEAR_COUNT_RETENTION))
+    return max(
+        eligible,
+        key=lambda item: (item[1], -item[2], -item[3], len(item[0])),
+    )[0]
 
 
 def safe_scope(

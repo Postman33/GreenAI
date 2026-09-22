@@ -160,7 +160,7 @@ func equalFoldAny(value string, candidates []string) bool {
 }
 
 func matches(mapping Mapping, entity Entity, source string) bool {
-	if mapping.Source != source || !equalFoldAny(entity.Type, mapping.DXFTypes) {
+	if (mapping.Source != source && mapping.Source != "both") || !equalFoldAny(entity.Type, mapping.DXFTypes) {
 		return false
 	}
 	if len(mapping.LayerTailIn) > 0 && !equalFoldAny(layerTail(entity.Layer), mapping.LayerTailIn) {

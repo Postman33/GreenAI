@@ -118,7 +118,7 @@ def load_config(config_path: Path) -> dict[str, Any]:
 
 
 def mapping_matches(mapping: dict[str, Any], entity: Any, source: str) -> bool:
-    if mapping["source"] != source:
+    if mapping["source"] not in (source, "both"):
         return False
     if entity.dxftype() not in mapping["dxf_types"]:
         return False

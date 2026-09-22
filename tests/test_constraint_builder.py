@@ -15,6 +15,16 @@ from tests.helpers import feature, raw_hatch, write_jsonl
 class ConstraintBuilderTests(unittest.TestCase):
     def test_surface_and_road_layer_classification(self) -> None:
         self.assertEqual(
+            constraints.classify_surface_layer(
+                "ДВ_ПП_ДО_Тип3_Устройство_уширений_магистральные за счет ГАЗОНА"
+            ),
+            "hard_surface",
+        )
+        self.assertEqual(
+            constraints.classify_surface_layer("ДВ_ПП_ДО_Тип6_ТРТ за ГАЗОН"),
+            "hard_surface",
+        )
+        self.assertEqual(
             constraints.classify_surface_layer("ДВ_ГП_П_Газон_Рулонный"),
             "plantable_candidate",
         )
@@ -88,6 +98,38 @@ class ConstraintBuilderTests(unittest.TestCase):
             self.assertAlmostEqual(by_type["base_allowed_area"].difference(by_type["confirmed_plantable_surface"]).area, 0.0)
             self.assertEqual(report["planting_candidate_source"], "confirmed_plantable_surface")
             self.assertIn("utility_well_footprints", report["applied_restrictions"])
+
+    def test_explicit_road_surface_survives_failed_curb_reconstruction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            normalized = root / "normalized.geojsonl"
+            surfaces = root / "surfaces.jsonl"
+            output = root / "constraints.geojsonl"
+            report_path = root / "report.json"
+            write_jsonl(
+                normalized,
+                [
+                    feature("work_boundary", box(0, 0, 10, 10)),
+                    feature("building", box(20, 20, 21, 21)),
+                    feature("sidewalk", box(20, 22, 21, 23)),
+                ],
+            )
+            write_jsonl(
+                surfaces,
+                [
+                    raw_hatch([(0, 0), (10, 0), (10, 10), (0, 10)], layer="Газон"),
+                    raw_hatch([(0, 0), (2, 0), (2, 10), (0, 10)], layer="ПЧ ремонт"),
+                ],
+            )
+
+            constraints.build(normalized, surfaces, output, report_path)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            records = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+            by_type = {record["properties"]["object_type"]: shape(record["geometry"]) for record in records}
+
+            self.assertEqual(report["road_reconstruction"]["status"], "explicit_surface_fallback")
+            self.assertAlmostEqual(by_type["road_area"].area, 20.0)
+            self.assertAlmostEqual(by_type["base_allowed_area"].area, 80.0)
 
 
 if __name__ == "__main__":

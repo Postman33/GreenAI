@@ -97,6 +97,7 @@ def build_cache_key(
     input_dxf: Path,
     detector_model: Path | None,
     units_argument: str,
+    extra_dependencies: list[Path] | None = None,
 ) -> dict[str, Any]:
     dependencies: list[dict[str, Any]] = []
     for relative in DEPENDENCIES:
@@ -112,6 +113,11 @@ def build_cache_key(
         "dxf_units_argument": units_argument,
         "detector_model": model,
         "dependencies": dependencies,
+        "extra_dependencies": [
+            signature
+            for path in (extra_dependencies or [])
+            for signature in path_signature(path, workspace)
+        ],
     }
 
 
@@ -182,6 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-directory", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--detector-model", type=Path)
+    parser.add_argument("--extra-dependency", type=Path, action="append", default=[])
     parser.add_argument(
         "--dxf-units-argument",
         required=True,
@@ -198,6 +205,7 @@ def main() -> None:
         args.input_dxf,
         args.detector_model,
         args.dxf_units_argument,
+        args.extra_dependency,
     )
     try:
         if args.action == "write":

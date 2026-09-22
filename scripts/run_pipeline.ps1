@@ -6,6 +6,12 @@
     [string]$OutputDirectory = ".\output\latest",
 
     [Parameter(Mandatory = $false)]
+    [string]$SemanticConfig = ".\src\core\config.yaml",
+
+    [Parameter(Mandatory = $false)]
+    [string]$SurfaceConfig = ".\src\core\surface_inspector_config.yaml",
+
+    [Parameter(Mandatory = $false)]
     [double]$DxfUnitsPerMeter = 1.0,
 
     [Parameter(Mandatory = $false)]
@@ -205,6 +211,8 @@ $workspace = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $python = Join-Path $workspace ".venv\Scripts\python.exe"
 $extractorDirectory = Join-Path $workspace ".gotmp"
 $extractor = Join-Path $extractorDirectory "dxf_extract_go.exe"
+$semanticConfigPath = (Resolve-Path -LiteralPath (Join-Path $workspace $SemanticConfig)).Path
+$surfaceConfigPath = (Resolve-Path -LiteralPath (Join-Path $workspace $SurfaceConfig)).Path
 $inputPath = if ([string]::IsNullOrWhiteSpace($InputDxf)) {
     $inputMatches = @(
         Get-ChildItem -LiteralPath $workspace -Filter "input_10001759_bound.dxf" -File -Recurse
@@ -348,6 +356,8 @@ $cacheArguments = @(
     "--output-directory", $outputPath,
     "--manifest", $cacheManifest,
     "--dxf-units-argument", $unitsArgumentForCache,
+    "--extra-dependency", $semanticConfigPath,
+    "--extra-dependency", $surfaceConfigPath,
     "--status-output", $cacheStatusReport
 )
 if ($null -ne $detectorModelPath) {
@@ -388,6 +398,8 @@ $resultDxf = if ($actualPipelineMode -in @("fast", "lean")) { $overlayDxf } else
     generated_at = (Get-Date).ToString("o")
     input_dxf = $inputPath
     output_directory = $outputPath
+    semantic_config = $semanticConfigPath
+    surface_config = $surfaceConfigPath
     requested_dxf_units_per_meter = $DxfUnitsPerMeter
     utility_detector_model = $detectorModelPath
     planting_request = $plantingRequestPath
@@ -443,14 +455,14 @@ try {
     Write-Host "[3/14] Extracting semantic DXF objects"
     Invoke-TimedPipelineStage -Id "03" -Name "Semantic DXF extraction (Go)" `
         -Artifacts @($objects) -Action {
-            & $extractor --config .\src\core\config.yaml --output $objects $inputPath
+            & $extractor --config $semanticConfigPath --output $objects $inputPath
             if ($LASTEXITCODE -ne 0) { throw "Semantic extraction failed" }
         }
 
     Write-Host "[4/14] Extracting surface candidates"
     Invoke-TimedPipelineStage -Id "04" -Name "Surface DXF extraction (Go)" `
         -Artifacts @($surfaces) -Action {
-            & $extractor --config .\src\core\surface_inspector_config.yaml --output $surfaces $inputPath
+            & $extractor --config $surfaceConfigPath --output $surfaces $inputPath
             if ($LASTEXITCODE -ne 0) { throw "Surface extraction failed" }
         }
 
@@ -592,6 +604,8 @@ try {
         "--output-directory", $outputPath,
         "--manifest", $cacheManifest,
         "--dxf-units-argument", $unitsArgumentForCache,
+        "--extra-dependency", $semanticConfigPath,
+        "--extra-dependency", $surfaceConfigPath,
         "--status-output", $cacheStatusReport
     )
     if ($null -ne $detectorModelPath) {

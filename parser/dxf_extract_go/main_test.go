@@ -34,6 +34,14 @@ func TestLayerTailAndMatches(t *testing.T) {
 	}
 }
 
+func TestMappingMatchesBothSources(t *testing.T) {
+	mapping := Mapping{Source: "both", LayerTailIn: []string{"BOUNDARY"}, DXFTypes: []string{"LWPOLYLINE"}}
+	entity := Entity{Type: "LWPOLYLINE", Layer: "xref$0$BOUNDARY"}
+	if !matches(mapping, entity, "modelspace") || !matches(mapping, entity, "geobase_blocks") {
+		t.Fatal("shared mapping must match either supported source")
+	}
+}
+
 func TestEntityGeometryTransformsLine(t *testing.T) {
 	entity := Entity{
 		Type:  "LINE",

@@ -55,6 +55,14 @@ def semantic_fingerprint(
     except (AssertionError, TypeError, ValueError, AttributeError, NotImplementedError):
         # Preserve strict raw comparison for unsupported custom entity types.
         canonical_tags = source_tags
+    canonical_tags = list(canonical_tags)
+    extrusion_tags = {tag.code: tag.value for tag in canonical_tags if tag.code in {210, 220, 230}}
+    default_ellipse_extrusion = (
+        entity_type == "ELLIPSE"
+        and float(extrusion_tags.get(210, 0.0)) == 0.0
+        and float(extrusion_tags.get(220, 0.0)) == 0.0
+        and float(extrusion_tags.get(230, 1.0)) == 1.0
+    )
     digest = hashlib.sha256()
     for tag in canonical_tags:
         if tag.code == 330:
@@ -77,6 +85,10 @@ def semantic_fingerprint(
         ):
             continue
         if entity_type == "VIEWPORT" and tag.code == 292 and int(tag.value) == 1:
+            continue
+        if default_ellipse_extrusion and tag.code in {210, 220, 230}:
+            # ezdxf omits an explicit default extrusion on save. The ellipse
+            # still lies in the same plane, so this is not a geometry change.
             continue
         digest.update(str(tag.code).encode("ascii"))
         digest.update(b"\0")
