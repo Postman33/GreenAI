@@ -16,6 +16,7 @@ __pycache__/
 *.exe
 output/
 output_*/
+config/openai.env
 archive/
 tmp/
 img*.png
