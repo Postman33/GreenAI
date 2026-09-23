@@ -586,6 +586,7 @@ def recover_outer_terminal_road(
         endpoint_tolerance: float = 1.0,
         min_extension_area_ratio: float = 0.001,
         max_extension_area_ratio: float = 0.20,
+        terminal_exclusion: Polygon | MultiPolygon | None = None,
 ) -> tuple[Polygon | MultiPolygon, dict[str, Any]]:
     """Recover road pieces hidden by a soft surface-partition barrier.
 
@@ -667,7 +668,17 @@ def recover_outer_terminal_road(
             "selected_extension_count": selected_for_component,
         })
 
-    recovered = as_polygonal(unary_union([strict_road, *extensions]))
+    raw_extensions = as_polygonal(unary_union(extensions)) if extensions else Polygon()
+    excluded_extensions: Polygon | MultiPolygon = Polygon()
+    accepted_extensions = raw_extensions
+    if terminal_exclusion is not None and not terminal_exclusion.is_empty:
+        excluded_extensions = as_polygonal(
+            raw_extensions.intersection(terminal_exclusion)
+        )
+        accepted_extensions = as_polygonal(
+            raw_extensions.difference(terminal_exclusion)
+        )
+    recovered = as_polygonal(unary_union([strict_road, accepted_extensions]))
     return recovered, {
         "method": "outer_terminal_extension_from_relaxed_partition",
         "orientation": "per_work_component",
@@ -677,6 +688,8 @@ def recover_outer_terminal_road(
         "relaxed_road_area_in_dxf_square_units": relaxed_road.area,
         "selected_extensions": extension_details,
         "selected_extension_count": len(extensions),
+        "raw_extension_area_in_dxf_square_units": raw_extensions.area,
+        "excluded_terminal_area_in_dxf_square_units": excluded_extensions.area,
         "added_area_in_dxf_square_units": recovered.difference(strict_road).area,
         "result_area_in_dxf_square_units": recovered.area,
     }
@@ -891,6 +904,60 @@ def geometry_feature(
     }
 
 
+def read_road_review_corrections(
+    path: Path,
+    work_boundary: Polygon | MultiPolygon,
+    plantable_surface: Polygon | MultiPolygon,
+    buildings: Polygon | MultiPolygon,
+) -> tuple[Polygon | MultiPolygon, Polygon | MultiPolygon, dict[str, Any]]:
+    """Read explicit, auditable CAD review polygons for one drawing.
+
+    A reviewed road polygon takes precedence over a conflicting sidewalk HATCH;
+    a reviewed sidewalk polygon takes precedence over an inferred road. Point
+    observations alone never become area classifications.
+    """
+    document = json.loads(path.read_text(encoding="utf-8-sig"))
+    if document.get("type") != "FeatureCollection":
+        raise ValueError("Road review corrections must be a GeoJSON FeatureCollection")
+    road_parts: list[Polygon] = []
+    sidewalk_parts: list[Polygon] = []
+    details: list[dict[str, Any]] = []
+    for index, feature in enumerate(document.get("features", []), start=1):
+        if feature.get("type") != "Feature":
+            raise ValueError(f"Road correction {index} is not a GeoJSON Feature")
+        classification = feature.get("properties", {}).get("classification")
+        if classification not in {"road", "sidewalk"}:
+            raise ValueError(f"Road correction {index} has an invalid classification")
+        raw_geometry = feature.get("geometry")
+        if not isinstance(raw_geometry, dict):
+            raise ValueError(f"Road correction {index} has no GeoJSON geometry")
+        geometry = as_polygonal(make_valid(shape(raw_geometry)))
+        if geometry.is_empty:
+            raise ValueError(f"Road correction {index} has no polygonal area")
+        if geometry.difference(work_boundary).area > 0.01:
+            raise ValueError(f"Road correction {index} extends beyond the work boundary")
+        if classification == "road" and (
+            geometry.intersection(plantable_surface).area > 0.01
+            or geometry.intersection(buildings).area > 0.01
+        ):
+            raise ValueError(
+                f"Road correction {index} conflicts with a confirmed lawn or building"
+            )
+        parts = road_parts if classification == "road" else sidewalk_parts
+        parts.extend(polygon_parts(geometry))
+        details.append({
+            "id": feature.get("id", index),
+            "classification": classification,
+            "area_in_dxf_square_units": geometry.area,
+            "evidence": feature.get("properties", {}).get("evidence"),
+        })
+    road = as_polygonal(unary_union(road_parts)) if road_parts else Polygon()
+    sidewalk = as_polygonal(unary_union(sidewalk_parts)) if sidewalk_parts else Polygon()
+    if road.intersection(sidewalk).area > 0.01:
+        raise ValueError("Reviewed road and sidewalk corrections overlap")
+    return road, sidewalk, {"source": str(path), "features": details}
+
+
 def build(
     normalized_path: Path,
     surface_candidates_path: Path,
@@ -901,6 +968,7 @@ def build(
     road_stitch_tolerance: float = 0.30,
     road_min_seed_overlap_area: float = 0.50,
     unit_metadata_path: Path | None = None,
+    road_corrections_path: Path | None = None,
 ) -> None:
     """Calculate and persist the common base area for all plant types."""
     unit_metadata: dict[str, Any] = {}
@@ -962,6 +1030,20 @@ def build(
             curve_tolerance,
         )
     )
+    # A directly polygonized HATCH is a stable topological barrier. Some
+    # self-intersecting sidewalk HATCHes need repair to recover their actual
+    # area, but those repaired faces can split a road terminal into fragments.
+    # Use the direct faces to find terminal candidates, then subtract the full
+    # normalized sidewalk geometry from the candidates below.
+    direct_sidewalk_area, direct_sidewalk_diagnostics = (
+        read_surface_area_by_predicate(
+            surface_candidates_path,
+            work_boundary,
+            is_sidewalk_partition_layer,
+            curve_tolerance,
+            min_area,
+        )
+    )
 
     road_area: Polygon | MultiPolygon = Polygon()
     sidewalks: Polygon | MultiPolygon = Polygon()
@@ -995,7 +1077,7 @@ def build(
             road_seed_area,
             known_non_road_areas=(
                 buildings_in_work_area,
-                sidewalks,
+                direct_sidewalk_area,
                 plantable_surface_area,
             ),
             stitch_tolerance=road_stitch_tolerance,
@@ -1005,6 +1087,7 @@ def build(
             road_area,
             relaxed_road_area,
             work_boundary,
+            terminal_exclusion=sidewalks,
         )
         road_reconstruction["terminal_recovery"] = terminal_recovery
         road_area, continuation = recover_unseeded_road_components(
@@ -1036,6 +1119,33 @@ def build(
             "method": "explicit_surface_only" if not road_seed_area.is_empty else None,
             "requires_visual_confirmation": True,
         }
+
+    road_review: dict[str, Any] = {"status": "not_provided"}
+    if road_corrections_path is not None:
+        reviewed_road, reviewed_sidewalk, road_review = (
+            read_road_review_corrections(
+                road_corrections_path,
+                work_boundary,
+                plantable_surface_area,
+                buildings_in_work_area,
+            )
+        )
+        road_review["status"] = "applied"
+        road_review["road_added_area_in_dxf_square_units"] = (
+            reviewed_road.difference(road_area).area
+        )
+        road_review["sidewalk_added_area_in_dxf_square_units"] = (
+            reviewed_sidewalk.difference(sidewalks).area
+        )
+        sidewalks = as_polygonal(
+            unary_union([sidewalks, reviewed_sidewalk]).difference(reviewed_road)
+        )
+        road_area = as_polygonal(
+            unary_union([road_area, reviewed_road]).difference(reviewed_sidewalk)
+        )
+        road_reconstruction["candidate_area_ratio"] = (
+            road_area.area / work_boundary.area
+        )
 
     exclusions_without_utility_wells = as_polygonal(
         unary_union([
@@ -1249,6 +1359,7 @@ def build(
             "unambiguous_plantable_surface_area": plantable_surface_area.area,
             "sidewalk_area": sidewalks.area,
             "sidewalk_partition_barrier_area": sidewalk_partition_area.area,
+            "direct_sidewalk_barrier_area": direct_sidewalk_area.area,
             "all_normalized_buildings": all_buildings.area,
             "buildings_in_work_area": buildings_in_work_area.area,
             "utility_well_footprints": utility_well_footprints.area,
@@ -1264,7 +1375,9 @@ def build(
         "road_seed_detection": road_seed_diagnostics,
         "plantable_surface_detection": plantable_surface_diagnostics,
         "sidewalk_partition": sidewalk_partition_diagnostics,
+        "direct_sidewalk_detection": direct_sidewalk_diagnostics,
         "road_reconstruction": road_reconstruction,
+        "road_review_corrections": road_review,
         "applied_restrictions": [
             "confirmed_plantable_surface_mask",
             "sidewalk_area",
@@ -1326,6 +1439,11 @@ def main() -> None:
         type=Path,
         help="JSON report produced by scripts/detect_dxf_units.py",
     )
+    parser.add_argument(
+        "--road-corrections",
+        type=Path,
+        help="Optional reviewed road/sidewalk GeoJSON polygons for this drawing",
+    )
     parser.add_argument("--curve-tolerance", type=float, default=0.1)
     parser.add_argument("--min-area", type=float, default=0.01)
     parser.add_argument(
@@ -1359,6 +1477,7 @@ def main() -> None:
             args.road_stitch_tolerance,
             args.road_min_seed_overlap_area,
             args.unit_metadata,
+            args.road_corrections,
         )
     except (OSError, ValueError, json.JSONDecodeError) as error:
         raise SystemExit(f"Constraint builder error: {error}") from error

@@ -12,6 +12,9 @@
     [string]$SurfaceConfig = ".\src\core\surface_inspector_config.yaml",
 
     [Parameter(Mandatory = $false)]
+    [string]$RoadCorrections = "",
+
+    [Parameter(Mandatory = $false)]
     [double]$DxfUnitsPerMeter = 1.0,
 
     [Parameter(Mandatory = $false)]
@@ -229,6 +232,22 @@ $inputPath = if ([string]::IsNullOrWhiteSpace($InputDxf)) {
     }
     (Resolve-Path -LiteralPath $inputCandidate).Path
 }
+$roadCorrectionsPath = if ([string]::IsNullOrWhiteSpace($RoadCorrections)) {
+    $stem = [IO.Path]::GetFileNameWithoutExtension($inputPath)
+    $companion = Join-Path $workspace "src\core\road_corrections\$stem.geojson"
+    if (Test-Path -LiteralPath $companion) {
+        (Resolve-Path -LiteralPath $companion).Path
+    } else {
+        $null
+    }
+} else {
+    $candidate = if ([IO.Path]::IsPathRooted($RoadCorrections)) {
+        $RoadCorrections
+    } else {
+        Join-Path $workspace $RoadCorrections
+    }
+    (Resolve-Path -LiteralPath $candidate).Path
+}
 
 if (-not (Test-Path -LiteralPath $python)) {
     throw "Python environment was not found: $python. Create .venv and install requirements.txt first."
@@ -308,8 +327,9 @@ $plantingPlan = Join-Path $outputPath "planting_plan.geojsonl"
 $plantingDecisions = Join-Path $outputPath "planting_decisions.geojsonl"
 $plantingPlanReport = Join-Path $outputPath "planting_plan_report.json"
 $plantingExplanations = Join-Path $outputPath "planting_explanations.md"
-$debugDxf = Join-Path $outputPath "plant_allow_zones_debug.dxf"
+$debugDxf = Join-Path $outputPath "planting_diagnostics.dxf"
 $debugPng = Join-Path $outputPath "plant_allow_zones_debug.png"
+$debugLegend = Join-Path $outputPath "planting_diagnostics_legend.md"
 $zoneVerificationReport = Join-Path $outputPath "zone_verification_report.json"
 $verificationReport = Join-Path $outputPath "verification_report.json"
 $fullResultDxf = Join-Path $outputPath "result_with_planting_plan.dxf"
@@ -363,6 +383,9 @@ $cacheArguments = @(
 if ($null -ne $detectorModelPath) {
     $cacheArguments += @("--detector-model", $detectorModelPath)
 }
+if ($null -ne $roadCorrectionsPath) {
+    $cacheArguments += @("--extra-dependency", $roadCorrectionsPath)
+}
 Invoke-TimedPipelineStage -Id "00" -Name "Preprocessing cache validation" `
     -Artifacts @($cacheStatusReport) -Action {
         Push-Location $workspace
@@ -400,6 +423,7 @@ $resultDxf = if ($actualPipelineMode -in @("fast", "lean")) { $overlayDxf } else
     output_directory = $outputPath
     semantic_config = $semanticConfigPath
     surface_config = $surfaceConfigPath
+    road_corrections = $roadCorrectionsPath
     requested_dxf_units_per_meter = $DxfUnitsPerMeter
     utility_detector_model = $detectorModelPath
     planting_request = $plantingRequestPath
@@ -569,10 +593,16 @@ try {
     Write-Host "[9/14] Building common constraints and reconstructed road"
     Invoke-TimedPipelineStage -Id "09" -Name "Constraint and road construction" `
         -Artifacts @($constraints, $constraintReport) -Action {
-            & $python .\src\constraint_builder.py $normalized $surfaces `
-                --output $constraints `
-                --report $constraintReport `
-                --unit-metadata $unitReport
+            $constraintArguments = @(
+                ".\src\constraint_builder.py", $normalized, $surfaces,
+                "--output", $constraints,
+                "--report", $constraintReport,
+                "--unit-metadata", $unitReport
+            )
+            if ($null -ne $roadCorrectionsPath) {
+                $constraintArguments += @("--road-corrections", $roadCorrectionsPath)
+            }
+            & $python @constraintArguments
             if ($LASTEXITCODE -ne 0) { throw "Constraint building failed" }
         }
 
@@ -610,6 +640,9 @@ try {
     )
     if ($null -ne $detectorModelPath) {
         $writeCacheArguments += @("--detector-model", $detectorModelPath)
+    }
+    if ($null -ne $roadCorrectionsPath) {
+        $writeCacheArguments += @("--extra-dependency", $roadCorrectionsPath)
     }
     Invoke-TimedPipelineStage -Id "11b" -Name "Preprocessing cache write" `
         -Artifacts @($cacheManifest, $cacheStatusReport) -Action {
@@ -665,9 +698,35 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "Planting plan generation failed" }
         }
 
+    Write-Host "[12b/14] Writing separate CAD diagnostic layers"
+    $debugArguments = @(
+        ".\src\plant_allow_zone_debug.py", $zones, $constraints, $normalized,
+        "--dxf-output", $debugDxf,
+        "--legend-output", $debugLegend,
+        "--utility-geometries", $reconstructedUtilities,
+        "--planting-plan", $plantingPlan,
+        "--planting-decisions", $plantingDecisions,
+        "--zone-report", $zoneReport,
+        "--insunits", ([int]$unitMetadata.insert_units_code)
+    )
+    $debugArtifacts = @($debugDxf, $debugLegend)
     if ($actualPipelineMode -in @("fast", "lean")) {
-        Write-Host "[12b/14] Large diagnostic DXF/PNG export skipped in $actualPipelineMode mode"
-        Add-SkippedPipelineStage -Id "12b" -Name "Full diagnostic DXF and PNG export" -Status "skipped"
+        $debugArguments += "--dxf-only"
+    } else {
+        $debugArguments += @(
+            "--png-output", $debugPng,
+            "--raw-objects", $objects,
+            "--base-dxf", $inputPath
+        )
+        $debugArtifacts += $debugPng
+    }
+    Invoke-TimedPipelineStage -Id "12b" -Name "CAD planting diagnostics" `
+        -Artifacts $debugArtifacts -Action {
+            & $python @debugArguments
+            if ($LASTEXITCODE -ne 0) { throw "Planting diagnostics export failed" }
+        }
+
+    if ($actualPipelineMode -in @("fast", "lean")) {
         Write-Host "[13/14] Writing lightweight planting overlay DXF"
         Invoke-TimedPipelineStage -Id "13" -Name "Lightweight planting overlay DXF export" `
             -Artifacts @($resultDxf) -Action {
@@ -692,21 +751,6 @@ try {
                 if ($LASTEXITCODE -ne 0) { throw "Final delivery verification failed" }
             }
     } else {
-        Write-Host "[12b/14] Updating diagnostic DXF with accepted and rejected candidates"
-        Invoke-TimedPipelineStage -Id "12b" -Name "Full diagnostic DXF and PNG export" `
-            -Artifacts @($debugDxf, $debugPng) -Action {
-                & $python .\src\plant_allow_zone_debug.py $zones $constraints $normalized `
-                    --dxf-output $debugDxf `
-                    --png-output $debugPng `
-                    --utility-geometries $reconstructedUtilities `
-                    --raw-objects $objects `
-                    --planting-plan $plantingPlan `
-                    --planting-decisions $plantingDecisions `
-                    --base-dxf $inputPath `
-                    --zone-report $zoneReport
-                if ($LASTEXITCODE -ne 0) { throw "Planting diagnostics export failed" }
-            }
-
         Write-Host "[13/14] Writing result layers into a copy of the source DXF"
         Invoke-TimedPipelineStage -Id "13" -Name "Full result DXF export" `
             -Artifacts @($resultDxf) -Action {
@@ -739,6 +783,8 @@ try {
     Write-Host "Mode: $actualPipelineMode (requested: $PipelineMode)"
     Write-Host ("Elapsed: {0:N1} s" -f $pipelineStopwatch.Elapsed.TotalSeconds)
     Write-Host "Final DXF: $resultDxf"
+    Write-Host "Diagnostic DXF: $debugDxf"
+    Write-Host "Diagnostic layer legend: $debugLegend"
     if ($actualPipelineMode -eq "full") {
         Write-Host "Preview PNG: $debugPng"
     }

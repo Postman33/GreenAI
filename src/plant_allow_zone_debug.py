@@ -205,32 +205,86 @@ def build_rule_exclusion_layers(
     report_path: Path,
     base_allowed_area: Polygonal,
     available_geometries: dict[str, Any],
-    plant_type: str = "shrub",
 ) -> dict[str, Polygonal]:
-    """Rebuild the sequential area removed by every applied placement rule."""
+    """Show the full setback for each applied rule within the base area.
+
+    Rule layers may overlap: a location can fail several checks at once.
+    Manual-review rules have no automatic exclusion and are omitted here.
+    """
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    plant_report = report.get("plant_types", {}).get(plant_type, {})
-    allowed = base_allowed_area
     result: dict[str, Polygonal] = {}
-    for rule in plant_report.get("rules", []):
-        if rule.get("status") != "applied":
-            continue
-        distance = rule.get("buffer_distance_in_dxf_units")
-        target = str(rule.get("target_object_type", ""))
-        if distance is None or not target:
-            continue
-        source = available_geometries.get(f"clean_{target}")
-        if source is None or source.is_empty:
-            source = available_geometries.get(target)
-        if source is None or source.is_empty:
-            continue
-        exclusion = source.buffer(float(distance), quad_segs=8)
-        removed = as_polygonal(make_valid(allowed.intersection(exclusion)))
-        if not removed.is_empty:
-            safe_code = re.sub(r"[^A-Z0-9_]+", "_", str(rule.get("rule_code", target)).upper())
-            result[f"DEBUG_EXCL_{safe_code}"] = removed
-        allowed = as_polygonal(make_valid(allowed.difference(exclusion)))
+    for plant_report in report.get("plant_types", {}).values():
+        for rule in plant_report.get("rules", []):
+            if rule.get("status") != "applied":
+                continue
+            distance = rule.get("buffer_distance_in_dxf_units")
+            target = str(rule.get("target_object_type", ""))
+            if distance is None or not target:
+                continue
+            source = available_geometries.get(f"clean_{target}")
+            if source is None or source.is_empty:
+                source = available_geometries.get(target)
+            if source is None or source.is_empty:
+                continue
+            exclusion = source.buffer(float(distance), quad_segs=8)
+            removed = as_polygonal(make_valid(base_allowed_area.intersection(exclusion)))
+            if not removed.is_empty:
+                safe_code = re.sub(r"[^A-Z0-9_]+", "_", str(rule.get("rule_code", target)).upper())
+                result[f"DEBUG_EXCL_{safe_code}"] = removed
     return result
+
+
+def export_diagnostic_legend(
+    output_path: Path,
+    zone_report_path: Path,
+    rule_exclusions: dict[str, Polygonal],
+    context_geometries: dict[str, Any],
+) -> None:
+    """Explain which CAD layers are actual exclusions and which need review."""
+    report = json.loads(zone_report_path.read_text(encoding="utf-8"))
+    lines = [
+        "# Диагностика посадок",
+        "",
+        "Откройте диагностический DXF в nanoCAD и включайте нужные DEBUG-слои.",
+        "Слои DEBUG_EXCL_* показывают полный отступ внутри базовой области.",
+        "Они могут пересекаться: в одной точке может действовать несколько запретов.",
+        "Статус manual_review означает ручную проверку, а не автоматический запрет.",
+        "",
+        "| Слой | Значение |",
+        "|---|---|",
+        "| DEBUG_ROAD_AREA | Восстановленная дорога: посадка исключена. |",
+        "| DEBUG_SIDEWALKS | Тротуар: посадка исключена. |",
+        "| DEBUG_HARD_SURFACES | Другие твёрдые покрытия: посадка исключена. |",
+        "| DEBUG_BUILDINGS | Контуры зданий: посадка исключена. |",
+        "| DEBUG_BASE_ALLOWED | Базовая область после абсолютных исключений. |",
+        "| DEBUG_ALLOW_TREE / DEBUG_ALLOW_SHRUB | Область после применённых правил отступа. |",
+        "| DEBUG_REJECTED_* | Отклонённые точки; пояснение находится на соответствующем слое DEBUG_REJECT_REASON_*. |",
+        "",
+        "| Тип посадки | Правило | Статус | Слой DXF | Отступ, единицы DXF | Причина / источник |",
+        "|---|---|---|---|---:|---|",
+    ]
+    for plant_type, plant_report in sorted(report.get("plant_types", {}).items()):
+        for rule in plant_report.get("rules", []):
+            code = str(rule.get("rule_code", ""))
+            target = str(rule.get("target_object_type", ""))
+            status = str(rule.get("status", ""))
+            exclusion_layer = "DEBUG_EXCL_" + re.sub(r"[^A-Z0-9_]+", "_", code.upper())
+            if status == "applied":
+                layer = exclusion_layer if exclusion_layer in rule_exclusions else "(нет пересечения с базовой областью)"
+            else:
+                context_key = f"clean_{target}" if f"clean_{target}" in context_geometries else target
+                layer = DEBUG_CONTEXT_LAYERS.get(context_key, ("(нет слоя геометрии)",))[0]
+                if context_key not in context_geometries:
+                    layer = "(нет слоя геометрии)"
+            distance = rule.get("buffer_distance_in_dxf_units")
+            distance_text = f"{float(distance):g}" if distance is not None else ""
+            detail = str(rule.get("reason") or rule.get("norm_reference") or "")
+            detail = detail.replace("|", "\\|").replace("\n", " ")
+            lines.append(
+                f"| {plant_type} | {code} | {status} | {layer} | {distance_text} | {detail} |"
+            )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def point_reason_lines(properties: dict[str, Any]) -> list[str]:
@@ -393,6 +447,8 @@ def export_dxf(
     base_dxf_path: Path | None = None,
     rule_exclusions: dict[str, Polygonal] | None = None,
     rejected_points: dict[str, list[tuple[Point, dict[str, Any]]]] | None = None,
+    active_rule_targets: set[str] | None = None,
+    insunits: int | None = None,
 ) -> Path:
     document = (
         ezdxf.readfile(base_dxf_path)
@@ -400,7 +456,7 @@ def export_dxf(
         else ezdxf.new("R2018")
     )
     if base_dxf_path is None:
-        document.header["$INSUNITS"] = 0
+        document.header["$INSUNITS"] = insunits if insunits is not None else 0
     if GREEN_AI_APPID not in document.appids:
         document.appids.add(GREEN_AI_APPID)
     layer_colors = {
@@ -441,6 +497,12 @@ def export_dxf(
         else:
             layer_definition = document.layers.add(layer, color=color)
         if object_type in RAW_UTILITY_CONTEXT_TYPES:
+            layer_definition.off()
+        elif (
+            active_rule_targets is not None
+            and object_type.startswith("clean_")
+            and object_type.removeprefix("clean_") not in active_rule_targets
+        ):
             layer_definition.off()
     for index, layer in enumerate((rule_exclusions or {}).keys()):
         color = (1, 30, 6, 4, 5, 2)[index % 6]
@@ -666,6 +728,9 @@ def export_dxf(
     # enabled one at a time without overlapping fills obscuring the result.
     visible_layers = {
         "DEBUG_WORK_BOUNDARY",
+        "DEBUG_ROAD_AREA",
+        "DEBUG_SIDEWALKS",
+        "DEBUG_HARD_SURFACES",
         "DEBUG_PLANT_SHRUB",
         "DEBUG_PLANT_HERBACEOUS",
         "DEBUG_PLANT_TREE",
@@ -833,7 +898,7 @@ def build_debug_export(
     constraint_map_path: Path,
     normalized_path: Path,
     dxf_output: Path,
-    png_output: Path,
+    png_output: Path | None,
     dpi: int,
     cleaned_utilities_path: Path | None = None,
     raw_objects_path: Path | None = None,
@@ -842,6 +907,8 @@ def build_debug_export(
     zone_report_path: Path | None = None,
     reasons_output_path: Path | None = None,
     planting_decisions_path: Path | None = None,
+    legend_output_path: Path | None = None,
+    insunits: int | None = None,
 ) -> None:
     zones = load_plant_zones(plant_zones_path)
     normalized_objects = load_normalized_objects(normalized_path)
@@ -879,11 +946,10 @@ def build_debug_export(
         for plant_type, items in rejected_points.items():
             reason_points.setdefault(plant_type, []).extend(items)
         export_reason_markdown(reasons_output_path, reason_points)
-    sidewalk_geometry = normalized_objects.get("sidewalk")
-    sidewalks = (
-        as_polygonal(sidewalk_geometry.intersection(work_boundary))
-        if sidewalk_geometry is not None and not sidewalk_geometry.is_empty
-        else Polygon()
+    # Display the final reviewed sidewalk mask. The placement-rule setback
+    # layers below still use normalized geometry, matching the rule engine.
+    sidewalks = as_polygonal(
+        read_object_geometry(constraint_map_path, "sidewalk_area")
     )
     context_clip = work_boundary.buffer(2.0)
     road_edge_geometry = normalized_objects.get("road_edge")
@@ -910,11 +976,27 @@ def build_debug_export(
         if not source_building_lines.is_empty:
             context_geometries["building_source"] = source_building_lines
     rule_exclusions: dict[str, Polygonal] = {}
+    active_rule_targets: set[str] | None = None
     if zone_report_path is not None:
+        zone_report = json.loads(zone_report_path.read_text(encoding="utf-8"))
+        active_rule_targets = {
+            str(rule["target_object_type"])
+            for plant_report in zone_report.get("plant_types", {}).values()
+            for rule in plant_report.get("rules", [])
+            if rule.get("status") == "applied"
+        }
+        rule_geometries = {**normalized_objects, **context_geometries}
+        building_linework = normalized_objects.get("building_linework")
+        if building_linework is not None and not building_linework.is_empty:
+            building_sources = [building_linework]
+            building_footprints = normalized_objects.get("building")
+            if building_footprints is not None and not building_footprints.is_empty:
+                building_sources.append(building_footprints)
+            rule_geometries["building"] = unary_union(building_sources)
         rule_exclusions = build_rule_exclusion_layers(
             zone_report_path,
             base_allowed_area,
-            {**normalized_objects, **context_geometries},
+            rule_geometries,
         )
 
     actual_dxf_output = export_dxf(
@@ -932,21 +1014,32 @@ def build_debug_export(
         base_dxf_path,
         rule_exclusions,
         rejected_points,
+        active_rule_targets,
+        insunits,
     )
-    export_png(
-        png_output,
-        work_boundary,
-        hard_surfaces,
-        road_area,
-        sidewalks,
-        road_edges,
-        zones,
-        dpi,
-    )
+    if png_output is not None:
+        export_png(
+            png_output,
+            work_boundary,
+            hard_surfaces,
+            road_area,
+            sidewalks,
+            road_edges,
+            zones,
+            dpi,
+        )
+    if legend_output_path is not None and zone_report_path is not None:
+        export_diagnostic_legend(
+            legend_output_path, zone_report_path, rule_exclusions,
+            context_geometries,
+        )
 
     print(f"Plant zones: {plant_zones_path}")
     print(f"DXF: {actual_dxf_output}")
-    print(f"PNG: {png_output}")
+    if png_output is not None:
+        print(f"PNG: {png_output}")
+    if legend_output_path is not None:
+        print(f"Layer legend: {legend_output_path}")
     print(f"Reconstructed road: {road_area.area:.3f} square DXF units")
     print(f"Sidewalks: {sidewalks.area:.3f} square DXF units")
     for object_type, geometry in context_geometries.items():
@@ -977,6 +1070,14 @@ def main() -> None:
     )
     parser.add_argument(
         "--png-output", type=Path, default=Path("plant_allow_zones_debug.png")
+    )
+    parser.add_argument(
+        "--dxf-only", action="store_true",
+        help="Skip PNG rendering when only CAD diagnostic layers are needed.",
+    )
+    parser.add_argument(
+        "--legend-output", type=Path,
+        help="Optional Markdown legend explaining diagnostic layers and rule statuses.",
     )
     parser.add_argument(
         "--utility-geometries",
@@ -1022,6 +1123,7 @@ def main() -> None:
         help="Optional Markdown report with checks for every point planting ID.",
     )
     parser.add_argument("--dpi", type=int, default=180)
+    parser.add_argument("--insunits", type=int, help="DXF $INSUNITS code for a standalone overlay.")
     args = parser.parse_args()
     if args.dpi <= 0:
         raise SystemExit("--dpi must be greater than zero")
@@ -1031,7 +1133,7 @@ def main() -> None:
             args.constraint_map_geojsonl,
             args.normalized_objects_geojsonl,
             args.dxf_output,
-            args.png_output,
+            None if args.dxf_only else args.png_output,
             args.dpi,
             args.cleaned_utilities,
             args.raw_objects,
@@ -1040,6 +1142,8 @@ def main() -> None:
             args.zone_report,
             args.reasons_output,
             args.planting_decisions,
+            args.legend_output,
+            args.insunits,
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
         raise SystemExit(f"Plant-zone debug export error: {error}") from error

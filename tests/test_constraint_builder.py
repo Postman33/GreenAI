@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from shapely.geometry import LineString, MultiPolygon, box, shape
+from shapely.geometry import LineString, MultiPolygon, box, mapping, shape
 
 from tests import ROOT  # noqa: F401 - initializes script-module import paths
 from src import constraint_builder as constraints
@@ -71,6 +71,25 @@ class ConstraintBuilderTests(unittest.TestCase):
         self.assertAlmostEqual(road.intersection(lawns).area, 0)
         self.assertAlmostEqual(road.intersection(remote).area, 0)
         self.assertEqual(len(report["inferred_components"]), 1)
+
+    def test_terminal_road_keeps_carriageway_part_beside_sidewalk(self) -> None:
+        work = box(0, 0, 20, 100)
+        strict = box(5, 0, 15, 60)
+        relaxed = box(5, 0, 15, 100)
+        sidewalk = box(13, 60, 15, 100)
+
+        road, report = constraints.recover_outer_terminal_road(
+            strict,
+            relaxed,
+            work,
+            terminal_exclusion=sidewalk,
+        )
+
+        self.assertAlmostEqual(road.area, 920)
+        self.assertAlmostEqual(road.intersection(sidewalk).area, 0)
+        self.assertAlmostEqual(report["raw_extension_area_in_dxf_square_units"], 400)
+        self.assertAlmostEqual(report["excluded_terminal_area_in_dxf_square_units"], 80)
+        self.assertAlmostEqual(report["added_area_in_dxf_square_units"], 320)
 
     def test_build_uses_positive_plantable_mask_and_excludes_sidewalk_and_building(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -151,6 +170,65 @@ class ConstraintBuilderTests(unittest.TestCase):
             self.assertEqual(report["road_reconstruction"]["status"], "explicit_surface_fallback")
             self.assertAlmostEqual(by_type["road_area"].area, 20.0)
             self.assertAlmostEqual(by_type["base_allowed_area"].area, 80.0)
+
+    def test_reviewed_road_overrides_sidewalk_and_reviewed_sidewalk_stays_excluded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            normalized = root / "normalized.geojsonl"
+            surfaces = root / "surfaces.jsonl"
+            corrections = root / "road_review.geojson"
+            output = root / "constraints.geojsonl"
+            report_path = root / "report.json"
+            write_jsonl(normalized, [
+                feature("work_boundary", box(0, 0, 20, 10)),
+                feature("sidewalk", box(0, 0, 10, 10)),
+                feature("building", box(30, 30, 31, 31)),
+            ])
+            surfaces.write_text("", encoding="utf-8")
+            corrections.write_text(json.dumps({
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature", "id": "road-review",
+                        "properties": {"classification": "road", "evidence": "checked"},
+                        "geometry": mapping(box(2, 0, 4, 10)),
+                    },
+                    {
+                        "type": "Feature", "id": "sidewalk-review",
+                        "properties": {"classification": "sidewalk", "evidence": "checked"},
+                        "geometry": mapping(box(12, 0, 14, 10)),
+                    },
+                ],
+            }), encoding="utf-8")
+
+            constraints.build(
+                normalized, surfaces, output, report_path,
+                road_corrections_path=corrections,
+            )
+            records = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+            by_type = {record["properties"]["object_type"]: shape(record["geometry"]) for record in records}
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertAlmostEqual(by_type["road_area"].area, 20)
+            self.assertFalse(by_type["sidewalk_area"].covers(box(2, 2, 4, 4)))
+            self.assertTrue(by_type["sidewalk_area"].covers(box(12, 2, 14, 4)))
+            self.assertAlmostEqual(by_type["base_allowed_area"].intersection(by_type["road_area"]).area, 0)
+            self.assertEqual(report["road_review_corrections"]["status"], "applied")
+
+    def test_road_review_rejects_conflicting_lawn(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "corrections.geojson"
+            path.write_text(json.dumps({
+                "type": "FeatureCollection",
+                "features": [{
+                    "type": "Feature",
+                    "properties": {"classification": "road"},
+                    "geometry": mapping(box(1, 1, 3, 3)),
+                }],
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "confirmed lawn"):
+                constraints.read_road_review_corrections(
+                    path, box(0, 0, 10, 10), box(2, 2, 4, 4), box(8, 8, 9, 9)
+                )
 
 
 if __name__ == "__main__":

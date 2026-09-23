@@ -14,6 +14,45 @@ from tests.helpers import feature, raw_hatch, write_jsonl
 
 
 class ExporterTests(unittest.TestCase):
+    def test_diagnostic_layers_separate_applied_setbacks_from_manual_review(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = root / "zone_report.json"
+            legend = root / "legend.md"
+            report.write_text(json.dumps({"plant_types": {
+                "tree": {"rules": [
+                    {"rule_code": "TREE_WATER_2", "target_object_type": "water_pipe",
+                     "status": "applied", "buffer_distance_in_dxf_units": 2},
+                    {"rule_code": "TREE_OVERHEAD_POWER_MANUAL",
+                     "target_object_type": "overhead_power_line",
+                     "status": "manual_review", "reason": "Voltage unknown"},
+                ]},
+                "shrub": {"rules": [
+                    {"rule_code": "SHRUB_HEAT_1", "target_object_type": "heat_pipe",
+                     "status": "applied", "buffer_distance_in_dxf_units": 1},
+                ]},
+            }}), encoding="utf-8")
+            context = {
+                "clean_water_pipe": LineString([(5, 0), (5, 10)]),
+                "clean_heat_pipe": LineString([(6, 0), (6, 10)]),
+                "clean_overhead_power_line": LineString([(8, 0), (8, 10)]),
+            }
+            exclusions = plant_allow_zone_debug.build_rule_exclusion_layers(
+                report, box(0, 0, 10, 10), context,
+            )
+            self.assertEqual(set(exclusions), {
+                "DEBUG_EXCL_TREE_WATER_2", "DEBUG_EXCL_SHRUB_HEAT_1",
+            })
+            self.assertTrue(exclusions["DEBUG_EXCL_TREE_WATER_2"].covers(Point(5, 5)))
+            self.assertTrue(exclusions["DEBUG_EXCL_SHRUB_HEAT_1"].covers(Point(6, 5)))
+            plant_allow_zone_debug.export_diagnostic_legend(
+                legend, report, exclusions, context,
+            )
+            content = legend.read_text(encoding="utf-8")
+            self.assertIn("DEBUG_EXCL_TREE_WATER_2", content)
+            self.assertIn("DEBUG_CLEAN_OVERHEAD_POWER", content)
+            self.assertIn("manual_review", content)
+
     def test_export_repairs_invalid_source_dictionary_owner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
