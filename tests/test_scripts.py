@@ -67,6 +67,30 @@ class ScriptTests(unittest.TestCase):
                 pipeline_cache.validate_manifest(manifest, key, output)["hit"]
             )
 
+    def test_pipeline_cache_invalidates_when_road_corrections_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input.dxf"
+            corrections = root / "road_corrections.geojson"
+            source.write_text("input", encoding="utf-8")
+            corrections.write_text('{"type":"FeatureCollection","features":[]}', encoding="utf-8")
+
+            original = pipeline_cache.build_cache_key(
+                root, source, None, "auto", [corrections],
+            )
+            corrections.write_text(
+                '{"type":"FeatureCollection","features":[{"id":"road"}]}',
+                encoding="utf-8",
+            )
+            changed = pipeline_cache.build_cache_key(
+                root, source, None, "auto", [corrections],
+            )
+
+            self.assertNotEqual(original, changed)
+            self.assertNotEqual(
+                original["extra_dependencies"], changed["extra_dependencies"],
+            )
+
     def write_minimal_verifier_inputs(
         self, root: Path, zone_geometry=box(1, 1, 4, 4)
     ) -> tuple[Path, Path]:
