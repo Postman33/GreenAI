@@ -87,6 +87,8 @@ def record_polygon(record: dict[str, Any], curve_tolerance: float) -> Polygonal 
 
 def suggested_class(layer_name: str) -> str:
     normalized = layer_name.casefold()
+    if "граница покрыт" in normalized:
+        return "reference_geometry"
     if any(word in normalized for word in REFERENCE_WORDS):
         return "reference_geometry"
     plantable = any(word in normalized for word in PLANTABLE_WORDS)

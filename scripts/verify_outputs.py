@@ -123,7 +123,10 @@ def main() -> None:
     _, base = one(constraints, "base_allowed_area")
     _, road = one(constraints, "road_area")
     _, hard_surfaces = one(constraints, "hard_surface_area")
-    _, sidewalks = one(constraints, "sidewalk_area")
+    sidewalk_features = constraints.get("sidewalk_area", [])
+    if len(sidewalk_features) > 1:
+        raise ValueError(f"Expected at most one 'sidewalk_area' feature, got {len(sidewalk_features)}")
+    sidewalks = sidewalk_features[0][1] if sidewalk_features else GeometryCollection()
     _, confirmed_plantable = one(
         constraints, "confirmed_plantable_surface"
     )

@@ -672,6 +672,7 @@ try {
         Invoke-TimedPipelineStage -Id "13" -Name "Lightweight planting overlay DXF export" `
             -Artifacts @($resultDxf) -Action {
                 & $python .\src\dxf_exporter.py $inputPath $zones `
+                    --constraint-map $constraints `
                     --planting-plan $plantingPlan `
                     --output $resultDxf `
                     --overlay-only `

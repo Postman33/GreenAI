@@ -610,7 +610,12 @@ func entityGeometry(entity Entity, matrix Matrix) interface{} {
 			points = append(points, []float64{xy[0], xy[1], start, end, bulge})
 		}
 		flags := integer(value(entity, 70, "0"), 0)
-		return map[string]interface{}{"kind": "polyline", "closed": flags&1 != 0, "points": points}
+		closed := flags&1 != 0
+		if !closed && len(points) >= 4 {
+			first, last := points[0], points[len(points)-1]
+			closed = first[0] == last[0] && first[1] == last[1]
+		}
+		return map[string]interface{}{"kind": "polyline", "closed": closed, "points": points}
 	case "INSERT":
 		x, y := point(entity, 10, 20)
 		return map[string]interface{}{"kind": "insert_point", "location": matrix.point(x, y), "block_name": value(entity, 2, "")}

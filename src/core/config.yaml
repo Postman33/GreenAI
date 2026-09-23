@@ -15,6 +15,9 @@ geobase_blocks:
     - "^Заводский_пр_3_ДЖКХ"
     - "^Гео[._]"
     - "^XREF_ИГДИ_"
+    - "^XREF_ГЕО_"
+    - "^xref_ИТП_"
+    - "^xref_ДП_"
     - "^Собранная ГЕО$"
     - "^01_Бортовые камни$"
     - "^02_Покрытия$"
@@ -34,6 +37,7 @@ layer_mapping:
     required: true
     layer_tail_in:
       - "ДВ_ГП_П_Граница работ"
+      - "!!!_1. ГРАНИЦА РАБОТ"
     dxf_types: [LWPOLYLINE]
     geometry: polygon
     conversion: closed_polyline_to_polygon

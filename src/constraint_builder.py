@@ -187,6 +187,8 @@ def readable_layer_name(value: str) -> str:
 def classify_surface_layer(layer_name: str) -> str:
     """Classify a surface by its CAD layer name, conservatively."""
     normalized = layer_name.casefold()
+    if "граница покрыт" in normalized:
+        return "reference_geometry"
     if any(word in normalized for word in REFERENCE_WORDS):
         return "reference_geometry"
     # In names like "ТРТ за ГАЗОН" or "ПЧ за ГАЗОН", the first material is
@@ -680,6 +682,197 @@ def recover_outer_terminal_road(
     }
 
 
+def _horizontal_spans(geometry: Any, y: float, minx: float, maxx: float) -> list[tuple[float, float]]:
+    """Return the nonzero horizontal intervals cut from a polygon."""
+    intersection = geometry.intersection(LineString([(minx, y), (maxx, y)]))
+    spans: list[tuple[float, float]] = []
+
+    def collect(part: Any) -> None:
+        if part.is_empty:
+            return
+        if isinstance(part, LineString) and part.length > 1e-6:
+            spans.append((part.bounds[0], part.bounds[2]))
+        elif hasattr(part, "geoms"):
+            for child in part.geoms:
+                collect(child)
+
+    collect(intersection)
+    return sorted(spans)
+
+
+def recover_unseeded_road_components(
+    road_area: Polygon | MultiPolygon,
+    work_boundary: Polygon | MultiPolygon,
+    plantable_surface: Polygon | MultiPolygon,
+    other_non_road: Polygon | MultiPolygon,
+    units_per_meter: float = 1.0,
+) -> tuple[Polygon | MultiPolygon, dict[str, Any]]:
+    """Continue a seeded road through nearby, aligned, unseeded work parcels.
+
+    Curb strokes in another parcel may not close a topological road cell. A
+    narrow cross-section corridor follows the preceding road, uses substantial
+    lawn strips as side limits, and excludes every confirmed non-road surface.
+    This is an explicitly uncertain continuation, never a road HATCH claim.
+    """
+    if units_per_meter <= 0:
+        raise ValueError("units_per_meter must be positive")
+    step = units_per_meter
+    max_gap = 25 * units_per_meter
+    min_lawn_area = 25 * units_per_meter**2
+    components = sorted(polygon_parts(work_boundary), key=lambda part: part.bounds[1])
+    recovered = road_area
+    previous_top: float | None = None
+    previous_center: float | None = None
+    corridor_width: float | None = None
+    details: list[dict[str, Any]] = []
+
+    for component_index, component in enumerate(components, start=1):
+        minx, miny, maxx, maxy = component.bounds
+        height = maxy - miny
+        width = maxx - minx
+        existing = as_polygonal(recovered.intersection(component))
+        if height < width * 1.5:
+            previous_top = previous_center = corridor_width = None
+            continue
+
+        if existing.area >= max(units_per_meter**2, component.area * 0.01):
+            top_spans = _horizontal_spans(
+                existing, maxy - min(step * 0.5, height * 0.01), minx - step, maxx + step
+            )
+            if not top_spans:
+                previous_top = previous_center = corridor_width = None
+                continue
+            left, right = max(top_spans, key=lambda span: span[1] - span[0])
+            previous_center = (left + right) / 2
+            widths = []
+            for offset in (2, 5, 10, 15, 20):
+                if offset * step >= height:
+                    continue
+                spans = _horizontal_spans(existing, maxy - offset * step, minx - step, maxx + step)
+                if spans:
+                    nearest = min(spans, key=lambda span: abs((span[0] + span[1]) / 2 - previous_center))
+                    widths.append(nearest[1] - nearest[0])
+            typical_width = sorted(widths)[len(widths) // 2] if widths else right - left
+            corridor_width = max(15 * step, min(25 * step, typical_width * 1.4))
+            previous_top = maxy
+            continue
+
+        if previous_top is None or previous_center is None or corridor_width is None:
+            continue
+        gap = miny - previous_top
+        if not 0 <= gap <= max_gap:
+            previous_top = previous_center = corridor_width = None
+            continue
+        bottom_spans = _horizontal_spans(
+            component, miny + min(step * 0.5, height * 0.01), minx - step, maxx + step
+        )
+        lateral_gap = min(
+            (max(left - previous_center, previous_center - right, 0) for left, right in bottom_spans),
+            default=float("inf"),
+        )
+        if lateral_gap > corridor_width / 2:
+            previous_top = previous_center = corridor_width = None
+            continue
+
+        major_lawns = [
+            part for part in polygon_parts(plantable_surface.intersection(component))
+            if part.area >= min_lawn_area
+        ]
+        if not major_lawns:
+            previous_top = previous_center = corridor_width = None
+            continue
+        center = previous_center
+        left_points: list[tuple[float, float]] = []
+        right_points: list[tuple[float, float]] = []
+        y = miny + step * 0.25
+        while y < maxy:
+            spans = _horizontal_spans(component, y, minx - step, maxx + step)
+            if not spans:
+                y += step
+                continue
+            left_work, right_work = min(
+                spans,
+                key=lambda span: max(span[0] - center, center - span[1], 0),
+            )
+            lawns = [
+                lawn_span
+                for lawn in major_lawns
+                for lawn_span in _horizontal_spans(lawn, y, left_work, right_work)
+            ]
+            left_lawn = max(
+                (right for _left, right in lawns
+                 if right <= center and center - right <= corridor_width * 0.75),
+                default=None,
+            )
+            right_lawn = min(
+                (left for left, _right in lawns
+                 if left >= center and left - center <= corridor_width * 0.75),
+                default=None,
+            )
+            desired = center
+            if (left_lawn is not None and right_lawn is not None
+                    and 4 * step < right_lawn - left_lawn <= corridor_width * 1.5):
+                desired = (left_lawn + right_lawn) / 2
+            elif right_lawn is not None:
+                desired = right_lawn - corridor_width / 2
+            elif left_lawn is not None:
+                desired = left_lawn + corridor_width / 2
+            elif right_work - left_work <= corridor_width * 1.25:
+                desired = (left_work + right_work) / 2
+            center = max(center - 2 * step, min(center + 2 * step, desired))
+            left = max(left_work, center - corridor_width / 2)
+            right = min(right_work, center + corridor_width / 2)
+            if left_lawn is not None:
+                left = max(left, left_lawn)
+            if right_lawn is not None:
+                right = min(right, right_lawn)
+            if right - left >= 4 * step:
+                left_points.append((left, y))
+                right_points.append((right, y))
+            y += step
+        if len(left_points) < 2:
+            previous_top = previous_center = corridor_width = None
+            continue
+        outline = Polygon([
+            (left_points[0][0], miny), *left_points,
+            (left_points[-1][0], maxy), (right_points[-1][0], maxy),
+            *reversed(right_points), (right_points[0][0], miny),
+        ])
+        candidate = as_polygonal(
+            make_valid(outline).intersection(component)
+            .difference(plantable_surface).difference(other_non_road)
+        )
+        coverage = candidate.area / component.area
+        total_coverage = (recovered.area + candidate.area) / work_boundary.area
+        if not 0.05 <= coverage <= 0.65 or total_coverage > 0.65:
+            previous_top = previous_center = corridor_width = None
+            continue
+        recovered = as_polygonal(unary_union([recovered, candidate]))
+        top_spans = _horizontal_spans(candidate, maxy - step * 0.5, minx - step, maxx + step)
+        if top_spans:
+            left, right = max(top_spans, key=lambda span: span[1] - span[0])
+            previous_center = (left + right) / 2
+            previous_top = maxy
+        else:
+            previous_top = previous_center = corridor_width = None
+        details.append({
+            "work_component_index": component_index,
+            "gap_from_previous_component_in_dxf_units": gap,
+            "inferred_area_in_dxf_square_units": candidate.area,
+            "coverage_ratio": coverage,
+            "method": "longitudinal_corridor_between_confirmed_lawns",
+            "requires_visual_confirmation": True,
+        })
+
+    return recovered, {
+        "method": "seeded_corridor_continuation",
+        "max_inter_component_gap_in_dxf_units": max_gap,
+        "inferred_components": details,
+        "added_area_in_dxf_square_units": recovered.difference(road_area).area,
+        "requires_visual_confirmation": bool(details),
+    }
+
+
 def geometry_feature(
     object_type: str,
     geometry: Polygon | MultiPolygon,
@@ -710,6 +903,12 @@ def build(
     unit_metadata_path: Path | None = None,
 ) -> None:
     """Calculate and persist the common base area for all plant types."""
+    unit_metadata: dict[str, Any] = {}
+    if unit_metadata_path is not None:
+        unit_metadata = json.loads(unit_metadata_path.read_text(encoding="utf-8-sig"))
+        if not unit_metadata.get("unit_scale_confirmed", False):
+            raise ValueError("DXF unit metadata does not confirm the drawing scale")
+    units_per_meter = float(unit_metadata.get("dxf_units_per_meter") or 1.0)
     work_boundary = as_polygonal(
         read_object_geometry(normalized_path, "work_boundary")
     )
@@ -808,6 +1007,14 @@ def build(
             work_boundary,
         )
         road_reconstruction["terminal_recovery"] = terminal_recovery
+        road_area, continuation = recover_unseeded_road_components(
+            road_area,
+            work_boundary,
+            plantable_surface_area,
+            as_polygonal(unary_union([hard_surface_area, sidewalks, buildings_in_work_area])),
+            units_per_meter,
+        )
+        road_reconstruction["unseeded_continuation"] = continuation
         road_reconstruction["candidate_area_ratio"] = (
             road_area.area / work_boundary.area
         )
@@ -1018,11 +1225,6 @@ def build(
         - base_allowed_area.area
         - excluded_from_candidate_area
     )
-    unit_metadata: dict[str, Any] = {}
-    if unit_metadata_path is not None:
-        unit_metadata = json.loads(unit_metadata_path.read_text(encoding="utf-8-sig"))
-        if not unit_metadata.get("unit_scale_confirmed", False):
-            raise ValueError("DXF unit metadata does not confirm the drawing scale")
     report = {
         "normalized_input": str(normalized_path),
         "surface_candidates_input": str(surface_candidates_path),

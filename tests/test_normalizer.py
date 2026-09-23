@@ -14,6 +14,19 @@ from tests.helpers import raw_polyline, write_jsonl
 
 
 class NormalizerTests(unittest.TestCase):
+    def test_small_open_work_boundary_gap_closes_only_for_boundary(self) -> None:
+        points = [[0, 0], [100, 0], [100, 100], [0, 100], [0, 0.5]]
+        record = {"object_type": "work_boundary", "geometry": {"kind": "polyline", "points": points, "closed": False}}
+        outline = normalizer.primitive_to_geometry(record, 0.1)
+        self.assertTrue(outline.is_ring)
+        self.assertAlmostEqual(normalizer.normalize_group("work_boundary", [outline]).area, 10000)
+
+        record["object_type"] = "road_edge"
+        self.assertFalse(normalizer.primitive_to_geometry(record, 0.1).is_ring)
+        record["object_type"] = "work_boundary"
+        record["geometry"]["points"][-1] = [0, 5]
+        self.assertFalse(normalizer.primitive_to_geometry(record, 0.1).is_ring)
+
     def test_arc_wraps_through_zero_degrees(self) -> None:
         points = normalizer.arc_points([0, 0], 10, 350, 10, 0.2)
         self.assertGreater(len(points), 8)
@@ -36,6 +49,12 @@ class NormalizerTests(unittest.TestCase):
         self.assertEqual(line.length, 2)
         self.assertEqual(point, Point(1, 2))
         self.assertAlmostEqual(polygon.area, 4)
+
+    def test_work_boundary_with_self_crossing_closed_outline(self) -> None:
+        outline = LineString([(0, 0), (2, 2), (0, 2), (2, 0), (0, 0)])
+        polygon = normalizer.normalize_group("work_boundary", [outline])
+        self.assertIsNotNone(polygon)
+        self.assertAlmostEqual(polygon.area, 2.0)
 
     def test_building_polygonizer_closes_endpoint_chain(self) -> None:
         lines = [

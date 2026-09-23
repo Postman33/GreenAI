@@ -185,6 +185,25 @@ class ScriptTests(unittest.TestCase):
             self.assertEqual(data["checks"][0]["building_overlap_area"], 0)
             self.assertEqual(data["checks"][0]["utility_well_overlap_area"], 0)
 
+    def test_verifier_accepts_street_without_explicit_sidewalk_feature(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            constraints, zones = self.write_minimal_verifier_inputs(root)
+            features = [
+                json.loads(line)
+                for line in constraints.read_text(encoding="utf-8").splitlines()
+            ]
+            write_jsonl(
+                constraints,
+                [feature for feature in features if feature["properties"]["object_type"] != "sidewalk_area"],
+            )
+            report = root / "verification.json"
+            with patch.object(sys, "argv", ["verify_outputs.py", str(constraints), str(zones), "--output", str(report)]):
+                verify_outputs.main()
+            data = json.loads(report.read_text(encoding="utf-8"))
+            self.assertEqual(data["status"], "passed")
+            self.assertEqual(data["checks"][0]["sidewalk_overlap_area"], 0)
+
     def test_verifier_rejects_unconfirmed_dxf_scale(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from shapely.geometry import LineString, box, shape
+from shapely.geometry import LineString, MultiPolygon, box, shape
 
 from tests import ROOT  # noqa: F401 - initializes script-module import paths
 from src import constraint_builder as constraints
@@ -14,6 +14,10 @@ from tests.helpers import feature, raw_hatch, write_jsonl
 
 class ConstraintBuilderTests(unittest.TestCase):
     def test_surface_and_road_layer_classification(self) -> None:
+        self.assertEqual(
+            constraints.classify_surface_layer("_АД_граница покрытия"),
+            "reference_geometry",
+        )
         self.assertEqual(
             constraints.classify_surface_layer(
                 "ДВ_ПП_ДО_Тип3_Устройство_уширений_магистральные за счет ГАЗОНА"
@@ -50,6 +54,23 @@ class ConstraintBuilderTests(unittest.TestCase):
         self.assertTrue(road.covers(seed.centroid))
         self.assertEqual(report["method"], "curb_barrier_cells_selected_by_road_hatch")
         self.assertLess(road.area, work.area)
+
+    def test_road_continues_only_into_nearby_aligned_unseeded_parcel(self) -> None:
+        first = box(0, 0, 40, 100)
+        second = box(0, 110, 40, 210)
+        remote = box(100, 220, 140, 320)
+        work = MultiPolygon([first, second, remote])
+        seeded = box(10, 0, 30, 100)
+        lawns = MultiPolygon([box(0, 110, 10, 210), box(30, 110, 40, 210)])
+
+        road, report = constraints.recover_unseeded_road_components(
+            seeded, work, lawns, box(0, 0, 0, 0)
+        )
+
+        self.assertGreater(road.intersection(second).area, 1000)
+        self.assertAlmostEqual(road.intersection(lawns).area, 0)
+        self.assertAlmostEqual(road.intersection(remote).area, 0)
+        self.assertEqual(len(report["inferred_components"]), 1)
 
     def test_build_uses_positive_plantable_mask_and_excludes_sidewalk_and_building(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -67,3 +67,20 @@ func TestOptionalIntegerReadsTrueColor(t *testing.T) {
 		t.Fatalf("missing optional integer should be nil")
 	}
 }
+
+func TestGeometricallyClosedPolylineWithoutClosedFlag(t *testing.T) {
+	entity := Entity{
+		Type: "LWPOLYLINE",
+		Pairs: []Pair{
+			{Code: 70, Value: "0"},
+			{Code: 10, Value: "0"}, {Code: 20, Value: "0"},
+			{Code: 10, Value: "2"}, {Code: 20, Value: "0"},
+			{Code: 10, Value: "2"}, {Code: 20, Value: "2"},
+			{Code: 10, Value: "0"}, {Code: 20, Value: "0"},
+		},
+	}
+	geometry := entityGeometry(entity, identity()).(map[string]interface{})
+	if geometry["closed"] != true {
+		t.Fatal("matching endpoints should make a geometrically closed polyline")
+	}
+}

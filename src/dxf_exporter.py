@@ -176,7 +176,9 @@ def load_plant_zones(path: Path) -> dict[str, Polygonal]:
     }
 
 
-def load_constraint_geometry(path: Path, object_type: str) -> Polygonal:
+def load_constraint_geometry(
+    path: Path, object_type: str, *, required: bool = True
+) -> Polygonal:
     """Read and merge one polygonal object type from a GeoJSONL map."""
     parts: list[Polygon] = []
     with path.open(encoding="utf-8") as source:
@@ -193,7 +195,9 @@ def load_constraint_geometry(path: Path, object_type: str) -> Polygonal:
                 continue
             parts.extend(polygon_parts(make_valid(shape(feature["geometry"]))))
     if not parts:
-        raise ValueError(f"No {object_type} geometry found in {path}")
+        if required:
+            raise ValueError(f"No {object_type} geometry found in {path}")
+        return Polygon()
     return unary_union(parts)
 
 
@@ -382,8 +386,13 @@ def export_zones(
     if GREEN_AI_APPID not in document.appids:
         document.appids.add(GREEN_AI_APPID)
 
-    if constraint_map_path is not None and not overlay_only:
-        road_area = load_constraint_geometry(constraint_map_path, "road_area")
+    if constraint_map_path is not None:
+        road_area = load_constraint_geometry(
+            constraint_map_path, "road_area", required=not overlay_only
+        )
+    else:
+        road_area = Polygon()
+    if not road_area.is_empty:
         road_layer_name, road_color = ROAD_LAYER
         ensure_layer(document, road_layer_name, road_color)
         removed = remove_previous_entities(modelspace, road_layer_name)
@@ -479,7 +488,7 @@ def export_zones(
             }
 
     if planting_plan_path is not None and not show_analysis_layers:
-        analysis_layer_names = {ROAD_LAYER[0]}
+        analysis_layer_names = set() if overlay_only else {ROAD_LAYER[0]}
         analysis_layer_names.update(layer_name for layer_name, _color in ZONE_LAYERS.values())
         for layer_name in analysis_layer_names:
             if layer_name in document.layers:
@@ -519,7 +528,7 @@ def export_zones(
         raise last_error
     print(f"Original DXF: {input_dxf}")
     if overlay_only:
-        print("Export mode: planting-only coordinate overlay")
+        print("Export mode: planting and road coordinate overlay")
     else:
         print(f"Plant zones: {zones_path}")
     if planting_plan_path is not None:

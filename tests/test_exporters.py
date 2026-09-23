@@ -121,6 +121,7 @@ class ExporterTests(unittest.TestCase):
             root = Path(directory)
             source = root / "source.dxf"
             zones = root / "zones.jsonl"
+            constraints = root / "constraints.jsonl"
             plan = root / "plan.geojsonl"
             output = root / "overlay.dxf"
             document = ezdxf.new("R2013")
@@ -130,6 +131,7 @@ class ExporterTests(unittest.TestCase):
                 zones,
                 [feature("plant_allow_zone", box(0, 0, 10, 10), plant_type="tree")],
             )
+            write_jsonl(constraints, [feature("road_area", box(0, 0, 2, 10))])
             write_jsonl(
                 plan,
                 [
@@ -151,6 +153,7 @@ class ExporterTests(unittest.TestCase):
                 zones,
                 output,
                 0.65,
+                constraint_map_path=constraints,
                 planting_plan_path=plan,
                 overlay_only=True,
                 insunits=6,
@@ -159,6 +162,11 @@ class ExporterTests(unittest.TestCase):
             result = ezdxf.readfile(output)
             self.assertEqual(result.header["$INSUNITS"], 6)
             self.assertEqual(len(result.modelspace().query('*[layer=="SOURCE"]')), 0)
+            self.assertEqual(
+                len(result.modelspace().query('HATCH[layer=="GREEN_AI_RECONSTRUCTED_ROAD"]')),
+                1,
+            )
+            self.assertFalse(result.layers.get("GREEN_AI_RECONSTRUCTED_ROAD").is_off())
             self.assertEqual(
                 len(result.modelspace().query('CIRCLE[layer=="GREEN_AI_PLANT_TREE"]')),
                 1,

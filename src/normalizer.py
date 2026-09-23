@@ -117,6 +117,18 @@ def primitive_to_geometry(record: dict[str, Any], tolerance: float):
             return None
         if raw.get("closed") and coordinates[0] != coordinates[-1]:
             coordinates.append(coordinates[0])
+        elif (
+            record.get("object_type") == "work_boundary"
+            and len(coordinates) >= 4
+            and coordinates[0] != coordinates[-1]
+        ):
+            # A bound work boundary can lose its closed flag and have a small
+            # endpoint drafting gap. Close only that contour when the missing
+            # segment is both short and negligible relative to its perimeter.
+            gap = math.dist(coordinates[0], coordinates[-1])
+            known_length = LineString(coordinates).length
+            if gap <= tolerance * 10 and gap <= known_length * 0.002:
+                coordinates.append(coordinates[0])
         return LineString(coordinates)
     if kind == "arc":
         coordinates = arc_points(
@@ -450,7 +462,18 @@ def polygonal_geometry_per_primitive(geometries: Iterable[Any]):
     for geometry in geometries:
         if geometry is None or geometry.is_empty:
             continue
-        faces.extend(polygonize(geometry))
+        primitive_faces = list(polygonize(geometry))
+        if (
+            not primitive_faces
+            and isinstance(geometry, LineString)
+            and len(geometry.coords) >= 4
+            and geometry.coords[0] == geometry.coords[-1]
+        ):
+            # Bound DXF outlines may touch/cross themselves at a tiny spur.
+            # Node that individual closed outline, without combining it with
+            # unrelated annotation strokes or neighbouring CAD primitives.
+            primitive_faces = list(polygonize(unary_union(geometry)))
+        faces.extend(primitive_faces)
     return unary_union(faces) if faces else None
 
 
