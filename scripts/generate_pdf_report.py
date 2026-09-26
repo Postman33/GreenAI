@@ -42,8 +42,11 @@ TARGET_LABELS = {
     "building": "здание", "heat_pipe": "теплосеть", "road_edge": "край дороги",
     "sidewalk": "тротуар", "water_pipe": "водопровод", "gas_pipe": "газопровод",
     "power_cable": "силовой кабель", "existing_tree": "существующее дерево",
+    "overhead_power_line": "воздушная ЛЭП", "sewer_pipe": "канализация",
+    "storm_drain": "водосток", "telecom_cable": "кабель связи",
     "auto_tree": "другое дерево", "auto_shrub": "другой кустарник",
 }
+PLANT_TYPE_LABELS = {"tree": "дерево", "shrub": "кустарник", "herbaceous": "травянистое покрытие"}
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -424,19 +427,26 @@ def build_pdf(
     story.append(PageBreak())
 
     story.append(paragraph("2. Сводка результата", heading))
+    status_counts = Counter(
+        (str(feature["properties"].get("request_id", "")),
+         str(feature["properties"].get("status", "")))
+        for feature in plan
+    )
     summary_rows = [[
         paragraph("Сценарий", table_header), paragraph("Тип", table_header),
-        paragraph("Растение", table_header), paragraph("Принято", table_header),
+        paragraph("Растение", table_header), paragraph("Подтверждено", table_header),
+        paragraph("На проверке", table_header),
         paragraph("Диагностических отказов", table_header),
     ]]
     for request_id, item in plan_report.get("summary", {}).items():
-        accepted = item.get("accepted_count", item.get("accepted_area_count", 0))
         summary_rows.append([
             paragraph(request_id, body), paragraph(item.get("plant_type", "-"), body),
-            paragraph(item.get("species", "-"), body), paragraph(accepted, body),
+            paragraph(item.get("species", "-"), body),
+            paragraph(status_counts[(request_id, "accepted")], body),
+            paragraph(status_counts[(request_id, "manual_review")], body),
             paragraph(item.get("diagnostic_rejected_count", 0), body),
         ])
-    summary_table = Table(summary_rows, colWidths=[46 * mm, 33 * mm, 75 * mm, 31 * mm, 55 * mm])
+    summary_table = Table(summary_rows, colWidths=[42 * mm, 28 * mm, 65 * mm, 27 * mm, 32 * mm, 55 * mm])
     summary_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#143B5D")),
         ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#B8C8D8")),
@@ -450,10 +460,11 @@ def build_pdf(
     status_color = "#277A4B" if verification.get("status") == "passed" else "#B63737"
     status_text = "ПРОЙДЕНА" if verification.get("status") == "passed" else "НЕ ПРОЙДЕНА"
     status_box = Table([[paragraph(
-        f"Итоговая верификация: <font color='{status_color}'><b>{status_text}</b></font><br/>"
+        f"Техническая верификация: <font color='{status_color}'><b>{status_text}</b></font><br/>"
         f"Точек посадки: {plan_report.get('point_placement_count', 0)}; "
         f"площадных посадок: {plan_report.get('area_placement_count', 0)}; "
-        f"ручная проверка: {plan_report.get('manual_review_count', 0)}.", body
+        f"требуют ручной проверки: {plan_report.get('manual_review_count', 0)}. "
+        "Верификация относится к доступным геометрическим проверкам и целостности результата.", body
     )]], colWidths=[240 * mm])
     status_box.setStyle(TableStyle([
         ("BOX", (0, 0), (-1, -1), 1, colors.HexColor(status_color)),
@@ -461,6 +472,37 @@ def build_pdf(
         ("PADDING", (0, 0), (-1, -1), 8),
     ]))
     story.append(status_box)
+
+    unchecked_lines = []
+    for plant_type, item in zone_report.get("plant_types", {}).items():
+        plant_label = PLANT_TYPE_LABELS.get(plant_type, plant_type)
+        unavailable = [
+            f"{target_label({'target': rule.get('target_object_type')})} "
+            f"({html.escape(str(rule.get('rule_code') or '?'))})"
+            for rule in item.get("rules", []) if rule.get("status") == "unavailable"
+        ]
+        if unavailable:
+            unchecked_lines.append(
+                f"{plant_label}: активные правила без пригодной геометрии - "
+                + ", ".join(unavailable) + "."
+            )
+        without_rule = item.get("unchecked_utility_object_types") or []
+        if without_rule:
+            unchecked_lines.append(
+                f"{plant_label}: сети без активного правила - "
+                + ", ".join(target_label({"target": target}) for target in without_rule) + "."
+            )
+    if unchecked_lines:
+        story.append(Spacer(1, 3 * mm))
+        unchecked_box = Table([[paragraph(
+            "<b>Не проверено автоматически</b><br/>" + "<br/>".join(unchecked_lines), body
+        )]], colWidths=[240 * mm])
+        unchecked_box.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#B46A20")),
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FFF7E8")),
+            ("PADDING", (0, 0), (-1, -1), 8),
+        ]))
+        story.append(unchecked_box)
 
     if preview_path and preview_path.is_file():
         story.append(Spacer(1, 4 * mm))

@@ -45,7 +45,7 @@ class PdfReportTests(unittest.TestCase):
                 {
                     "type": "Feature", "id": "T-0001",
                     "properties": {
-                        "planting_id": "T-0001", "plant_type": "tree",
+                        "planting_id": "T-0001", "request_id": "auto_tree", "plant_type": "tree",
                         "species": "Test tree", "status": "manual_review",
                         "layout_style": "linear",
                         "species_selection": {"source": "preset_profile"},
@@ -86,7 +86,7 @@ class PdfReportTests(unittest.TestCase):
                 {
                     "type": "Feature", "id": "H-0001",
                     "properties": {
-                        "planting_id": "H-0001", "plant_type": "herbaceous",
+                        "planting_id": "H-0001", "request_id": "auto_herbaceous", "plant_type": "herbaceous",
                         "species": "Test grass", "status": "accepted",
                         "dxf_units_per_meter": 1,
                         "layout_style": "safe_zone_cover",
@@ -120,7 +120,11 @@ class PdfReportTests(unittest.TestCase):
                     "tree": {
                         "allowed_area_in_dxf_square_units": 100,
                         "verification_status": "verified_by_available_rules",
-                        "rules": [{"rule_code": "TREE_BUILDING_5", "status": "applied"}],
+                        "rules": [
+                            {"rule_code": "TREE_BUILDING_5", "status": "applied"},
+                            {"rule_code": "TREE_GAS_1_5", "target_object_type": "gas_pipe", "status": "unavailable"},
+                        ],
+                        "unchecked_utility_object_types": ["power_cable"],
                     }
                 },
             }), encoding="utf-8")
@@ -149,6 +153,11 @@ class PdfReportTests(unittest.TestCase):
             self.assertIn("теплосеть: 8.00 / 2.00", text)
             self.assertIn("водопровод: 9.00 / 2.00", text)
             self.assertNotIn("Ещё 2 проверки", text)
+            self.assertIn("Подтверждено", text)
+            self.assertIn("На проверке", text)
+            self.assertIn("активные правила без пригодной геометрии", text)
+            self.assertIn("газопровод (TREE_GAS_1_5)", text)
+            self.assertIn("сети без активного правила - силовой кабель", text)
             self.assertIn("Требуется ручная проверка: газопровод (TREE_GAS_1_5)", text)
             links = [annotation.get_object().get("/A", {}).get("/URI")
                      for page in reader.pages for annotation in page.get("/Annots", [])]
