@@ -15,8 +15,23 @@ specific fragment is required.
 ```
 
 The preparation stage works without Blender and creates `scene.json` and
-`scene_preview.png`.  Rendering requires Blender 4.x. It can be located through
+`scene_preview.png`.  Rendering requires Blender. It can be located through
 `PATH`, `BLENDER_EXE`, or the `-Blender` parameter.
+
+For the current pipeline output, for example:
+
+```powershell
+.\scripts\run_visualization.ps1 `
+  -PipelineOutput .\output\batch_10004141_genplan `
+  -VisualizationOutput .\output\batch_10004141_genplan\blender_preview `
+  -Quality draft
+```
+
+The Blender preview renders a representative 120 x 120 m fragment. Current
+point-based shrub plantings are placed at their actual plan coordinates, not
+scattered again across a shrub bed. The scene includes existing trees, roads,
+buildings, lawns, and proposed plantings. Heights and plant appearance are
+illustrative when the DXF does not provide them.
 
 Outputs:
 
@@ -25,6 +40,20 @@ Outputs:
 - `top_after.png`;
 - `greenai_scene.blend`;
 - `render_manifest.json`.
+
+To append the Blender views to an existing planting atlas without changing the
+planting plan:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\append_blender_preview.py `
+  --atlas .\output\batch_10004141_genplan\planting_plan_atlas.pdf `
+  --renders .\output\batch_10004141_genplan\blender_preview\renders `
+  --output .\output\batch_10004141_genplan\planting_plan_atlas_with_blender.pdf
+```
+
+The appendix uses four PNG files from `renders`. They can later be replaced by
+photorealistic views with the same cameras, while the CAD plan and atlas tables
+remain unchanged.
 
 No cloud account or API token is required.  A token is needed only for an
 optional later AI relighting/inpainting step.  The deterministic Blender images

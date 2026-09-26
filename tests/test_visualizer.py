@@ -7,7 +7,7 @@ from pathlib import Path
 
 from shapely.geometry import Point, Polygon, mapping
 
-from src.visualization.prepare_scene import build_manifest, camera_records, scatter_points
+from src.visualization.prepare_scene import build_manifest, camera_records, scatter_points, triangle_records
 
 
 def write_features(path: Path, features: list[dict]) -> None:
@@ -26,6 +26,14 @@ class VisualizerTests(unittest.TestCase):
         points = scatter_points(polygon, 1.0)
         self.assertGreater(len(points), 70)
         self.assertTrue(all(polygon.covers(point) for point in points))
+
+    def test_surface_triangles_preserve_holes_and_area(self) -> None:
+        polygon = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)],
+                          holes=[[(4, 4), (6, 4), (6, 6), (4, 6)]])
+        triangles = triangle_records(polygon, Point(0, 0), 0.1)
+        pieces = [Polygon([(vertex[0], vertex[1]) for vertex in triangle]) for triangle in triangles]
+        self.assertAlmostEqual(sum(piece.area for piece in pieces), polygon.area)
+        self.assertTrue(all(polygon.covers(piece) for piece in pieces))
 
     def test_manifest_recentres_and_preserves_tree_position(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -48,10 +56,17 @@ class VisualizerTests(unittest.TestCase):
                 "properties": {"object_type": "proposed_planting", "plant_type": "tree",
                                "planting_id": "T-1", "symbol_radius_m": 2.0},
                 "geometry": mapping(Point(100, 100)),
+            }, {
+                "type": "Feature",
+                "properties": {"object_type": "proposed_planting", "plant_type": "shrub",
+                               "planting_id": "S-1", "symbol_radius_m": 0.5},
+                "geometry": mapping(Point(101, 102)),
             }])
             manifest = build_manifest(normalized, constraints, plan, scene, None, 20.0)
             self.assertEqual(manifest["source_origin"], {"x": 100.0, "y": 100.0})
             self.assertEqual(manifest["proposed_trees"][0]["position"], [0.0, 0.0])
+            self.assertEqual(manifest["shrubs"][0]["position"], [1.0, 2.0])
+            self.assertEqual(manifest["counts"]["proposed_shrub_instances"], 1)
             self.assertTrue(scene.exists())
 
 

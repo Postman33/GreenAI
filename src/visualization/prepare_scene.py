@@ -23,7 +23,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Patch
 from shapely.geometry import GeometryCollection, MultiPoint, Point, Polygon, box, shape
-from shapely.ops import triangulate, unary_union
+from shapely import constrained_delaunay_triangles
+from shapely.ops import unary_union
 from shapely.validation import make_valid
 
 
@@ -141,9 +142,10 @@ def local_xy(x: float, y: float, origin: Point) -> list[float]:
 def triangle_records(geometry: Any, origin: Point, z: float) -> list[list[list[float]]]:
     result: list[list[list[float]]] = []
     for polygon in polygon_parts(geometry):
-        for triangle in triangulate(polygon):
-            if not polygon.covers(triangle.representative_point()):
-                continue
+        # Constrained triangulation respects concave edges and interior holes.
+        # Centroid filtering of an unconstrained triangulation can draw across
+        # a road/building cut-out even when the triangle centre is inside.
+        for triangle in constrained_delaunay_triangles(polygon).geoms:
             coords = list(triangle.exterior.coords)[:3]
             result.append([[x - origin.x, y - origin.y, z] for x, y, *_ in coords])
     return result
@@ -252,6 +254,7 @@ def build_manifest(
 
     plan_areas: dict[str, list[Any]] = defaultdict(list)
     proposed_trees: list[dict[str, Any]] = []
+    proposed_shrubs: list[dict[str, Any]] = []
     for item in plan:
         geometry = clipped(item["geometry"])
         if geometry.is_empty:
@@ -266,12 +269,23 @@ def build_manifest(
                     "crown_radius": max(1.2, float(properties.get("symbol_radius_m", 2.5))),
                 }
             )
+        elif item["plant_type"] == "shrub" and isinstance(geometry, Point):
+            proposed_shrubs.append(
+                {
+                    "id": str(properties.get("planting_id", "shrub")),
+                    "position": local_xy(geometry.x, geometry.y, focus),
+                    "height": 0.75 + 0.25 * deterministic_fraction(geometry.x, geometry.y),
+                    "radius": max(0.3, float(properties.get("symbol_radius_m", 0.5))),
+                }
+            )
         elif geometry.geom_type in {"Polygon", "MultiPolygon", "GeometryCollection"}:
             plan_areas[item["plant_type"]].append(geometry)
 
     shrub_area = unary_union(plan_areas.get("shrub", [])) if plan_areas.get("shrub") else GeometryCollection()
     herbaceous_area = unary_union(plan_areas.get("herbaceous", [])) if plan_areas.get("herbaceous") else GeometryCollection()
-    shrub_points = scatter_points(shrub_area, 1.45, limit=1000)
+    # Older area-style planting files can still supply a shrub bed.  Current
+    # pipeline plans individual shrub points; preserve those exact positions.
+    shrub_points = scatter_points(shrub_area, 1.45, limit=1000) if not proposed_shrubs else []
     existing_belt_points = scatter_points(existing_belts, 2.8, limit=350)
     axis = principal_axis(road, [item["geometry"] for item in plan])
 
@@ -313,7 +327,7 @@ def build_manifest(
             }
             for index, point in enumerate(existing_tree_points, start=1)
         ],
-        "shrubs": [
+        "shrubs": proposed_shrubs + [
             {
                 "position": local_xy(point.x, point.y, focus),
                 "height": 0.65 + deterministic_fraction(point.x, point.y) * 0.35,
@@ -334,7 +348,7 @@ def build_manifest(
         "counts": {
             "proposed_trees": len(proposed_trees),
             "existing_trees": len(existing_tree_points),
-            "proposed_shrub_instances": len(shrub_points),
+            "proposed_shrub_instances": len(proposed_shrubs) + len(shrub_points),
             "existing_belt_instances": len(existing_belt_points),
         },
     }
@@ -362,7 +376,8 @@ def render_preview(manifest: dict[str, Any], output_path: Path) -> None:
         for triangle in surface["triangles"]:
             xs = [point[0] for point in triangle]
             ys = [point[1] for point in triangle]
-            axis.fill(xs, ys, color=colors[surface["name"]], linewidth=0)
+            axis.fill(xs, ys, facecolor=colors[surface["name"]], edgecolor="none",
+                      linewidth=0, antialiased=False)
     for building in manifest["buildings"]:
         xs = [point[0] for point in building["exterior"]]
         ys = [point[1] for point in building["exterior"]]
