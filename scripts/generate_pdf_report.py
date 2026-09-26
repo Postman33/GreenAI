@@ -269,20 +269,17 @@ def planting_explanation_rows(
         ]
         measured.sort(key=lambda check: float(check["actual_distance_m"])
                       - float(check["required_distance_m"]))
-        nearest = measured[:3]
         facts = [
             f"{target_label(check)}: "
             f"{float(check['actual_distance_m']):.2f} / {float(check['required_distance_m']):.2f} м"
-            for check in nearest
+            for check in measured
         ]
         if geometry.get("type") == "Point":
             conclusion = "Центр посадки внутри допустимой зоны; проверенные расстояния соблюдены."
         else:
             conclusion = "Контур находится внутри рассчитанной допустимой зоны."
         if facts:
-            conclusion += " Ближайшие к порогу (факт / минимум): " + "; ".join(facts) + "."
-            if len(measured) > len(nearest):
-                conclusion += f" Ещё {len(measured) - len(nearest)} проверки пройдены."
+            conclusion += " Пройденные проверки (факт / минимум): " + "; ".join(facts) + "."
         review_checks = [check for check in checks if check.get("status") == "manual_review"]
         if review_checks:
             review_labels = [
@@ -539,7 +536,7 @@ def build_pdf(
     story.append(paragraph("7. Объяснение каждой посадки", heading))
     story.append(paragraph(
         f"Приведены все {len(plan)} объекта плана, включая {explained_manual_count} со статусом ручной проверки. "
-        "Показаны три проверки, ближайшие к порогу; факт / минимум дан в метрах. "
+        "Показаны все пройденные проверки, начиная с ближайших к порогу; факт / минимум дан в метрах. "
         "Ссылка на НПА указывает конкретную таблицу или пункт. "
         "Источник вида и схема отражают проектный выбор, а не отдельную норму. "
         "Полный журнал проверок каждого ID находится в planting_plan.geojsonl.",

@@ -56,6 +56,26 @@ class PdfReportTests(unittest.TestCase):
                                 "norm_reference": "СП 42.13330.2026, таблица 6.3",
                             },
                             {
+                                "code": "TREE_SIDEWALK_0_7", "target": "sidewalk", "status": "passed",
+                                "actual_distance_m": 4.0, "required_distance_m": 0.7,
+                                "norm_reference": "СП 42.13330.2026, таблица 6.3",
+                            },
+                            {
+                                "code": "TREE_ROAD_EDGE_2", "target": "road_edge", "status": "passed",
+                                "actual_distance_m": 5.5, "required_distance_m": 2.0,
+                                "norm_reference": "СП 42.13330.2026, таблица 6.3",
+                            },
+                            {
+                                "code": "TREE_HEAT_2", "target": "heat_pipe", "status": "passed",
+                                "actual_distance_m": 8.0, "required_distance_m": 2.0,
+                                "norm_reference": "СП 42.13330.2026, таблица 6.3",
+                            },
+                            {
+                                "code": "TREE_WATER_2", "target": "water_pipe", "status": "passed",
+                                "actual_distance_m": 9.0, "required_distance_m": 2.0,
+                                "norm_reference": "СП 42.13330.2026, таблица 6.3",
+                            },
+                            {
                                 "code": "TREE_GAS_1_5", "status": "manual_review",
                                 "norm_reference": "СП 42.13330.2026, таблица 6.3",
                             },
@@ -125,6 +145,10 @@ class PdfReportTests(unittest.TestCase):
             self.assertIn("таблица 6.3", text)
             self.assertIn("п. 2.1.13", " ".join(text.split()))
             self.assertIn("6.20 / 5.00", text)
+            self.assertIn("тротуар: 4.00 / 0.70", text)
+            self.assertIn("теплосеть: 8.00 / 2.00", text)
+            self.assertIn("водопровод: 9.00 / 2.00", text)
+            self.assertNotIn("Ещё 2 проверки", text)
             self.assertIn("Требуется ручная проверка: газопровод (TREE_GAS_1_5)", text)
             links = [annotation.get_object().get("/A", {}).get("/URI")
                      for page in reader.pages for annotation in page.get("/Annots", [])]
