@@ -251,7 +251,7 @@ $roadCorrectionsPath = if ([string]::IsNullOrWhiteSpace($RoadCorrections)) {
 }
 
 if (-not (Test-Path -LiteralPath $python)) {
-    throw "Python environment was not found: $python. Create .venv and install requirements.txt first."
+    throw "Python environment was not found: $python. Run scripts/install.ps1 first."
 }
 if (-not (Test-Path -LiteralPath $extractor)) {
     $go = Get-Command go -ErrorAction SilentlyContinue
