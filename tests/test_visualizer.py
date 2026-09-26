@@ -11,6 +11,7 @@ from src.visualization.prepare_scene import (
     build_manifest, camera_records, choose_focuses, place_pedestrian_camera,
     scatter_points, triangle_records,
 )
+from src.visualization.plant_prompt import after_prompt, scene_plant_summary
 
 
 def write_features(path: Path, features: list[dict]) -> None:
@@ -96,6 +97,51 @@ class VisualizerTests(unittest.TestCase):
             self.assertEqual(manifest["shrubs"][0]["position"], [1.0, 2.0])
             self.assertEqual(manifest["counts"]["proposed_shrub_instances"], 1)
             self.assertTrue(scene.exists())
+
+    def test_species_mask_and_shrub_footprint_drive_photo_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            normalized = root / "normalized.geojsonl"
+            constraints = root / "constraints.geojsonl"
+            plan = root / "plan.geojsonl"
+            normalized.write_text("", encoding="utf-8")
+            write_features(constraints, [{
+                "type": "Feature", "properties": {"object_type": "base_allowed_area"},
+                "geometry": mapping(box(-20, -20, 20, 20)),
+            }])
+            write_features(plan, [{
+                "type": "Feature", "properties": {
+                    "plant_type": "shrub", "planting_id": "S-1", "species": "Дерен белый",
+                    "symbol_radius_m": 0.5, "footprint_radius_m": 0.75,
+                }, "geometry": mapping(Point(0, 0)),
+            }, {
+                "type": "Feature", "properties": {
+                    "plant_type": "tree", "planting_id": "T-1", "species": "Липа мелколистная",
+                    "symbol_radius_m": 2.0,
+                }, "geometry": mapping(Point(3, 0)),
+            }, {
+                "type": "Feature", "properties": {
+                    "plant_type": "herbaceous", "planting_id": "H-1",
+                    "species": "Газонная травосмесь",
+                }, "geometry": mapping(box(-5, -5, -2, -2)),
+            }])
+            manifest = build_manifest(normalized, constraints, plan, root / "scene.json",
+                                      None, 15.0)
+            shrub = manifest["shrubs"][0]
+            self.assertEqual(shrub["radius"], 0.75)
+            self.assertEqual(shrub["species"], "Дерен белый")
+            self.assertNotEqual(shrub["mask_color"], manifest["proposed_trees"][0]["mask_color"])
+            self.assertTrue(any(surface.get("species") == "Газонная травосмесь" and
+                                surface.get("mask_color") for surface in manifest["surfaces"]))
+            summary = scene_plant_summary(manifest)
+            self.assertEqual(next(item for item in summary if item["plant_type"] == "shrub")
+                             ["hardiness_zone_min"], 2)
+            prompt = after_prompt("overview", manifest)
+            self.assertIn("Дерен белый", prompt)
+            self.assertIn("Cornus alba", prompt)
+            self.assertIn("Газонная травосмесь", prompt)
+            self.assertIn("continuous", prompt)
+            self.assertIn(shrub["mask_color"], prompt)
 
 
 if __name__ == "__main__":

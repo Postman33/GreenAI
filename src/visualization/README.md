@@ -29,7 +29,9 @@ For the current pipeline output, for example:
 
 The Blender preview renders a representative 120 x 120 m fragment. Current
 point-based shrub plantings are placed at their actual plan coordinates, not
-scattered again across a shrub bed. The scene includes existing trees, roads,
+scattered again across a shrub bed. The visualization uses each shrub's validated
+planting-footprint radius rather than the smaller CAD symbol radius, so touching
+shrub crowns read as a continuous mass. The scene includes existing trees, roads,
 buildings, lawns, and proposed plantings. Heights and plant appearance are
 illustrative when the DXF does not provide them.
 
@@ -38,6 +40,7 @@ Outputs:
 - `overview_before.png` / `overview_after.png`;
 - `pedestrian_before.png` / `pedestrian_after.png`;
 - `top_after.png`;
+- `overview_plant_mask.png` / `pedestrian_plant_mask.png` (false colors per proposed species);
 - `greenai_scene.blend`;
 - `render_manifest.json`.
 
@@ -81,18 +84,38 @@ Append one comparison sheet per place to the atlas:
   --output .\output\batch_10004141_genplan\planting_plan_atlas_gallery.pdf
 ```
 
-No cloud account or API token is required.  A token is needed only for an
-optional later AI relighting/inpainting step.  The deterministic Blender images
-remain the source of geometry, perspective and before/after comparison.
+No cloud account or API token is required for Blender. The deterministic
+Blender images remain the source of geometry, perspective and before/after
+comparison.
 
 ## Photorealistic enhancement
 
-The checked-in prompts under `prompts/` convert `overview_after.png` and
-`pedestrian_after.png` into presentation images.  The Blender image is always
-the geometry reference.  The enhanced image is a conceptual visualization and
-must not replace the DXF or the Blender render during validation.
+The OpenRouter command builds each prompt from `scene.json` and the plant catalog
+in `plant_prompt.py`. The checked-in text under `prompts/` is for manual reference.
+The Blender image remains the geometry reference. The enhanced image is a
+conceptual visualization and must not replace the DXF or Blender validation.
 
-Codex/ChatGPT built-in image generation does not require a project API key. To
-run the same enhancement automatically from a standalone backend, configure a
-cloud image provider and its API key. Keep credentials in an environment
-variable; never put them in the repository or `scene.json`.
+OpenRouter enhancement of one matched before/after pair:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\render_photorealistic_gallery.py `
+  --gallery-index .\output\batch_10004141_genplan\blender_gallery\gallery_index.json `
+  --places 1 --views overview --max-images 2 --max-cost-usd 0.10
+```
+
+The script reads `OPENROUTER_API_KEY` (or the older `OPENAI_API_KEY`) from the
+environment or the ignored `config/openai.env`. By default it makes at most two
+requests using `openai/gpt-image-2` at `quality=low`, and records actual API
+cost in `place_XX/photorealistic/generation_report.json`. Existing successful
+images are reused. The AFTER prompt is generated from `scene.json`: it names the
+actual proposed species, checks hardiness against the project catalog when an
+exact entry exists, and explains the Blender color-mask legend. It asks for a
+continuous mature shrub mass. The AFTER request uses the Blender AFTER view and
+plant mask as references; the BEFORE request uses the Blender BEFORE view. This
+keeps the proposed geometry more influential than an AI interpretation of the
+earlier photograph. The cost limit stops *subsequent* requests based on reported
+usage; it cannot guarantee a hard cap on a request already in flight. Use
+`--views both --max-images 4` for both camera angles. These images are
+presentation visuals; their exact boundaries and species appearance remain
+conceptual, so validate placement against the Blender render and DXF. Old
+galleries without `*_plant_mask.png` must be rerendered first.

@@ -90,6 +90,8 @@ def create_tree(name, data, trunk_mat, leaf_mat, target, proposed):
         crown.name = f"{name}_crown_{index}"
         crown.scale = (radius * (0.82 if index else 1.0), radius * 0.82, height * 0.25)
         crown.data.materials.append(leaf_mat)
+        if proposed:
+            crown["plant_mask_color"] = data.get("mask_color", "#00BFFF")
         move_to_collection(crown, target)
     return proposed
 
@@ -103,7 +105,51 @@ def create_shrub(name, data, mat, target):
     obj.name = name
     obj.scale = (radius, radius * 0.88, height * 0.55)
     obj.data.materials.append(mat)
+    if "mask_color" in data:
+        obj["plant_mask_color"] = data["mask_color"]
     move_to_collection(obj, target)
+
+
+def mask_material(color):
+    """Unlit semantic color, independent of sun and scene materials."""
+    value = bpy.data.materials.new("Plant mask " + color)
+    value.use_nodes = True
+    nodes = value.node_tree.nodes
+    nodes.clear()
+    output = nodes.new("ShaderNodeOutputMaterial")
+    emission = nodes.new("ShaderNodeEmission")
+    channels = [int(color[index:index + 2], 16) / 255 for index in (1, 3, 5)]
+    linear = [channel / 12.92 if channel <= 0.04045 else
+              ((channel + 0.055) / 1.055) ** 2.4 for channel in channels]
+    emission.inputs["Color"].default_value = (*linear, 1.0)
+    emission.inputs["Strength"].default_value = 1.0
+    value.node_tree.links.new(emission.outputs[0], output.inputs["Surface"])
+    return value
+
+
+def render_plant_masks(scene, manifest, output_dir, cameras, proposed):
+    black = mask_material("#000000")
+    colors = {entry["color"] for entry in manifest.get("plant_mask_legend", [])}
+    colors.update(obj.get("plant_mask_color") for obj in proposed.objects
+                  if obj.get("plant_mask_color"))
+    swatches = {color: mask_material(color) for color in colors}
+    for obj in bpy.data.objects:
+        if obj.type == "MESH":
+            color = obj.get("plant_mask_color")
+            obj.data.materials.clear()
+            obj.data.materials.append(swatches.get(color, black))
+    background = scene.world.node_tree.nodes.get("Background")
+    background.inputs["Color"].default_value = (0, 0, 0, 1)
+    scene.view_settings.view_transform = "Standard"
+    try:
+        scene.view_settings.look = "None"
+    except TypeError:
+        pass
+    set_proposed_visible(proposed, True)
+    for camera in cameras:
+        scene.camera = camera
+        scene.render.filepath = str(output_dir / f"{camera.name}_plant_mask.png")
+        bpy.ops.render.render(write_still=True)
 
 
 def point_camera(camera, position, target):
@@ -189,7 +235,10 @@ def render_scene(manifest_path: Path, output_dir: Path, quality: str,
     ground.name = "Base terrain"
     for surface in manifest["surfaces"]:
         target = proposed if surface.get("proposed") else context
-        mesh_from_triangles(surface["name"], surface["triangles"], materials[surface["material"]], target)
+        obj = mesh_from_triangles(surface["name"], surface["triangles"],
+                                  materials[surface["material"]], target)
+        if "mask_color" in surface:
+            obj["plant_mask_color"] = surface["mask_color"]
     for index, building in enumerate(manifest["buildings"], start=1):
         building_object(f"Building_{index:03d}", building["exterior"], building["height"],
                         materials["building"], context)
@@ -203,6 +252,7 @@ def render_scene(manifest_path: Path, output_dir: Path, quality: str,
         create_shrub(f"ProposedShrub_{index:04d}", shrub, materials["shrub"], proposed)
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    rendered_cameras = []
     for camera_data in manifest["cameras"]:
         if camera_names is not None and camera_data["name"] not in camera_names:
             continue
@@ -215,6 +265,7 @@ def render_scene(manifest_path: Path, output_dir: Path, quality: str,
         else:
             camera_object.data.lens = camera_data["lens_mm"]
         scene.camera = camera_object
+        rendered_cameras.append(camera_object)
         states = (True,) if camera_data["name"] == "top" else (False, True)
         for visible in states:
             set_proposed_visible(proposed, visible)
@@ -223,6 +274,7 @@ def render_scene(manifest_path: Path, output_dir: Path, quality: str,
             bpy.ops.render.render(write_still=True)
     set_proposed_visible(proposed, True)
     bpy.ops.wm.save_as_mainfile(filepath=str(output_dir / "greenai_scene.blend"))
+    render_plant_masks(scene, manifest, output_dir, rendered_cameras, proposed)
     (output_dir / "render_manifest.json").write_text(
         json.dumps({"scene": str(manifest_path), "quality": quality,
                     "images": sorted(path.name for path in output_dir.glob("*.png"))},

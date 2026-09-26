@@ -28,7 +28,30 @@ from shapely.ops import unary_union
 from shapely.validation import make_valid
 
 
-SCENE_VERSION = 1
+SCENE_VERSION = 2
+
+PLANT_MASK_COLORS = {
+    "tree": ("#00BFFF", "#2979FF", "#00E5FF", "#7C4DFF"),
+    "shrub": ("#FF2D55", "#FF8A00", "#E040FB", "#FF1744"),
+    "herbaceous": ("#A4F500", "#73D13D", "#C6FF00", "#50E3C2"),
+}
+
+
+def plant_mask_legend(plan: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Assign reproducible, distinct colors to the proposed species."""
+    names = sorted({(item["plant_type"], str(item["properties"].get("species") or "").strip())
+                    for item in plan if item["plant_type"] in PLANT_MASK_COLORS})
+    counters: dict[str, int] = defaultdict(int)
+    result = []
+    for plant_type, species in names:
+        colors = PLANT_MASK_COLORS[plant_type]
+        index = counters[plant_type]
+        counters[plant_type] += 1
+        if index >= len(colors):
+            raise ValueError(f"Too many {plant_type} species for unambiguous color mask")
+        result.append({"plant_type": plant_type, "species": species or f"unspecified {plant_type}",
+                       "color": colors[index]})
+    return result
 
 
 def polygon_parts(geometry: Any) -> Iterator[Polygon]:
@@ -311,6 +334,8 @@ def build_manifest(
     focus = Point(focus_x, focus_y) if focus_x is not None and focus_y is not None else choose_focus(plan, focus_radius_m)
     clip = box(focus.x - focus_radius_m, focus.y - focus_radius_m,
                focus.x + focus_radius_m, focus.y + focus_radius_m)
+    mask_legend = plant_mask_legend([item for item in plan if item["geometry"].intersects(clip)])
+    mask_colors = {(item["plant_type"], item["species"]): item["color"] for item in mask_legend}
 
     def clipped(value: Any | None) -> Any:
         if value is None or value.is_empty:
@@ -327,6 +352,7 @@ def build_manifest(
     existing_belts = clipped(normalized.get("existing_tree_belt"))
 
     plan_areas: dict[str, list[Any]] = defaultdict(list)
+    species_areas: dict[tuple[str, str], list[Any]] = defaultdict(list)
     proposed_trees: list[dict[str, Any]] = []
     proposed_shrubs: list[dict[str, Any]] = []
     for item in plan:
@@ -334,10 +360,13 @@ def build_manifest(
         if geometry.is_empty:
             continue
         properties = item["properties"]
+        species = str(properties.get("species") or f"unspecified {item['plant_type']}").strip()
         if item["plant_type"] == "tree" and isinstance(geometry, Point):
             proposed_trees.append(
                 {
                     "id": str(properties.get("planting_id", "tree")),
+                    "species": species,
+                    "mask_color": mask_colors[("tree", species)],
                     "position": local_xy(geometry.x, geometry.y, focus),
                     "height": 5.5,
                     "crown_radius": max(1.2, float(properties.get("symbol_radius_m", 2.5))),
@@ -347,19 +376,25 @@ def build_manifest(
             proposed_shrubs.append(
                 {
                     "id": str(properties.get("planting_id", "shrub")),
+                    "species": species,
+                    "mask_color": mask_colors[("shrub", species)],
                     "position": local_xy(geometry.x, geometry.y, focus),
                     "height": 0.75 + 0.25 * deterministic_fraction(geometry.x, geometry.y),
-                    "radius": max(0.3, float(properties.get("symbol_radius_m", 0.5))),
+                    # The CAD symbol is smaller than the validated planting footprint.
+                    # Use the latter for a visually continuous mature shrub mass.
+                    "radius": max(0.3, float(properties.get("footprint_radius_m")
+                                              or properties.get("symbol_radius_m", 0.5))),
                 }
             )
         elif geometry.geom_type in {"Polygon", "MultiPolygon", "GeometryCollection"}:
             plan_areas[item["plant_type"]].append(geometry)
+            species_areas[(item["plant_type"], species)].append(geometry)
 
     shrub_area = unary_union(plan_areas.get("shrub", [])) if plan_areas.get("shrub") else GeometryCollection()
-    herbaceous_area = unary_union(plan_areas.get("herbaceous", [])) if plan_areas.get("herbaceous") else GeometryCollection()
     # Older area-style planting files can still supply a shrub bed.  Current
     # pipeline plans individual shrub points; preserve those exact positions.
     shrub_points = scatter_points(shrub_area, 1.45, limit=1000) if not proposed_shrubs else []
+    fallback_shrub = next((item for item in mask_legend if item["plant_type"] == "shrub"), None)
     existing_belt_points = scatter_points(existing_belts, 2.8, limit=350)
     axis = principal_axis(road, [item["geometry"] for item in plan])
 
@@ -369,18 +404,31 @@ def build_manifest(
         ("road", road, "asphalt", 0.025),
         ("sidewalk", sidewalk, "paving", 0.085),
         ("base_ground", base, "soil_grass", 0.095),
-        ("herbaceous", herbaceous_area, "lawn", 0.115),
-        ("shrub_bed", shrub_area, "mulch", 0.125),
         ("utility_wells", wells, "metal", 0.14),
     ):
         triangles = triangle_records(geometry, focus, z)
         if triangles:
             surfaces.append({"name": name, "material": material, "triangles": triangles,
                              "proposed": name in {"herbaceous", "shrub_bed"}})
+    for (plant_type, species), areas in species_areas.items():
+        if plant_type not in {"herbaceous", "shrub"}:
+            continue
+        triangles = triangle_records(unary_union(areas), focus,
+                                     0.115 if plant_type == "herbaceous" else 0.125)
+        if triangles:
+            surfaces.append({"name": "herbaceous" if plant_type == "herbaceous" else "shrub_bed",
+                             "material": "lawn" if plant_type == "herbaceous" else "mulch",
+                             "species": species, "mask_color": mask_colors[(plant_type, species)],
+                             "triangles": triangles, "proposed": True})
 
     cameras = camera_records(axis, focus_radius_m)
     place_pedestrian_camera(cameras, focus, road, buildings, focus_radius_m,
                             existing_tree_points)
+    visible_species = {("tree", item["species"]) for item in proposed_trees}
+    visible_species.update(("shrub", item["species"]) for item in proposed_shrubs)
+    if shrub_points and fallback_shrub:
+        visible_species.add(("shrub", fallback_shrub["species"]))
+    visible_species.update(key for key in species_areas if key[0] in {"shrub", "herbaceous"})
     manifest = {
         "version": SCENE_VERSION,
         "coordinate_reference": "local_dxf_coordinates_recentered",
@@ -392,6 +440,8 @@ def build_manifest(
             "constraint_map": str(constraints_path),
             "planting_plan": str(planting_plan_path),
         },
+        "plant_mask_legend": [item for item in mask_legend
+                              if (item["plant_type"], item["species"]) in visible_species],
         "surfaces": surfaces,
         "buildings": polygon_records(buildings, focus, 12.0),
         "proposed_trees": proposed_trees,
@@ -406,6 +456,8 @@ def build_manifest(
         ],
         "shrubs": proposed_shrubs + [
             {
+                "species": fallback_shrub["species"] if fallback_shrub else "unspecified shrub",
+                "mask_color": fallback_shrub["color"] if fallback_shrub else PLANT_MASK_COLORS["shrub"][0],
                 "position": local_xy(point.x, point.y, focus),
                 "height": 0.65 + deterministic_fraction(point.x, point.y) * 0.35,
                 "radius": 0.55 + deterministic_fraction(point.y, point.x) * 0.25,

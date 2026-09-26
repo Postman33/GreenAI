@@ -283,12 +283,13 @@ function Get-OutputPath {
 
 function Test-OpenAIKeyConfigured {
     param([string]$Path)
+    if ($env:OPENROUTER_API_KEY -or $env:OPENAI_API_KEY) { return $true }
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
     try {
         foreach ($line in [IO.File]::ReadAllLines($Path)) {
-            if ($line -match '^\s*OPENAI_API_KEY\s*=\s*(.+?)\s*$') {
-                $value = $Matches[1].Trim().Trim('"').Trim("'")
-                return -not [string]::IsNullOrWhiteSpace($value)
+            if ($line -match '^\s*(OPENROUTER_API_KEY|OPENAI_API_KEY)\s*=\s*(.+?)\s*$') {
+                $value = $Matches[2].Trim().Trim('"').Trim("'")
+                if (-not [string]::IsNullOrWhiteSpace($value)) { return $true }
             }
         }
     } catch {
@@ -303,7 +304,7 @@ function Show-VisualizationMenu {
         New-Item -ItemType Directory -Path $folder -Force | Out-Null
         [IO.File]::WriteAllText(
             $script:defaultOpenAiKeyFile,
-            "OPENAI_API_KEY=`r`n",
+            "OPENROUTER_API_KEY=`r`n",
             [Text.UTF8Encoding]::new($false)
         )
     }
@@ -315,17 +316,22 @@ function Show-VisualizationMenu {
             [IO.Path]::GetFileName($script:openAiKeyFile)
         }
         $labels = @(
-            "Файл ключа OpenAI: $keyName ($keyStatus)",
-            "Строить фотореалистичные изображения: выключено",
+            "Файл ключа OpenRouter: $keyName ($keyStatus)",
+            "Фотореализм после расчёта: $(if ($script:generatePhotorealistic) { 'включён' } else { 'выключен' })",
             "Назад"
         )
-        switch (Read-MenuChoice "Фотореализм" @("1", "2", "0") $labels "Генерация изображений пока не подключена") {
+        switch (Read-MenuChoice "Фотореализм" @("1", "2", "0") $labels "Один участок, два ракурса, до 4 изображений и 0,10 USD") {
             "1" {
-                $candidate = Ask-ExistingPath "Файл с OPENAI_API_KEY (Enter — config\openai.env)"
+                $candidate = Ask-ExistingPath "Файл с OPENROUTER_API_KEY (Enter — config\openai.env)"
                 $script:openAiKeyFile = if ($candidate) { $candidate } else { $script:defaultOpenAiKeyFile }
             }
             "2" {
-                $script:notice = "Генерация пока недоступна и не будет запущена."
+                if (-not $script:generatePhotorealistic -and -not (Test-OpenAIKeyConfigured $script:openAiKeyFile)) {
+                    $script:notice = "Сначала укажите ключ OpenRouter."
+                } else {
+                    $script:generatePhotorealistic = -not $script:generatePhotorealistic
+                    $script:notice = "Фотореализм: $(if ($script:generatePhotorealistic) { 'включён' } else { 'выключен' })."
+                }
                 if (-not $script:interactiveUi) { Write-Host $script:notice -ForegroundColor Yellow }
             }
             "0" { return }
@@ -378,6 +384,7 @@ $script:corrections = ""
 $script:request = ""
 $script:defaultOpenAiKeyFile = Join-Path $workspace "config\openai.env"
 $script:openAiKeyFile = $script:defaultOpenAiKeyFile
+$script:generatePhotorealistic = $false
 
 try {
     if (-not $script:providedAnswers -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
@@ -427,7 +434,7 @@ while ($true) {
         "Режим расчёта     $modeLabel",
         "Схема посадок     $presetLabel",
         "Доп. настройки",
-        "Фотореализм       выключен",
+        "Фотореализм       $(if ($script:generatePhotorealistic) { 'включён' } else { 'выключен' })",
         "Построить план    →",
         "Выход"
     )
@@ -501,7 +508,7 @@ while ($true) {
                 if ($options.ContainsKey($key)) { Write-Host "  $key = $($options[$key])" }
             }
             Write-Host "  Отладочный DXF = $(Join-Path $outputPath 'planting_diagnostics.dxf')"
-            Write-Host "  Фотореалистичные изображения = выключены (OpenAI не вызывается)"
+            Write-Host "  Фотореалистичные изображения = $(if ($script:generatePhotorealistic) { 'включены (OpenRouter)' } else { 'выключены' })"
             if ($DryRun) {
                 Write-Host "Проверка параметров завершена; пайплайн не запускался."
                 return
@@ -509,6 +516,14 @@ while ($true) {
             Push-Location $workspace
             try {
                 & $pipeline @options
+                if ($script:generatePhotorealistic) {
+                    $python = Join-Path $workspace ".venv\Scripts\python.exe"
+                    $gallery = Join-Path $outputPath "blender_gallery\gallery_index.json"
+                    & $python (Join-Path $PSScriptRoot "render_visualization_gallery.py") --pipeline-output $outputPath --places 1 --quality draft
+                    if ($LASTEXITCODE -ne 0) { throw "Blender gallery failed; pipeline result remains in $outputPath" }
+                    & $python (Join-Path $PSScriptRoot "render_photorealistic_gallery.py") --gallery-index $gallery --key-file $script:openAiKeyFile --places 1 --views both --max-images 4 --max-cost-usd 0.10
+                    if ($LASTEXITCODE -ne 0) { throw "Photorealistic gallery failed; pipeline result remains in $outputPath" }
+                }
             } finally {
                 Pop-Location
             }
