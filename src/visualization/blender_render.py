@@ -159,7 +159,8 @@ def set_proposed_visible(target, visible):
     target.hide_viewport = not visible
 
 
-def render_scene(manifest_path: Path, output_dir: Path, quality: str) -> None:
+def render_scene(manifest_path: Path, output_dir: Path, quality: str,
+                 camera_names: set[str] | None = None) -> None:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
@@ -203,6 +204,8 @@ def render_scene(manifest_path: Path, output_dir: Path, quality: str) -> None:
 
     output_dir.mkdir(parents=True, exist_ok=True)
     for camera_data in manifest["cameras"]:
+        if camera_names is not None and camera_data["name"] not in camera_names:
+            continue
         camera_object = bpy.data.objects.new(camera_data["name"], bpy.data.cameras.new(camera_data["name"] + "Data"))
         scene.collection.objects.link(camera_object)
         point_camera(camera_object, camera_data["position"], camera_data["target"])
@@ -234,8 +237,13 @@ def main():
     parser.add_argument("--scene", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--quality", choices=("draft", "final"), default="draft")
+    parser.add_argument("--views", default="overview,pedestrian,top",
+                        help="Comma-separated camera names")
     args = parser.parse_args(argv)
-    render_scene(args.scene.resolve(), args.output.resolve(), args.quality)
+    camera_names = {name.strip() for name in args.views.split(",") if name.strip()}
+    if not camera_names or not camera_names <= {"overview", "pedestrian", "top"}:
+        parser.error("--views must contain overview, pedestrian, or top")
+    render_scene(args.scene.resolve(), args.output.resolve(), args.quality, camera_names)
 
 
 if __name__ == "__main__":

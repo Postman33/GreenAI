@@ -22,7 +22,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Patch
-from shapely.geometry import GeometryCollection, MultiPoint, Point, Polygon, box, shape
+from shapely.geometry import GeometryCollection, LineString, MultiPoint, Point, Polygon, box, shape
 from shapely import constrained_delaunay_triangles
 from shapely.ops import unary_union
 from shapely.validation import make_valid
@@ -108,6 +108,36 @@ def choose_focus(plan: list[dict[str, Any]], radius: float) -> Point:
         raise ValueError("Planting plan has neither points nor polygonal areas")
     largest = max((part for area in areas for part in polygon_parts(area)), key=lambda item: item.area)
     return largest.representative_point()
+
+
+def choose_focuses(plan: list[dict[str, Any]], radius: float, count: int) -> list[Point]:
+    """Pick planted, spatially separated places for matched before/after views."""
+    if count < 1:
+        raise ValueError("At least one focus place is required")
+    trees = [item["geometry"] for item in plan
+             if item["plant_type"] == "tree" and isinstance(item["geometry"], Point)]
+    shrubs = [item["geometry"] for item in plan
+              if item["plant_type"] == "shrub" and isinstance(item["geometry"], Point)]
+    candidates = trees or shrubs[::max(1, len(shrubs) // 150)]
+    if not candidates:
+        return [choose_focus(plan, radius)]
+
+    def score(candidate: Point) -> float:
+        tree_count = sum(abs(point.x - candidate.x) <= radius and
+                         abs(point.y - candidate.y) <= radius for point in trees)
+        shrub_count = sum(abs(point.x - candidate.x) <= radius and
+                          abs(point.y - candidate.y) <= radius for point in shrubs)
+        return tree_count * 20.0 + min(shrub_count, 500) * 0.08
+
+    ranked = sorted(candidates, key=lambda point: (-score(point), point.x, point.y))
+    chosen: list[Point] = []
+    for separation in (radius * 2.2, radius * 1.6):
+        for candidate in ranked:
+            if all(candidate.distance(other) >= separation for other in chosen):
+                chosen.append(candidate)
+                if len(chosen) >= count:
+                    return chosen
+    return chosen
 
 
 def principal_axis(geometry: Any, fallback: Iterable[Any]) -> tuple[float, float]:
@@ -221,6 +251,50 @@ def camera_records(axis: tuple[float, float], radius: float) -> list[dict[str, A
     ]
 
 
+def place_pedestrian_camera(cameras: list[dict[str, Any]], focus: Point,
+                            road: Any, buildings: Any, radius: float,
+                            existing_trees: Iterable[Point] = ()) -> None:
+    """Move the eye onto a road with an unobstructed view of the planting focus."""
+    if road.is_empty:
+        next(item for item in cameras if item["name"] == "pedestrian")["placement"] = "unverified_no_road"
+        return
+    camera = next(item for item in cameras if item["name"] == "pedestrian")
+    camera["placement"] = "unverified_no_clear_view"
+    desired = Point(focus.x + camera["position"][0],
+                    focus.y + camera["position"][1])
+    safe_road = road.buffer(-0.75)
+    if safe_road.is_empty:
+        safe_road = road
+    building_clearance = buildings.buffer(0.5) if not buildings.is_empty else buildings
+    tree_points = list(existing_trees)
+    step = radius / 10.0
+    candidates: list[tuple[float, Point]] = []
+    for ix in range(-9, 10):
+        for iy in range(-9, 10):
+            point = Point(focus.x + ix * step, focus.y + iy * step)
+            distance = point.distance(focus)
+            if not radius * 0.3 <= distance <= radius * 0.95:
+                continue
+            if not safe_road.covers(point):
+                continue
+            if any(point.distance(tree) < 4.0 for tree in tree_points):
+                continue
+            sightline = LineString([point, focus])
+            if not building_clearance.is_empty and sightline.intersects(building_clearance):
+                continue
+            occluding_trees = sum(sightline.distance(tree) < 2.5
+                                  for tree in tree_points if tree.distance(focus) > 3.0)
+            score = (point.distance(desired) + 0.18 * abs(distance - radius * 0.60)
+                     + occluding_trees * radius * 0.8)
+            candidates.append((score, point))
+    if not candidates:
+        return
+    point = min(candidates, key=lambda item: item[0])[1]
+    camera["position"] = [point.x - focus.x, point.y - focus.y, 1.7]
+    camera["target"] = [0.0, 0.0, 2.4]
+    camera["placement"] = "road_with_clear_view"
+
+
 def build_manifest(
     normalized_path: Path,
     constraints_path: Path,
@@ -304,6 +378,9 @@ def build_manifest(
             surfaces.append({"name": name, "material": material, "triangles": triangles,
                              "proposed": name in {"herbaceous", "shrub_bed"}})
 
+    cameras = camera_records(axis, focus_radius_m)
+    place_pedestrian_camera(cameras, focus, road, buildings, focus_radius_m,
+                            existing_tree_points)
     manifest = {
         "version": SCENE_VERSION,
         "coordinate_reference": "local_dxf_coordinates_recentered",
@@ -343,7 +420,7 @@ def build_manifest(
             }
             for point in existing_belt_points
         ],
-        "cameras": camera_records(axis, focus_radius_m),
+        "cameras": cameras,
         "render": {"width": 1280, "height": 720, "quality": "draft"},
         "counts": {
             "proposed_trees": len(proposed_trees),

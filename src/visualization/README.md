@@ -55,6 +55,32 @@ The appendix uses four PNG files from `renders`. They can later be replaced by
 photorealistic views with the same cameras, while the CAD plan and atlas tables
 remain unchanged.
 
+## Several places with matched before/after cameras
+
+Use the gallery command to choose three spatially separated planting locations
+and render overview and pedestrian before/after pairs at each one:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\render_visualization_gallery.py `
+  --pipeline-output .\output\batch_10004141_genplan `
+  --places 3 --radius 45 --quality draft
+```
+
+Each `place_XX/renders` directory contains four PNGs and a `.blend` scene.
+`gallery_index.json` records the DXF focus coordinates, counts and both camera
+transforms. For a given camera, only the proposed-planting collection is
+switched between the two renders; the camera and existing surroundings stay
+fixed.
+
+Append one comparison sheet per place to the atlas:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\append_blender_preview.py `
+  --atlas .\output\batch_10004141_genplan\planting_plan_atlas.pdf `
+  --gallery-index .\output\batch_10004141_genplan\blender_gallery\gallery_index.json `
+  --output .\output\batch_10004141_genplan\planting_plan_atlas_gallery.pdf
+```
+
 No cloud account or API token is required.  A token is needed only for an
 optional later AI relighting/inpainting step.  The deterministic Blender images
 remain the source of geometry, perspective and before/after comparison.

@@ -5,9 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from shapely.geometry import Point, Polygon, mapping
+from shapely.geometry import LineString, Point, Polygon, box, mapping
 
-from src.visualization.prepare_scene import build_manifest, camera_records, scatter_points, triangle_records
+from src.visualization.prepare_scene import (
+    build_manifest, camera_records, choose_focuses, place_pedestrian_camera,
+    scatter_points, triangle_records,
+)
 
 
 def write_features(path: Path, features: list[dict]) -> None:
@@ -15,6 +18,31 @@ def write_features(path: Path, features: list[dict]) -> None:
 
 
 class VisualizerTests(unittest.TestCase):
+    def test_pedestrian_camera_moves_out_of_building_onto_visible_road(self) -> None:
+        focus = Point(0, 0)
+        cameras = camera_records((0.0, 1.0), 20)
+        desired = cameras[1]["position"]
+        building = box(desired[0] - 2, desired[1] - 2,
+                       desired[0] + 2, desired[1] + 2)
+        road = box(-30, -30, 30, 30)
+        place_pedestrian_camera(cameras, focus, road, building, 20)
+        eye = Point(*cameras[1]["position"][:2])
+        self.assertEqual(cameras[1]["placement"], "road_with_clear_view")
+        self.assertTrue(road.buffer(-0.75).covers(eye))
+        self.assertFalse(LineString([eye, focus]).intersects(building.buffer(0.5)))
+
+    def test_gallery_focuses_cover_distinct_planted_places(self) -> None:
+        plan = [
+            {"plant_type": "tree", "geometry": Point(x, 0)}
+            for x in (0, 2, 100, 102, 200, 202)
+        ]
+        focuses = choose_focuses(plan, radius=20, count=3)
+        self.assertEqual(len(focuses), 3)
+        self.assertTrue(all(a.distance(b) >= 40 for i, a in enumerate(focuses)
+                            for b in focuses[i + 1:]))
+        self.assertTrue(all(any(focus.distance(item["geometry"]) <= 20 for item in plan)
+                            for focus in focuses))
+
     def test_camera_set_contains_matching_perspective_and_top_views(self) -> None:
         cameras = camera_records((0.0, 1.0), 60.0)
         self.assertEqual([item["name"] for item in cameras], ["overview", "pedestrian", "top"])

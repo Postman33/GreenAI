@@ -30,6 +30,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("output/visualization/renders"))
     parser.add_argument("--quality", choices=("draft", "final"), default="draft")
     parser.add_argument("--blender", type=Path)
+    parser.add_argument("--views", default="overview,pedestrian,top")
     args = parser.parse_args()
     blender = find_blender(args.blender)
     if blender is None:
@@ -41,7 +42,7 @@ def main() -> None:
     script = Path(__file__).with_name("blender_render.py").resolve()
     command = [str(blender), "-b", "--python-exit-code", "1", "--python", str(script), "--",
                "--scene", str(args.scene.resolve()), "--output", str(args.output.resolve()),
-               "--quality", args.quality]
+               "--quality", args.quality, "--views", args.views]
     print("Blender:", blender)
     subprocess.run(command, check=True)
 
