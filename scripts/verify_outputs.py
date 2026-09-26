@@ -121,7 +121,10 @@ def main() -> None:
     constraints = read_by_object_type(args.constraint_map)
     zones = read_by_object_type(args.plant_zones)
     _, base = one(constraints, "base_allowed_area")
-    _, road = one(constraints, "road_area")
+    road_features = constraints.get("road_area", [])
+    if len(road_features) > 1:
+        raise ValueError(f"Expected at most one 'road_area' feature, got {len(road_features)}")
+    road = road_features[0][1] if road_features else GeometryCollection()
     _, hard_surfaces = one(constraints, "hard_surface_area")
     sidewalk_features = constraints.get("sidewalk_area", [])
     if len(sidewalk_features) > 1:

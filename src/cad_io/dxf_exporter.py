@@ -381,7 +381,7 @@ def export_zones(
 
     if constraint_map_path is not None:
         road_area = load_constraint_geometry(
-            constraint_map_path, "road_area", required=not overlay_only
+            constraint_map_path, "road_area", required=False
         )
     else:
         road_area = Polygon()

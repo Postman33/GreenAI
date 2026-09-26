@@ -15,6 +15,33 @@ from tests.helpers import feature, raw_hatch, write_jsonl
 
 
 class ExporterTests(unittest.TestCase):
+    def test_diagnostic_export_accepts_drawing_without_reconstructed_road(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            zones = root / "zones.geojsonl"
+            constraints = root / "constraints.geojsonl"
+            normalized = root / "normalized.geojsonl"
+            output = root / "debug.dxf"
+            write_jsonl(zones, [
+                feature("plant_allow_zone", box(1, 1, 4, 4), plant_type="shrub"),
+            ])
+            write_jsonl(constraints, [
+                feature("hard_surface_area", box(8, 0, 10, 10)),
+                feature("base_allowed_area", box(0, 0, 8, 10)),
+            ])
+            write_jsonl(normalized, [feature("work_boundary", box(0, 0, 10, 10))])
+
+            plant_allow_zone_debug.build_debug_export(
+                zones, constraints, normalized, output, None, 180,
+            )
+
+            document = ezdxf.readfile(output)
+            self.assertEqual(len(document.audit().errors), 0)
+            self.assertEqual(
+                len(document.modelspace().query('*[layer=="DEBUG_ROAD_AREA"]')),
+                0,
+            )
+
     def test_diagnostic_export_accepts_drawing_without_sidewalk_area(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -468,8 +495,14 @@ class ExporterTests(unittest.TestCase):
                 any(value.startswith("advice_1=Сдвиньте центр растения") for value in metadata_values)
             )
             self.assertIn("norm_1=project parameter", metadata_values)
-            self.assertIn("DEBUG_REJECT_REASON_R_T_0001", result.layers)
-            self.assertTrue(result.layers.get("DEBUG_REJECT_REASON_R_T_0001").is_off())
+            self.assertNotIn("DEBUG_REJECT_REASON_R_T_0001", result.layers)
+            self.assertIn("DEBUG_REJECT_REASONS", result.layers)
+            self.assertTrue(result.layers.get("DEBUG_REJECT_REASONS").is_off())
+            reasons = list(
+                modelspace.query('MTEXT[layer=="DEBUG_REJECT_REASONS"]')
+            )
+            self.assertEqual(len(reasons), 1)
+            self.assertAlmostEqual(reasons[0].dxf.rotation, 0.0)
 
     def test_debug_surface_hypothesis_separates_hard_and_lawn(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

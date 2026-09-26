@@ -256,7 +256,8 @@ def export_diagnostic_legend(
         "| DEBUG_REVIEW_HEAT_CHAMBERS | Похожие на камеры контуры без колодца: требуется визуальная проверка, посадка автоматически не исключена. |",
         "| DEBUG_BASE_ALLOWED | Базовая область после абсолютных исключений. |",
         "| DEBUG_ALLOW_TREE / DEBUG_ALLOW_SHRUB | Область после применённых правил отступа. |",
-        "| DEBUG_REJECTED_* | Отклонённые точки; пояснение находится на соответствующем слое DEBUG_REJECT_REASON_*. |",
+        "| DEBUG_REJECTED_* | Отклонённые точки; полная причина хранится в метаданных GREEN_AI объекта. |",
+        "| DEBUG_REJECT_REASONS | Общий отключённый слой с выносками причин; отдельных слоёв на каждую точку нет. |",
         "",
         "| Тип посадки | Правило | Статус | Слой DXF | Отступ, единицы DXF | Причина / источник |",
         "|---|---|---|---|---:|---|",
@@ -646,6 +647,17 @@ def export_dxf(
             },
         )
 
+    rejected_reason_layer = "DEBUG_REJECT_REASONS"
+    if rejected_points:
+        if rejected_reason_layer not in document.layers:
+            rejected_reason_definition = document.layers.add(
+                rejected_reason_layer, color=1
+            )
+        else:
+            rejected_reason_definition = document.layers.get(rejected_reason_layer)
+        rejected_reason_definition.color = 1
+        rejected_reason_definition.off()
+
     for plant_type, items in sorted((rejected_points or {}).items()):
         suffix = re.sub(r"[^A-Z0-9_]+", "_", plant_type.upper()) or "PLANT"
         marker_layer = f"DEBUG_REJECTED_{suffix}"
@@ -691,28 +703,21 @@ def export_dxf(
                 dxfattribs={"layer": id_layer, "color": 1},
             ).set_placement((point.x + 0.6, point.y + 0.6))
 
-            reason_layer = "DEBUG_REJECT_REASON_" + re.sub(
-                r"[^A-Z0-9_]+", "_", candidate_id.upper()
-            )
-            if reason_layer not in document.layers:
-                reason_definition = document.layers.add(reason_layer, color=1)
-            else:
-                reason_definition = document.layers.get(reason_layer)
-            reason_definition.off()
             label_x, label_y = point.x + 1.0, point.y + 1.0
             modelspace.add_line(
                 (point.x, point.y),
                 (label_x, label_y),
-                dxfattribs={"layer": reason_layer, "color": 1},
+                dxfattribs={"layer": rejected_reason_layer, "color": 1},
             )
             modelspace.add_mtext(
                 "\\P".join(point_reason_lines(properties)),
                 dxfattribs={
-                    "layer": reason_layer,
+                    "layer": rejected_reason_layer,
                     "color": 1,
                     "char_height": 0.35,
                     "width": 65.0,
                     "insert": (label_x, label_y),
+                    "rotation": 0.0,
                 },
             )
 
@@ -933,9 +938,15 @@ def build_debug_export(
     hard_surfaces = as_polygonal(
         read_object_geometry(constraint_map_path, "hard_surface_area")
     )
-    road_area = as_polygonal(
-        read_object_geometry(constraint_map_path, "road_area")
-    )
+    try:
+        road_area = as_polygonal(
+            read_object_geometry(constraint_map_path, "road_area")
+        )
+    except ValueError:
+        # A conservative run may intentionally omit road_area when the source
+        # drawing has no explicit road-surface seed. Road-edge setbacks still
+        # remain available from normalized geometry.
+        road_area = Polygon()
     base_allowed_area = as_polygonal(
         read_object_geometry(constraint_map_path, "base_allowed_area")
     )

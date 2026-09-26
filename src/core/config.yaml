@@ -21,6 +21,15 @@ geobase_blocks:
     - "^Собранная ГЕО$"
     - "^01_Бортовые камни$"
     - "^02_Покрытия$"
+    # Some bound general plans group the complete survey and utility model
+    # into numbered root blocks, for example:
+    #   00.1_10004141_Топография
+    #   00.2_10004141_Сети
+    # Keep these expressions narrow so project sheets, dimensions and title
+    # blocks with the same numeric prefix are not recursively expanded.
+    - '^\d{2}\.\d+_\d+_Топография$'
+    - '^\d{2}\.\d+_\d+_Сети$'
+    - '^\d{2}_\d+_Границы работ$'
   # Предельная вложенность блоков при обходе. Защищает от зацикливания
   # и случайного разбора глубоко вложенных служебных блоков.
   max_depth: 12

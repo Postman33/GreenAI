@@ -21,6 +21,16 @@ CREATE TABLE plant_catalog (
     mature_crown_radius_m NUMERIC(5,2) CHECK (mature_crown_radius_m >= 0),
     dimension_source TEXT,
     selection_priority SMALLINT NOT NULL DEFAULT 100 CHECK (selection_priority >= 0),
+    hardiness_zone_min SMALLINT CHECK (hardiness_zone_min BETWEEN 1 AND 13),
+    hardiness_zone_max SMALLINT CHECK (hardiness_zone_max BETWEEN 1 AND 13),
+    climate_suitability TEXT NOT NULL DEFAULT 'conditional' CHECK (
+        climate_suitability IN ('recommended', 'conditional', 'seasonal_only')
+    ),
+    hardiness_source TEXT,
+    CHECK (
+        hardiness_zone_min IS NULL OR hardiness_zone_max IS NULL
+        OR hardiness_zone_min <= hardiness_zone_max
+    ),
     is_invasive BOOLEAN NOT NULL DEFAULT FALSE,
     is_toxic BOOLEAN,
     is_thorny BOOLEAN
@@ -52,6 +62,18 @@ COMMENT ON COLUMN plant_catalog.dimension_source IS
 
 COMMENT ON COLUMN plant_catalog.selection_priority IS
     'Приоритет выбора: меньшее число означает более предпочтительный вид.';
+
+COMMENT ON COLUMN plant_catalog.hardiness_zone_min IS
+    'Минимальная полная зона зимостойкости USDA, в которой растение обычно зимует; меньшее число означает большую морозостойкость.';
+
+COMMENT ON COLUMN plant_catalog.hardiness_zone_max IS
+    'Верхняя граница рекомендуемого диапазона полных зон USDA.';
+
+COMMENT ON COLUMN plant_catalog.climate_suitability IS
+    'Пригодность для многолетней посадки в Москве (расчётная зона 4): recommended, conditional или seasonal_only.';
+
+COMMENT ON COLUMN plant_catalog.hardiness_source IS
+    'Источник и уровень достоверности сведений о зимостойкости; сортовые значения требуют проверки у поставщика.';
 
 COMMENT ON COLUMN plant_catalog.is_invasive IS
     'Признак инвазивного вида; такие растения не рекомендуются.';

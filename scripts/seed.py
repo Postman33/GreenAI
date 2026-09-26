@@ -44,6 +44,10 @@ class Plant:
     mature_crown_radius_m: float | None = None
     dimension_source: str | None = None
     selection_priority: int = 100
+    hardiness_zone_min: int | None = None
+    hardiness_zone_max: int | None = None
+    climate_suitability: str = "conditional"
+    hardiness_source: str | None = None
     is_invasive: bool = False
     is_toxic: bool | None = None
     is_thorny: bool | None = None
@@ -129,75 +133,104 @@ MVP_DIMENSION_SOURCE = (
     "перед рабочим проектированием уточнить по данным питомника и дендролога"
 )
 
+HARDINESS_SOURCE = (
+    "Предварительный отбор GreenAI по диапазонам USDA/RHS Plant Finder; "
+    "для рабочей документации подтвердить конкретный сорт и партию у питомника"
+)
+
+
+def hardy_plant(
+    name: str,
+    plant_type: str,
+    zone_min: int,
+    zone_max: int,
+    **kwargs: Any,
+) -> Plant:
+    """Create a Moscow-screened catalog entry with traceable hardiness data."""
+    suitability = str(kwargs.pop("climate_suitability", "recommended"))
+    return Plant(
+        name,
+        plant_type,
+        hardiness_zone_min=zone_min,
+        hardiness_zone_max=zone_max,
+        climate_suitability=suitability,
+        hardiness_source=HARDINESS_SOURCE,
+        **kwargs,
+    )
+
 
 PLANTS = (
-    Plant("Сосна обыкновенная", "tree"),
-    Plant("Ель колючая", "tree"),
-    Plant("Береза бумажная", "tree"),
-    Plant("Клён остролистный 'Drummondii'", "tree"),
-    Plant(
+    hardy_plant("Сосна обыкновенная", "tree", 2, 7),
+    hardy_plant("Ель колючая", "tree", 2, 7),
+    hardy_plant("Береза бумажная", "tree", 2, 7),
+    hardy_plant("Клён остролистный 'Drummondii'", "tree", 4, 7),
+    hardy_plant(
         "Липа мелколистная 'Winter Orange'",
         "tree",
+        3,
+        7,
         min_spacing_m=5.0,
         recommended_spacing_m=6.0,
         mature_crown_radius_m=2.5,
         dimension_source=MVP_DIMENSION_SOURCE,
         selection_priority=10,
     ),
-    Plant("Клён Гиннала", "shrub"),
-    Plant("Можжевельник казацкий", "shrub"),
-    Plant("Можжевельник средний", "shrub"),
-    Plant("Сосна горная", "shrub"),
-    Plant("Туя западная Глобоза", "shrub"),
-    Plant("Туя западная Даника", "shrub"),
-    Plant("Сирень обыкновенная", "shrub"),
-    Plant("Сирень венгерская", "shrub"),
-    Plant("Ирга Ламарка", "shrub"),
-    Plant(
+    hardy_plant("Клён Гиннала", "shrub", 2, 8),
+    hardy_plant("Можжевельник казацкий", "shrub", 3, 7),
+    hardy_plant("Можжевельник средний", "shrub", 4, 9),
+    hardy_plant("Сосна горная", "shrub", 2, 7),
+    hardy_plant("Туя западная Глобоза", "shrub", 3, 7),
+    hardy_plant("Туя западная Даника", "shrub", 3, 7),
+    hardy_plant("Сирень обыкновенная", "shrub", 3, 7),
+    hardy_plant("Сирень венгерская", "shrub", 3, 7),
+    hardy_plant("Ирга Ламарка", "shrub", 4, 8),
+    hardy_plant(
         "Спирея серая",
         "shrub",
+        4,
+        8,
         min_spacing_m=1.5,
         recommended_spacing_m=2.0,
         mature_crown_radius_m=0.75,
         dimension_source=MVP_DIMENSION_SOURCE,
         selection_priority=10,
     ),
-    Plant("Гортензия древовидная", "shrub"),
-    Plant("Гортензия метельчатая", "shrub"),
-    Plant("Дёрен белый", "shrub", is_invasive=True),
-    Plant("Дёрен белый 'Elegantissima'", "shrub", is_invasive=True),
-    Plant("Рябинник 'Sem'", "shrub", is_invasive=True),
-    Plant("Кизильник блестящий", "shrub"),
-    Plant("Ива пурпурная 'Nana'", "shrub"),
-    Plant("Спирея японская", "shrub"),
-    Plant("Спирея березолистная", "shrub"),
-    Plant("Пузыреплодник калинолистный", "shrub", is_invasive=True),
-    Plant("Спирея березолистная Тор", "shrub"),
-    Plant("Боярышник Поль Скарлет", "shrub", is_thorny=True),
+    hardy_plant("Гортензия древовидная", "shrub", 3, 9),
+    hardy_plant("Гортензия метельчатая", "shrub", 3, 8),
+    hardy_plant("Дёрен белый", "shrub", 2, 7, is_invasive=True),
+    hardy_plant("Дёрен белый 'Elegantissima'", "shrub", 3, 7, is_invasive=True),
+    hardy_plant("Рябинник 'Sem'", "shrub", 3, 7, is_invasive=True),
+    hardy_plant("Кизильник блестящий", "shrub", 3, 7),
+    hardy_plant("Ива пурпурная 'Nana'", "shrub", 4, 8),
+    hardy_plant("Спирея японская", "shrub", 3, 8),
+    hardy_plant("Спирея березолистная", "shrub", 3, 8),
+    hardy_plant("Пузыреплодник калинолистный", "shrub", 2, 8, is_invasive=True),
+    hardy_plant("Спирея березолистная Тор", "shrub", 3, 8),
+    hardy_plant("Боярышник Поль Скарлет", "shrub", 4, 8, is_thorny=True),
     # Functional grass-cover option required by the case in addition to the
     # species list extracted from the project planting schedules. Its exact
     # seed mix must be specified by the landscape designer before construction.
-    Plant("Газонная травосмесь для городских территорий", "herbaceous", min_spacing_m=0.0, selection_priority=10),
-    Plant("Астильба китайская", "herbaceous"),
-    Plant("Бруннера крупнолистная", "herbaceous"),
-    Plant("Бузульник Пржевальского", "herbaceous"),
-    Plant("Вейник остроцветковый 'Карл Форстер'", "herbaceous"),
-    Plant("Вербена бонарская", "herbaceous"),
-    Plant("Волжанка двудомная", "herbaceous"),
-    Plant("Герань гибридная", "herbaceous"),
-    Plant("Герань крупнокорневищная", "herbaceous"),
-    Plant("Горец родственный", "herbaceous"),
-    Plant("Дербенник иволистный", "herbaceous"),
-    Plant("Котовник Фассена", "herbaceous"),
-    Plant("Лилейник гибридный 'Stella De Oro'", "herbaceous"),
-    Plant("Манжетка мягкая", "herbaceous"),
-    Plant("Очиток видный (сорта)", "herbaceous"),
-    Plant("Роджерсия конскокаштанолистная", "herbaceous"),
-    Plant("Сныть обыкновенная 'Variegata'", "herbaceous"),
-    Plant("Тиарелла сердцелистная", "herbaceous"),
-    Plant("Фалярис тростниковый", "herbaceous"),
-    Plant("Хоста гибридная", "herbaceous"),
-    Plant("Щучка дернистая", "herbaceous"),
+    hardy_plant("Газонная травосмесь для городских территорий", "herbaceous", 4, 8, min_spacing_m=0.0, selection_priority=10, climate_suitability="conditional"),
+    hardy_plant("Астильба китайская", "herbaceous", 4, 8),
+    hardy_plant("Бруннера крупнолистная", "herbaceous", 3, 8),
+    hardy_plant("Бузульник Пржевальского", "herbaceous", 4, 8),
+    hardy_plant("Вейник остроцветковый 'Карл Форстер'", "herbaceous", 4, 9),
+    hardy_plant("Вербена бонарская", "herbaceous", 7, 11, climate_suitability="seasonal_only"),
+    hardy_plant("Волжанка двудомная", "herbaceous", 3, 7),
+    hardy_plant("Герань гибридная", "herbaceous", 4, 8, climate_suitability="conditional"),
+    hardy_plant("Герань крупнокорневищная", "herbaceous", 4, 8),
+    hardy_plant("Горец родственный", "herbaceous", 5, 8, climate_suitability="conditional"),
+    hardy_plant("Дербенник иволистный", "herbaceous", 3, 9),
+    hardy_plant("Котовник Фассена", "herbaceous", 3, 8),
+    hardy_plant("Лилейник гибридный 'Stella De Oro'", "herbaceous", 3, 9),
+    hardy_plant("Манжетка мягкая", "herbaceous", 3, 8),
+    hardy_plant("Очиток видный (сорта)", "herbaceous", 3, 9, climate_suitability="conditional"),
+    hardy_plant("Роджерсия конскокаштанолистная", "herbaceous", 5, 7, climate_suitability="conditional"),
+    hardy_plant("Сныть обыкновенная 'Variegata'", "herbaceous", 4, 9),
+    hardy_plant("Тиарелла сердцелистная", "herbaceous", 4, 9),
+    hardy_plant("Фалярис тростниковый", "herbaceous", 3, 9),
+    hardy_plant("Хоста гибридная", "herbaceous", 3, 9, climate_suitability="conditional"),
+    hardy_plant("Щучка дернистая", "herbaceous", 4, 9),
 )
 
 
@@ -300,11 +333,15 @@ INSERT INTO plant_catalog (
     mature_crown_radius_m,
     dimension_source,
     selection_priority,
+    hardiness_zone_min,
+    hardiness_zone_max,
+    climate_suitability,
+    hardiness_source,
     is_invasive,
     is_toxic,
     is_thorny
 )
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (name) DO UPDATE SET
     plant_type = EXCLUDED.plant_type,
     min_spacing_m = EXCLUDED.min_spacing_m,
@@ -312,6 +349,10 @@ ON CONFLICT (name) DO UPDATE SET
     mature_crown_radius_m = EXCLUDED.mature_crown_radius_m,
     dimension_source = EXCLUDED.dimension_source,
     selection_priority = EXCLUDED.selection_priority,
+    hardiness_zone_min = EXCLUDED.hardiness_zone_min,
+    hardiness_zone_max = EXCLUDED.hardiness_zone_max,
+    climate_suitability = EXCLUDED.climate_suitability,
+    hardiness_source = EXCLUDED.hardiness_source,
     is_invasive = EXCLUDED.is_invasive,
     is_toxic = EXCLUDED.is_toxic,
     is_thorny = EXCLUDED.is_thorny
@@ -391,6 +432,49 @@ def ensure_compatible_schema(
                   AND column_name = 'dimension_source'
             ) THEN
                 EXECUTE 'ALTER TABLE plant_catalog ADD COLUMN dimension_source TEXT';
+            END IF;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'plant_catalog'
+                  AND column_name = 'hardiness_zone_min'
+            ) THEN
+                EXECUTE 'ALTER TABLE plant_catalog ADD COLUMN '
+                        'hardiness_zone_min SMALLINT '
+                        'CHECK (hardiness_zone_min BETWEEN 1 AND 13)';
+            END IF;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'plant_catalog'
+                  AND column_name = 'hardiness_zone_max'
+            ) THEN
+                EXECUTE 'ALTER TABLE plant_catalog ADD COLUMN '
+                        'hardiness_zone_max SMALLINT '
+                        'CHECK (hardiness_zone_max BETWEEN 1 AND 13)';
+            END IF;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'plant_catalog'
+                  AND column_name = 'climate_suitability'
+            ) THEN
+                EXECUTE 'ALTER TABLE plant_catalog ADD COLUMN '
+                        'climate_suitability TEXT NOT NULL DEFAULT ''conditional'' '
+                        'CHECK (climate_suitability IN '
+                        '(''recommended'', ''conditional'', ''seasonal_only''))';
+            END IF;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'plant_catalog'
+                  AND column_name = 'hardiness_source'
+            ) THEN
+                EXECUTE 'ALTER TABLE plant_catalog ADD COLUMN hardiness_source TEXT';
             END IF;
 
             IF EXISTS (
@@ -514,6 +598,10 @@ def ensure_compatible_schema(
         "mature_crown_radius_m",
         "dimension_source",
         "selection_priority",
+        "hardiness_zone_min",
+        "hardiness_zone_max",
+        "climate_suitability",
+        "hardiness_source",
         "is_invasive",
         "is_toxic",
         "is_thorny",
@@ -577,6 +665,10 @@ def seed(dsn: str) -> tuple[int, int, int]:
                         plant.mature_crown_radius_m,
                         plant.dimension_source,
                         plant.selection_priority,
+                        plant.hardiness_zone_min,
+                        plant.hardiness_zone_max,
+                        plant.climate_suitability,
+                        plant.hardiness_source,
                         plant.is_invasive,
                         plant.is_toxic,
                         plant.is_thorny,

@@ -84,6 +84,14 @@ def semantic_fingerprint(
             and int(tag.value) == 0
         ):
             continue
+        if (
+            entity_type in {"TEXT", "ATTRIB", "ATTDEF"}
+            and tag.code == 41
+            and float(tag.value) == 1.0
+        ):
+            # DXF writers may omit the explicit default text-width factor.
+            # The rendered text and insertion geometry remain unchanged.
+            continue
         if entity_type == "VIEWPORT" and tag.code == 292 and int(tag.value) == 1:
             continue
         if default_ellipse_extrusion and tag.code in {210, 220, 230}:

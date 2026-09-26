@@ -219,6 +219,51 @@ class PlantAllowZoneTests(unittest.TestCase):
             self.assertEqual(zone["properties"]["selectable_plants"][0]["name"], "Test tree")
             self.assertEqual(report_data["plant_catalog"]["tree"][0]["name"], "Test tree")
 
+    def test_excludes_seasonal_only_plant_from_moscow_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            constraints = root / "constraints.jsonl"
+            normalized = root / "normalized.jsonl"
+            output = root / "zones.jsonl"
+            report = root / "report.json"
+            write_jsonl(constraints, [feature("base_allowed_area", box(0, 0, 10, 10))])
+            write_jsonl(normalized, [])
+            catalog = {
+                "herbaceous": [
+                    {
+                        "id": 1, "name": "Hardy perennial", "plant_type": "herbaceous",
+                        "min_spacing_m": 0.5, "selection_priority": 1,
+                        "climate_suitability": "recommended", "is_invasive": False,
+                        "is_toxic": False, "is_thorny": False,
+                    },
+                    {
+                        "id": 2, "name": "Summer-only plant", "plant_type": "herbaceous",
+                        "min_spacing_m": 0.5, "selection_priority": 2,
+                        "climate_suitability": "seasonal_only", "is_invasive": False,
+                        "is_toxic": False, "is_thorny": False,
+                    },
+                ]
+            }
+            with patch.object(
+                plant_allow_zone, "load_rules", return_value={"herbaceous": []}
+            ), patch.object(plant_allow_zone, "load_plants", return_value=catalog):
+                plant_allow_zone.build_plant_allow_zones(
+                    constraints, normalized, output, report,
+                    "unused", {"herbaceous"}, 1.0,
+                )
+
+            report_data = json.loads(report.read_text(encoding="utf-8"))
+            plant_report = report_data["plant_types"]["herbaceous"]["plant_catalog"]
+            self.assertEqual(
+                [item["name"] for item in plant_report["selectable"]],
+                ["Hardy perennial"],
+            )
+            self.assertEqual(
+                [item["name"] for item in plant_report["excluded_not_winter_hardy"]],
+                ["Summer-only plant"],
+            )
+            self.assertEqual(plant_report["target_hardiness_zone"], 4)
+
     def test_build_applies_reconstructed_sidewalk_setback(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

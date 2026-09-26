@@ -20,6 +20,35 @@ from tests.helpers import feature, write_jsonl
 
 
 class ScriptTests(unittest.TestCase):
+    def test_manifest_treats_explicit_default_attribute_width_as_unchanged(self) -> None:
+        document = ezdxf.new("R2018")
+        block = document.blocks.new("LABEL")
+        block.add_attdef("TAG", (0, 0))
+        attribute = document.modelspace().add_blockref("LABEL", (0, 0)).add_attrib(
+            "TAG", "value"
+        )
+        collector = TagCollector(dxfversion="AC1032")
+        attribute.export_dxf(collector)
+        without_width = [tag for tag in collector.tags if tag.code != 41]
+        insert_at = next(
+            (index for index, tag in enumerate(without_width) if tag.code == 7),
+            len(without_width),
+        )
+        with_default_width = [
+            *without_width[:insert_at],
+            DXFTag(41, 1.0),
+            *without_width[insert_at:],
+        ]
+
+        self.assertEqual(
+            dxf_manifest.semantic_fingerprint(
+                "ATTRIB", without_width, "AC1032"
+            ),
+            dxf_manifest.semantic_fingerprint(
+                "ATTRIB", with_default_width, "AC1032"
+            ),
+        )
+
     def test_manifest_treats_explicit_default_ellipse_extrusion_as_unchanged(self) -> None:
         ellipse = ezdxf.new("R2018").modelspace().add_ellipse(
             (1, 2), major_axis=(2, 0), ratio=0.8
@@ -133,6 +162,17 @@ class ScriptTests(unittest.TestCase):
 
     def test_seed_catalog_and_rule_codes_are_unique(self) -> None:
         self.assertEqual(len(seed.PLANTS), len({plant.name for plant in seed.PLANTS}))
+        self.assertTrue(all(plant.hardiness_zone_min is not None for plant in seed.PLANTS))
+        self.assertTrue(all(plant.hardiness_zone_max is not None for plant in seed.PLANTS))
+        self.assertTrue(all(
+            plant.hardiness_zone_min <= plant.hardiness_zone_max
+            for plant in seed.PLANTS
+        ))
+        seasonal = {
+            plant.name for plant in seed.PLANTS
+            if plant.climate_suitability == "seasonal_only"
+        }
+        self.assertEqual(seasonal, {"Вербена бонарская"})
         self.assertEqual(
             len(seed.PLACEMENT_RULES),
             len({rule.code for rule in seed.PLACEMENT_RULES}),
@@ -209,6 +249,39 @@ class ScriptTests(unittest.TestCase):
             data = json.loads(report.read_text(encoding="utf-8"))
             self.assertEqual(data["status"], "passed")
             self.assertEqual(data["checks"][0]["sidewalk_overlap_area"], 0)
+
+    def test_verifier_accepts_street_without_reconstructed_road_feature(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            constraints, zones = self.write_minimal_verifier_inputs(root)
+            features = [
+                json.loads(line)
+                for line in constraints.read_text(encoding="utf-8").splitlines()
+            ]
+            write_jsonl(
+                constraints,
+                [
+                    feature
+                    for feature in features
+                    if feature["properties"]["object_type"] != "road_area"
+                ],
+            )
+            report = root / "verification.json"
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "verify_outputs.py",
+                    str(constraints),
+                    str(zones),
+                    "--output",
+                    str(report),
+                ],
+            ):
+                verify_outputs.main()
+            data = json.loads(report.read_text(encoding="utf-8"))
+            self.assertEqual(data["status"], "passed")
+            self.assertEqual(data["checks"][0]["road_overlap_area"], 0)
 
     def test_verifier_rejects_unconfirmed_dxf_scale(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

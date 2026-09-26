@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,42 @@ from src.cad_io import loader
 
 
 class LoaderTests(unittest.TestCase):
+    def test_production_config_selects_numbered_bound_geobase_roots(self) -> None:
+        config = loader.load_config(loader.DEFAULT_CONFIG)
+        patterns = [
+            re.compile(value, flags=re.IGNORECASE)
+            for value in config["geobase_blocks"]["name_regex"]
+        ]
+
+        self.assertTrue(
+            any(pattern.search("00.1_10004141_Топография") for pattern in patterns)
+        )
+        self.assertTrue(
+            any(pattern.search("00.2_10004141_Сети") for pattern in patterns)
+        )
+        self.assertTrue(
+            any(pattern.search("01_10004141_Границы работ") for pattern in patterns)
+        )
+        self.assertFalse(
+            any(pattern.search("03_10004141_Проектные решения") for pattern in patterns)
+        )
+
+    def test_surface_config_selects_project_surface_root_only(self) -> None:
+        surface_config = loader.load_config(
+            ROOT / "src" / "core" / "surface_inspector_config.yaml"
+        )
+        patterns = [
+            re.compile(value, flags=re.IGNORECASE)
+            for value in surface_config["geobase_blocks"]["name_regex"]
+        ]
+
+        self.assertTrue(
+            any(pattern.search("03_10004141_Проектные решения") for pattern in patterns)
+        )
+        self.assertFalse(
+            any(pattern.search("04_10004141_ИОТ1") for pattern in patterns)
+        )
+
     def test_layer_tail_and_mapping_filters(self) -> None:
         doc = ezdxf.new()
         line = doc.modelspace().add_line(

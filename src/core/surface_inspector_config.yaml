@@ -12,6 +12,14 @@ geobase_blocks:
     - "^Собранная ГЕО$"
     - "^01_Бортовые камни$"
     - "^02_Покрытия$"
+    - '^\d{2}\.\d+_\d+_Топография$'
+    - '^\d{2}\.\d+_\d+_Сети$'
+    - '^\d{2}_\d+_Границы работ$'
+    # General-plan exports can keep carriageway, sidewalk and lawn HATCHes in
+    # one bound project block. Expand it only for surface classification: the
+    # semantic loader intentionally excludes it so proposed utilities and
+    # annotations are not confused with the existing survey.
+    - '^\d{2}_\d+_Проектные решения$'
   max_depth: 12
 
 layer_mapping:

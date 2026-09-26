@@ -25,6 +25,7 @@ from ..geometry.constraint_builder import as_polygonal, read_object_geometry
 
 
 DEFAULT_DSN = "postgresql://admin:admin@localhost:5432/admin"
+TARGET_HARDINESS_ZONE = 4
 UTILITY_OBJECT_TYPES = {
     "water_pipe",
     "storm_drain",
@@ -251,11 +252,24 @@ def load_plants(
             mature_crown_radius_m,
             dimension_source,
             selection_priority,
+            hardiness_zone_min,
+            hardiness_zone_max,
+            climate_suitability,
+            hardiness_source,
             is_invasive,
             is_toxic,
             is_thorny
         FROM plant_catalog
-        ORDER BY plant_type, selection_priority, name
+        ORDER BY
+            plant_type,
+            CASE climate_suitability
+                WHEN 'recommended' THEN 0
+                WHEN 'conditional' THEN 1
+                ELSE 2
+            END,
+            selection_priority,
+            hardiness_zone_min NULLS LAST,
+            name
     """
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     try:
@@ -280,9 +294,14 @@ def load_plants(
                 "mature_crown_radius_m": float(row[5]) if row[5] is not None else None,
                 "dimension_source": row[6],
                 "selection_priority": row[7],
-                "is_invasive": row[8],
-                "is_toxic": row[9],
-                "is_thorny": row[10],
+                "hardiness_zone_min": row[8],
+                "hardiness_zone_max": row[9],
+                "climate_suitability": row[10],
+                "hardiness_source": row[11],
+                "target_hardiness_zone": TARGET_HARDINESS_ZONE,
+                "is_invasive": row[12],
+                "is_toxic": row[13],
+                "is_thorny": row[14],
             }
         )
     return dict(grouped)
@@ -592,7 +611,9 @@ def build_plant_allow_zones(
         "plant_types": {},
         "plant_catalog": {
             plant_type: [
-                plant for plant in plants if not plant["is_invasive"]
+                plant for plant in plants
+                if not plant["is_invasive"]
+                and plant.get("climate_suitability", "recommended") != "seasonal_only"
             ]
             for plant_type, plants in sorted(plants_by_plant_type.items())
         },
@@ -603,10 +624,16 @@ def build_plant_allow_zones(
     for plant_type in sorted(rules_by_plant_type):
         catalog_plants = plants_by_plant_type.get(plant_type, [])
         selectable_plants = [
-            plant for plant in catalog_plants if not plant["is_invasive"]
+            plant for plant in catalog_plants
+            if not plant["is_invasive"]
+            and plant.get("climate_suitability", "recommended") != "seasonal_only"
         ]
         invasive_plants = [
             plant for plant in catalog_plants if plant["is_invasive"]
+        ]
+        climate_excluded_plants = [
+            plant for plant in catalog_plants
+            if plant.get("climate_suitability") == "seasonal_only"
         ]
         catalog_warnings = []
         if not selectable_plants:
@@ -711,6 +738,9 @@ def build_plant_allow_zones(
                     "excluded_invasive_plants": [
                         plant["name"] for plant in invasive_plants
                     ],
+                    "excluded_not_winter_hardy_plants": [
+                        plant["name"] for plant in climate_excluded_plants
+                    ],
                     "catalog_warnings": catalog_warnings,
                 },
                 "geometry": mapping(allowed_area),
@@ -732,6 +762,8 @@ def build_plant_allow_zones(
                 "total": len(catalog_plants),
                 "selectable": selectable_plants,
                 "excluded_invasive": invasive_plants,
+                "excluded_not_winter_hardy": climate_excluded_plants,
+                "target_hardiness_zone": TARGET_HARDINESS_ZONE,
                 "missing_min_spacing_count": missing_spacing,
                 "missing_recommended_spacing_count": missing_recommended_spacing,
                 "missing_crown_radius_count": missing_crown_radius,
