@@ -317,6 +317,7 @@ def attach_planting_metadata(entity: Any, properties: dict[str, Any]) -> None:
         (1000, f"id={properties.get('planting_id', '')}"),
         (1000, f"type={properties.get('plant_type', '')}"),
         (1000, f"species={properties.get('species', '')}"[:250]),
+        (1000, f"design={properties.get('design_style', 'auto')}"),
         (1000, f"status={properties.get('status', '')}"),
         (1000, f"zone={properties.get('zone_handle', '')}"),
         (1000, f"failed={failed_checks}"[:250]),
@@ -446,6 +447,12 @@ def export_zones(
 
     if planting_plan_path is not None:
         plan_features = load_planting_plan(planting_plan_path)
+        flower_species = sorted({
+            feature["properties"]["species"] for feature in plan_features
+            if feature["properties"].get("design_style") == "mixed_flowerbed"
+        })
+        flower_palette = (30, 200, 140, 40, 210, 150)
+        flower_colors = {name: flower_palette[i % len(flower_palette)] for i, name in enumerate(flower_species)}
         grouped: dict[str, list[dict[str, Any]]] = {}
         for feature in plan_features:
             grouped.setdefault(feature["properties"]["plant_type"], []).append(feature)
@@ -462,6 +469,10 @@ def export_zones(
             for feature in features:
                 geometry = feature["_geometry"]
                 properties = feature["properties"]
+                feature_color = (
+                    flower_colors[properties["species"]]
+                    if properties.get("design_style") == "mixed_flowerbed" else color
+                )
                 if properties["object_type"] == "proposed_planting":
                     if not isinstance(geometry, Point):
                         raise ValueError(f"{feature.get('id')}: point planting is not a Point")
@@ -473,7 +484,7 @@ def export_zones(
                             modelspace,
                             polygon,
                             layer_name,
-                            color,
+                            feature_color,
                             min(0.82, max(transparency, 0.72)),
                             properties,
                             False,

@@ -962,11 +962,21 @@ def build_debug_export(
         for plant_type, items in rejected_points.items():
             reason_points.setdefault(plant_type, []).extend(items)
         export_reason_markdown(reasons_output_path, reason_points)
-    # Display the final reviewed sidewalk mask. The placement-rule setback
-    # layers below still use normalized geometry, matching the rule engine.
-    sidewalks = as_polygonal(
-        read_object_geometry(constraint_map_path, "sidewalk_area")
-    )
+    # Use the same reconstructed sidewalk geometry as the placement-rule
+    # engine so the diagnostic setback layers explain its actual decisions.
+    try:
+        sidewalks = as_polygonal(
+            read_object_geometry(constraint_map_path, "sidewalk_area")
+        )
+    except ValueError:
+        # Some drawings have no separately classified sidewalk polygons.
+        sidewalks = Polygon()
+    if not sidewalks.is_empty:
+        raw_sidewalk = normalized_objects.get("sidewalk")
+        sidewalk_sources = [sidewalks]
+        if raw_sidewalk is not None and not raw_sidewalk.is_empty:
+            sidewalk_sources.append(raw_sidewalk)
+        normalized_objects["sidewalk"] = unary_union(sidewalk_sources)
     context_clip = work_boundary.buffer(2.0)
     road_edge_geometry = normalized_objects.get("road_edge")
     road_edges = (

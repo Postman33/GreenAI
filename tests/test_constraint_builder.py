@@ -325,6 +325,51 @@ class ConstraintBuilderTests(unittest.TestCase):
         )
         self.assertTrue(constraints.is_road_surface_layer("ПЧ за ТРОТ"))
         self.assertFalse(constraints.is_road_surface_layer("ТРОТ за ПЧ"))
+        for layer in (
+            "ДВ_ПП_Тип5_Р ТР",
+            "ДВ_ПП_Тип6_У_ТР_3м за счет Газона",
+            "ДВ_ПП_Тип7_У_ТР_до 3м за счет АБ_ПЧ",
+        ):
+            with self.subTest(layer=layer):
+                self.assertEqual(constraints.classify_surface_layer(layer), "hard_surface")
+                self.assertTrue(constraints.is_sidewalk_partition_layer(layer))
+                self.assertFalse(constraints.is_road_surface_layer(layer))
+        self.assertEqual(
+            constraints.classify_surface_layer("ДВ_ПП_Газон_У за счет АБ_ТР"),
+            "plantable_candidate",
+        )
+
+    def test_project_sidewalk_hatch_excludes_replaced_lawn(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            normalized = root / "normalized.geojsonl"
+            surfaces = root / "surfaces.jsonl"
+            output = root / "constraints.geojsonl"
+            write_jsonl(normalized, [
+                feature("work_boundary", box(0, 0, 10, 10)),
+                feature("building", box(20, 20, 21, 21)),
+            ])
+            write_jsonl(surfaces, [
+                raw_hatch(
+                    [(0, 0), (10, 0), (10, 10), (0, 10)],
+                    layer="ДВ_ПП_Газон_Р",
+                ),
+                raw_hatch(
+                    [(4, 0), (6, 0), (6, 10), (4, 10)],
+                    layer="ДВ_ПП_Тип6_У_ТР_3м за счет Газона",
+                ),
+            ])
+            constraints.build(normalized, surfaces, output, root / "report.json")
+            records = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+            by_type = {
+                record["properties"]["object_type"]: shape(record["geometry"])
+                for record in records
+            }
+            self.assertAlmostEqual(by_type["sidewalk_area"].area, 20)
+            self.assertAlmostEqual(by_type["base_allowed_area"].area, 80)
+            self.assertAlmostEqual(by_type["base_allowed_area"].intersection(
+                by_type["sidewalk_area"]
+            ).area, 0)
 
     def test_build_road_area_selects_seeded_partition(self) -> None:
         work = box(0, 0, 20, 10)

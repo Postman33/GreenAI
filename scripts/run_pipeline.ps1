@@ -24,7 +24,7 @@
     [string]$PlantingRequest = "",
 
     [Parameter(Mandatory = $false)]
-    [ValidateSet("balanced_mixed", "dense_mixed", "tree_lawn", "trees_only", "shrub_lawn", "shrubs_only", "lawn_only")]
+    [ValidateSet("balanced_mixed", "dense_mixed", "tree_lawn", "trees_only", "shrub_lawn", "shrubs_only", "lawn_only", "alley", "hedge", "shrub_mass", "free_group", "mixed_flowerbed")]
     [string]$PlantingPreset = "dense_mixed",
 
     [Parameter(Mandatory = $false)]

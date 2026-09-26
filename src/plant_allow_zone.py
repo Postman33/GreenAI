@@ -474,6 +474,19 @@ def build_plant_allow_zones(
         object_type: "normalized_raw_geometry"
         for object_type in normalized_objects
     }
+    try:
+        reconstructed_sidewalk = read_object_geometry(
+            constraint_map_path, "sidewalk_area"
+        )
+    except ValueError:
+        reconstructed_sidewalk = None
+    if reconstructed_sidewalk is not None and not reconstructed_sidewalk.is_empty:
+        raw_sidewalk = normalized_objects.get("sidewalk")
+        sidewalk_sources = [reconstructed_sidewalk]
+        if raw_sidewalk is not None and not raw_sidewalk.is_empty:
+            sidewalk_sources.append(raw_sidewalk)
+        normalized_objects["sidewalk"] = unary_union(sidewalk_sources)
+        geometry_sources["sidewalk"] = "reconstructed_sidewalk_area"
     building_linework = normalized_objects.get("building_linework")
     if building_linework is not None and not building_linework.is_empty:
         building_footprints = normalized_objects.get("building")

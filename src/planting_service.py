@@ -21,6 +21,7 @@ from shapely.geometry import GeometryCollection, Point, mapping, shape
 from shapely.validation import make_valid
 
 try:  # Supports both `python src/planting_service.py` and package imports.
+    from .planting_design import STYLE_CONTRACTS, alley_layout, free_group_layout, hedge_coverage, flowerbed_patches
     from .placement_generator import (
         PlantingProfile,
         best_component_layout,
@@ -36,6 +37,7 @@ try:  # Supports both `python src/planting_service.py` and package imports.
         safe_scope,
     )
 except ImportError:  # pragma: no cover - exercised by CLI integration
+    from planting_design import STYLE_CONTRACTS, alley_layout, free_group_layout, hedge_coverage, flowerbed_patches
     from placement_generator import (  # type: ignore
         PlantingProfile,
         best_component_layout,
@@ -62,6 +64,11 @@ PLANTING_PRESETS: dict[str, tuple[str, ...]] = {
     "shrub_lawn": ("shrub", "herbaceous"),
     "shrubs_only": ("shrub",),
     "lawn_only": ("herbaceous",),
+    "alley": ("tree", "herbaceous"),
+    "hedge": ("shrub", "herbaceous"),
+    "shrub_mass": ("shrub", "herbaceous"),
+    "free_group": ("tree", "herbaceous"),
+    "mixed_flowerbed": ("herbaceous",),
 }
 
 
@@ -77,6 +84,70 @@ class PlantingSelection:
     max_count: int | None
     selection_reasons: tuple[str, ...]
     catalog_reference: str | None
+    design_style: str = "auto"
+    guide: Any | None = None
+    band_width_m: float = 1.5
+    row_count: int = 1
+    seed: int = 0
+    composition: tuple[dict[str, Any], ...] = ()
+
+
+def _design_options(item: dict[str, Any], plant_type: str, mode: str, label: str) -> dict[str, Any]:
+    style = str(item.get("design_style", "auto"))
+    if style != "auto" and STYLE_CONTRACTS.get(style) != (plant_type, mode):
+        raise ValueError(f"{label}: incompatible design_style {style!r} for {plant_type}/{mode}")
+    guide = None
+    if "guide" in item:
+        if style not in {"alley", "hedge"}:
+            raise ValueError(f"{label}: guide is supported only for alley and hedge")
+        data = item["guide"]
+        if not isinstance(data, dict) or data.get("type") != "LineString":
+            raise ValueError(f"{label}: guide must be a LineString")
+        coords = _request_points(data.get("coordinates"), f"{label}.guide")
+        if len(coords) < 2:
+            raise ValueError(f"{label}: guide requires at least two coordinates")
+        guide = shape({"type": "LineString", "coordinates": [(p.x, p.y) for p in coords]})
+        if guide.length <= 0 or not guide.is_simple or guide.is_ring:
+            raise ValueError(f"{label}: guide must be an open, non-self-intersecting line")
+    width = float(item.get("band_width_m", 1.5))
+    if not math.isfinite(width) or width <= 0:
+        raise ValueError(f"{label}: band_width_m must be finite and positive")
+    rows = item.get("row_count", 1)
+    if type(rows) is not int or rows not in {1, 2}:
+        raise ValueError(f"{label}: row_count must be 1 or 2")
+    seed = item.get("seed", 0)
+    if type(seed) is not int:
+        raise ValueError(f"{label}: seed must be an integer")
+    composition = item.get("composition", [])
+    if not isinstance(composition, list):
+        raise ValueError(f"{label}: composition must be an array")
+    if style != "mixed_flowerbed" and composition:
+        raise ValueError(f"{label}: composition requires mixed_flowerbed")
+    if style == "mixed_flowerbed":
+        if not isinstance(composition, list) or len(composition) < 2:
+            raise ValueError(f"{label}: mixed_flowerbed requires at least two composition entries")
+        names = set()
+        parts = []
+        for part in composition:
+            if not isinstance(part, dict) or not str(part.get("species", "")).strip():
+                raise ValueError(f"{label}: each composition entry requires species")
+            name = str(part["species"]).strip()
+            if name in names:
+                raise ValueError(f"{label}: duplicate composition species {name!r}")
+            names.add(name)
+            share = float(part.get("share", 0))
+            if not math.isfinite(share) or not 0 < share < 1:
+                raise ValueError(f"{label}: composition share must be between 0 and 1")
+            density = part.get("plants_per_m2")
+            if density is not None:
+                density = float(density)
+                if not math.isfinite(density) or density <= 0:
+                    raise ValueError(f"{label}: plants_per_m2 must be finite and positive")
+            parts.append({"species": name, "share": share, "plants_per_m2": density})
+        if not math.isclose(sum(part["share"] for part in parts), 1.0, abs_tol=1e-8):
+            raise ValueError(f"{label}: composition shares must sum to 1")
+        composition = parts
+    return dict(design_style=style, guide=guide, band_width_m=width, row_count=rows, seed=seed, composition=tuple(composition))
 
 
 def _request_geometry(value: Any, label: str) -> Any:
@@ -134,6 +205,15 @@ def load_request(
                 continue
             geometry_kind = str(item.get("geometryKind", "point"))
             mode = "fill_area" if geometry_kind == "point" else "cover_area"
+            style = preset if preset in STYLE_CONTRACTS and STYLE_CONTRACTS[preset][0] == plant_type else "auto"
+            if style != "auto":
+                mode = STYLE_CONTRACTS[style][1]
+            design_data = {**config.get("plantingDesignDefaults", {}).get(style, {}), "design_style": style}
+            design_options = _design_options(design_data, plant_type, mode, f"auto_{plant_type}")
+            species = (
+                design_options["composition"][0]["species"]
+                if style == "mixed_flowerbed" else str(item["species"])
+            )
             spacing = tree_spacing_m if plant_type == "tree" else None
             if spacing is None and plant_type == "tree":
                 if preset == "balanced_mixed":
@@ -154,14 +234,16 @@ def load_request(
                 PlantingSelection(
                     request_id=f"auto_{plant_type}",
                     plant_type=plant_type,
-                    species=str(item["species"]),
+                    species=species,
                     mode=mode,
                     area=None,
                     points=(),
                     spacing_m=spacing,
                     max_count=tree_max_count if plant_type == "tree" else None,
-                    selection_reasons=tuple(str(v) for v in item.get("selectionReasons", [])),
-                    catalog_reference=str(item.get("catalogReference", "plant catalog")),
+                    selection_reasons=("Состав цветника задан в настройках; условия выращивания проверяются проектировщиком.",)
+                    if style == "mixed_flowerbed" else tuple(str(v) for v in item.get("selectionReasons", [])),
+                    catalog_reference=None if style == "mixed_flowerbed" else str(item.get("catalogReference", "plant catalog")),
+                    **design_options,
                 )
             )
         if not selections:
@@ -174,7 +256,6 @@ def load_request(
         raise ValueError("Planting request must contain a non-empty selections array")
     selections = []
     ids: set[str] = set()
-    used_types: set[str] = set()
     for index, item in enumerate(raw_selections, start=1):
         if not isinstance(item, dict):
             raise ValueError(f"selections[{index}] must be an object")
@@ -185,15 +266,12 @@ def load_request(
         plant_type = str(item.get("plant_type") or "")
         if not plant_type:
             raise ValueError(f"{request_id}: plant_type is required")
-        if plant_type in used_types:
-            raise ValueError(
-                f"{request_id}: only one selection per plant_type is currently supported"
-            )
-        used_types.add(plant_type)
+        style = str(item.get("design_style", "auto"))
+        default_mode = STYLE_CONTRACTS.get(style, (None, None))[1]
         species = str(item.get("species") or "").strip()
         if not species:
             raise ValueError(f"{request_id}: species is required")
-        mode = str(item.get("mode") or ("cover_area" if plant_type == "herbaceous" else "fill_area"))
+        mode = str(item.get("mode") or default_mode or ("cover_area" if plant_type == "herbaceous" else "fill_area"))
         if mode not in POINT_MODES | AREA_MODES:
             raise ValueError(f"{request_id}: unsupported mode {mode!r}")
         if plant_type == "herbaceous" and mode not in AREA_MODES:
@@ -208,6 +286,11 @@ def load_request(
         maximum = int(item["max_count"]) if item.get("max_count") is not None else None
         if maximum is not None and maximum < 1:
             raise ValueError(f"{request_id}: max_count must be positive")
+        design_options = _design_options(item, plant_type, mode, request_id)
+        if design_options["composition"] and species not in {part["species"] for part in design_options["composition"]}:
+            raise ValueError(f"{request_id}: species must be one of the composition species")
+        if mode in AREA_MODES and maximum is not None:
+            raise ValueError(f"{request_id}: max_count applies only to point plantings")
         selections.append(
             PlantingSelection(
                 request_id=request_id,
@@ -224,6 +307,7 @@ def load_request(
                     if item.get("catalog_reference")
                     else None
                 ),
+                **design_options,
             )
         )
     return selections
@@ -273,7 +357,15 @@ def resolve_profile(
     reasons = selection.selection_reasons or tuple(
         str(value) for value in (configured or {}).get("selectionReasons", [])
     )
+    if selection.design_style == "mixed_flowerbed":
+        reasons = selection.selection_reasons or ("Вид входит в заданную композицию цветника.",)
     if selection.mode in AREA_MODES:
+        spacing = selection.spacing_m
+        if spacing is None:
+            spacing = (catalog_item or {}).get("recommended_spacing_m") or (catalog_item or {}).get("min_spacing_m") or (configured or {}).get("spacingM", 0.0)
+        minimum = float((catalog_item or {}).get("min_spacing_m") or 0.0)
+        if not math.isfinite(float(spacing)) or spacing < minimum or spacing < 0:
+            raise ValueError(f"{selection.request_id}: area spacing must be finite and at least {minimum:g} m")
         catalog_dimensions = {
             "minSpacingM": catalog_item.get("min_spacing_m"),
             "recommendedSpacingM": catalog_item.get("recommended_spacing_m"),
@@ -287,6 +379,7 @@ def resolve_profile(
             "species": selection.species,
             "catalogReference": catalog_reference,
             "selectionReasons": list(reasons),
+            "spacingM": spacing,
         }
     if selection.plant_type not in base_profiles:
         raise ValueError(f"No point profile configured for {selection.plant_type}")
@@ -459,6 +552,7 @@ def _point_feature(
             "request_id": selection.request_id,
             "selection_mode": selection.mode,
             "layout_style": layout_style,
+            "design_style": selection.design_style,
             "plant_type": profile.plant_type,
             "species": profile.species,
             "status": status,
@@ -773,8 +867,14 @@ def plan(
         raise ValueError("treeLayoutMode must be linear_preferred or area_fill")
 
     resolved = {
-        selection.plant_type: resolve_profile(selection, base_profiles, config, zone_report)
+        selection.request_id: resolve_profile(selection, base_profiles, config, zone_report)
         for selection in selections
+    }
+    flower_profiles = {
+        (selection.request_id, part["species"]): resolve_profile(
+            replace(selection, species=part["species"], catalog_reference=None), base_profiles, config, zone_report
+        )
+        for selection in selections for part in selection.composition
     }
     point_profiles = {
         plant_type: profile
@@ -801,13 +901,15 @@ def plan(
 
     ordered = sorted(
         (item for item in selections if item.mode in POINT_MODES),
-        key=lambda item: -point_profiles[item.plant_type].footprint_radius_m,
+        key=lambda item: -point_profiles[item.request_id].footprint_radius_m,
     )
     for selection in ordered:
         if selection.plant_type not in zones:
             raise ValueError(f"No allow zone calculated for {selection.plant_type}")
-        profile = point_profiles[selection.plant_type]
-        layout_profile = layout_profiles[selection.plant_type]
+        profile = point_profiles[selection.request_id]
+        layout_profile = layout_profiles[selection.request_id]
+        # Occupied points retain the selection identity (species/spacing).
+        current_layout_profiles = layout_profiles
         existing_tree_clearance = configured_existing_tree_clearance_m(config, profile)
         source_zone = zones[selection.plant_type]
         selected_zone = source_zone["geometry"]
@@ -824,6 +926,21 @@ def plan(
         candidates: list[tuple[Point, str]]
         if selection.mode == "points":
             candidates = [(point, "manual") for point in selection.points]
+        elif selection.design_style in {"alley", "free_group"}:
+            if selection.design_style == "alley":
+                reference = selection.area if selection.area is not None else selected_zone
+                designed = alley_layout(
+                    scope, reference, selection.guide, layout_profile,
+                    current_layout_profiles, occupied, profile.max_count, selection.row_count,
+                    profile_key=selection.request_id,
+                )
+            else:
+                designed = free_group_layout(
+                    scope, layout_profile, current_layout_profiles, occupied,
+                    profile.max_count, selection.seed,
+                    profile_key=selection.request_id,
+                )
+            candidates = [(Point(x, y), selection.design_style) for x, y in designed]
         else:
             generated: list[tuple[float, float, str]] = []
             use_linear = selection.plant_type == "tree" and tree_layout_mode == "linear_preferred"
@@ -842,11 +959,11 @@ def plan(
                 if inset.is_empty:
                     continue
                 occupied_now = occupied + [
-                    (profile.plant_type, x, y) for x, y, _style in generated
+                    (selection.request_id, x, y) for x, y, _style in generated
                 ]
                 linear = (
                     best_linear_layout(
-                        inset, parent, layout_profile, layout_profiles,
+                        inset, parent, layout_profile, current_layout_profiles,
                         occupied_now, remaining,
                     ) if use_linear else None
                 )
@@ -858,8 +975,8 @@ def plan(
                     if remaining <= 0:
                         break
                     area_points = best_component_layout(
-                        component, layout_profile, layout_profiles,
-                        occupied + [(profile.plant_type, x, y) for x, y, _style in generated],
+                        component, layout_profile, current_layout_profiles,
+                        occupied + [(selection.request_id, x, y) for x, y, _style in generated],
                         remaining,
                     )
                     generated.extend((x, y, "area_fill") for x, y in area_points)
@@ -894,7 +1011,7 @@ def plan(
             accepted_count += 1
             features.append(_point_feature(candidate_id, point, profile, selection, status, checks, units, layout_style))
             layout_style_counts[layout_style] += 1
-            occupied.append((profile.plant_type, point.x, point.y))
+            occupied.append((selection.request_id, point.x, point.y))
             accepted_selection_points.append(point)
 
         diagnostic_rejected_count = 0
@@ -954,6 +1071,7 @@ def plan(
             "plant_type": selection.plant_type,
             "species": selection.species,
             "mode": selection.mode,
+            "design_style": selection.design_style,
             "accepted_count": accepted_count,
             "rejected_count": rejected_count,
             "diagnostic_rejected_count": diagnostic_rejected_count,
@@ -971,13 +1089,17 @@ def plan(
         zone = zones.get("shrub")
         if zone is None:
             raise ValueError("No allow zone calculated for shrub")
-        profile = resolved["shrub"]
+        profile = resolved[selection.request_id]
         assert isinstance(profile, dict)
         coverage = zone["geometry"]
         if base is not None and not base.is_empty:
             coverage = coverage.intersection(base)
         if selection.area is not None:
             coverage = coverage.intersection(selection.area)
+        if selection.design_style == "hedge":
+            reference = selection.area if selection.area is not None else zone["geometry"]
+            coverage = hedge_coverage(coverage, reference, selection.guide, selection.band_width_m * units)
+        coverage = coverage.difference(area_occupied)
         belts = normalized.get("existing_tree_belt")
         # A mass shrub planting occupies the whole allowed polygon.  Existing
         # tree canopies may have an understorey; mapped vegetation belts remain
@@ -1019,7 +1141,7 @@ def plan(
             area += polygon.area
             planting_id = f"SA-{counters['shrub']:04d}"
             polygon_estimate = (
-                max(1, math.ceil(polygon.area / (spacing * spacing * math.sqrt(3.0) / 2.0)))
+                max(1, math.ceil((polygon.area / units ** 2) / (spacing * spacing * math.sqrt(3.0) / 2.0)))
                 if spacing > 0
                 else 0
             )
@@ -1056,6 +1178,8 @@ def plan(
                 "planting_id": planting_id,
                 "request_id": selection.request_id,
                 "selection_mode": selection.mode,
+                "design_style": selection.design_style,
+                "band_width_m": selection.band_width_m if selection.design_style == "hedge" else None,
                 "plant_type": "shrub",
                 "species": selection.species,
                 "status": status,
@@ -1078,15 +1202,19 @@ def plan(
             "plant_type": "shrub",
             "species": selection.species,
             "mode": selection.mode,
+            "design_style": selection.design_style,
             "accepted_area_count": count,
             "accepted_area_in_dxf_square_units": area,
             "estimated_plant_count": estimated_plants,
         }
 
-    for selection in (item for item in selections if item.plant_type == "herbaceous"):
+    for selection in sorted(
+        (item for item in selections if item.plant_type == "herbaceous"),
+        key=lambda item: item.design_style != "mixed_flowerbed",
+    ):
         if base is None or base.is_empty:
             raise ValueError("No base_allowed_area available for herbaceous cover")
-        profile = resolved["herbaceous"]
+        profile = resolved[selection.request_id]
         assert isinstance(profile, dict)
         coverage = base
         if not area_occupied.is_empty:
@@ -1103,9 +1231,17 @@ def plan(
         coverage = make_valid(coverage)
         count = 0
         area = 0.0
-        for polygon in polygon_parts(coverage):
-            if polygon.area < 0.05 * units * units:
+        is_flowerbed = selection.design_style == "mixed_flowerbed"
+        patches = flowerbed_patches(coverage, selection.composition) if is_flowerbed else (
+            (polygon, None) for polygon in polygon_parts(coverage)
+        )
+        species_areas: Counter[str] = Counter()
+        for polygon, mixture_part in patches:
+            if not is_flowerbed and polygon.area < 0.05 * units * units:
                 continue
+            species = mixture_part["species"] if mixture_part else selection.species
+            species_profile = flower_profiles[(selection.request_id, species)] if mixture_part else profile
+            species_areas[species] += polygon.area / units ** 2
             counters["herbaceous"] += 1
             count += 1
             area += polygon.area
@@ -1134,12 +1270,12 @@ def plan(
                 },
                 {
                     "code": "PLANT_SELECTION",
-                    "target": selection.species,
+                    "target": species,
                     "status": "passed",
                     "actual_distance_m": None,
                     "required_distance_m": None,
-                    "norm_reference": profile.get("catalogReference"),
-                    "explanation": "; ".join(profile.get("selectionReasons", []))
+                    "norm_reference": species_profile.get("catalogReference"),
+                    "explanation": "; ".join(species_profile.get("selectionReasons", []))
                     or "Вид выбран из проектного каталога растений.",
                 },
                 {
@@ -1149,7 +1285,7 @@ def plan(
                     "actual_distance_m": None,
                     "required_distance_m": None,
                     "norm_reference": "Проектное требование сохранения существующей растительности",
-                    "explanation": "Защитные пятна существующих деревьев и растительные массивы исключены из покрытия.",
+                    "explanation": "Существующие растительные массивы исключены; травянистый покров может продолжаться под кроной дерева.",
                 },
             ]
             features.append(
@@ -1161,8 +1297,15 @@ def plan(
                         "planting_id": planting_id,
                         "request_id": selection.request_id,
                         "selection_mode": selection.mode,
+                        "design_style": selection.design_style,
                         "plant_type": "herbaceous",
-                        "species": selection.species,
+                        "species": species,
+                        "composition_share": mixture_part["share"] if mixture_part else None,
+                        "plants_per_m2": mixture_part["plants_per_m2"] if mixture_part else None,
+                        "estimated_plant_count": (
+                            math.ceil(polygon.area / units ** 2 * mixture_part["plants_per_m2"])
+                            if mixture_part and mixture_part["plants_per_m2"] else None
+                        ),
                         "status": "accepted",
                         "coordinate_reference": "local_dxf_coordinates",
                         "dxf_units_per_meter": units,
@@ -1171,10 +1314,14 @@ def plan(
                     "geometry": mapping(polygon),
                 }
             )
+            area_occupied = make_valid(area_occupied.union(polygon))
         summary[selection.request_id] = {
             "plant_type": "herbaceous",
             "species": selection.species,
             "mode": selection.mode,
+            "design_style": selection.design_style,
+            "species_area_m2": dict(species_areas),
+            "composition": list(selection.composition),
             "accepted_area_count": count,
             "accepted_area_in_dxf_square_units": area,
         }

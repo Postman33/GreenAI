@@ -162,7 +162,7 @@ def grid_candidates(
 def required_spacing(first: PlantingProfile, second: PlantingProfile) -> float:
     footprint_spacing = first.footprint_radius_m + second.footprint_radius_m
     if first.plant_type == second.plant_type:
-        return max(first.spacing_m, footprint_spacing)
+        return max(first.spacing_m, second.spacing_m, footprint_spacing)
     return max(first.avoid_other_plantings_m, second.avoid_other_plantings_m, footprint_spacing)
 
 
@@ -178,13 +178,14 @@ def pack_candidates(
         for other in profiles.values()
     )
     cell_size = max(maximum_spacing, 0.001)
-    grid: dict[tuple[int, int], list[tuple[str, float, float]]] = defaultdict(list)
+    grid: dict[tuple[int, int], list[tuple[PlantingProfile, float, float]]] = defaultdict(list)
 
-    def add(plant_type: str, x: float, y: float) -> None:
-        grid[(math.floor(x / cell_size), math.floor(y / cell_size))].append((plant_type, x, y))
+    def add(item_profile: PlantingProfile, x: float, y: float) -> None:
+        grid[(math.floor(x / cell_size), math.floor(y / cell_size))].append((item_profile, x, y))
 
-    for item in occupied:
-        add(*item)
+    for key, x, y in occupied:
+        if key in profiles:
+            add(profiles[key], x, y)
     accepted: list[tuple[float, float]] = []
     for x, y in candidates:
         if len(accepted) >= max_count:
@@ -193,10 +194,7 @@ def pack_candidates(
         valid = True
         for offset_x in (-1, 0, 1):
             for offset_y in (-1, 0, 1):
-                for other_type, other_x, other_y in grid.get((cell_x + offset_x, cell_y + offset_y), []):
-                    other_profile = profiles.get(other_type)
-                    if other_profile is None:
-                        continue
+                for other_profile, other_x, other_y in grid.get((cell_x + offset_x, cell_y + offset_y), []):
                     distance = required_spacing(profile, other_profile)
                     if (x - other_x) ** 2 + (y - other_y) ** 2 + 1e-9 < distance ** 2:
                         valid = False
@@ -208,7 +206,7 @@ def pack_candidates(
         if not valid:
             continue
         accepted.append((x, y))
-        add(profile.plant_type, x, y)
+        add(profile, x, y)
     return accepted
 
 

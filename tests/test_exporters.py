@@ -14,6 +14,70 @@ from tests.helpers import feature, raw_hatch, write_jsonl
 
 
 class ExporterTests(unittest.TestCase):
+    def test_diagnostic_export_accepts_drawing_without_sidewalk_area(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            zones = root / "zones.geojsonl"
+            constraints = root / "constraints.geojsonl"
+            normalized = root / "normalized.geojsonl"
+            output = root / "debug.dxf"
+            work = box(0, 0, 10, 10)
+            write_jsonl(zones, [
+                feature("plant_allow_zone", box(1, 1, 4, 4), plant_type="shrub"),
+            ])
+            write_jsonl(constraints, [
+                feature("hard_surface_area", box(8, 0, 10, 10)),
+                feature("road_area", box(8, 0, 10, 10)),
+                feature("base_allowed_area", box(0, 0, 8, 10)),
+            ])
+            write_jsonl(normalized, [feature("work_boundary", work)])
+
+            plant_allow_zone_debug.build_debug_export(
+                zones, constraints, normalized, output, None, 180,
+            )
+
+            document = ezdxf.readfile(output)
+            self.assertEqual(len(document.audit().errors), 0)
+            self.assertGreater(
+                len(document.modelspace().query('*[layer=="DEBUG_ROAD_AREA"]')),
+                0,
+            )
+
+    def test_diagnostic_setback_uses_reconstructed_sidewalk(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            zones = root / "zones.geojsonl"
+            constraints = root / "constraints.geojsonl"
+            normalized = root / "normalized.geojsonl"
+            report = root / "zone_report.json"
+            legend = root / "legend.md"
+            output = root / "debug.dxf"
+            write_jsonl(zones, [
+                feature("plant_allow_zone", box(0, 0, 3, 10), plant_type="tree"),
+            ])
+            write_jsonl(constraints, [
+                feature("hard_surface_area", box(4, 0, 6, 10)),
+                feature("road_area", box(8, 0, 10, 10)),
+                feature("base_allowed_area", box(0, 0, 10, 10)),
+                feature("sidewalk_area", box(4, 0, 6, 10)),
+            ])
+            write_jsonl(normalized, [
+                feature("work_boundary", box(0, 0, 10, 10)),
+            ])
+            report.write_text(json.dumps({"plant_types": {"tree": {"rules": [
+                {"rule_code": "TREE_SIDEWALK_0_7", "target_object_type": "sidewalk",
+                 "status": "applied", "buffer_distance_in_dxf_units": 0.7},
+            ]}}}), encoding="utf-8")
+            plant_allow_zone_debug.build_debug_export(
+                zones, constraints, normalized, output, None, 180,
+                zone_report_path=report, legend_output_path=legend,
+            )
+            document = ezdxf.readfile(output)
+            self.assertGreater(len(document.modelspace().query(
+                '*[layer=="DEBUG_EXCL_TREE_SIDEWALK_0_7"]'
+            )), 0)
+            self.assertIn("DEBUG_EXCL_TREE_SIDEWALK_0_7", legend.read_text(encoding="utf-8"))
+
     def test_diagnostic_layers_separate_applied_setbacks_from_manual_review(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

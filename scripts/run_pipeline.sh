@@ -108,6 +108,8 @@ planting_args=(
 )
 if [[ -n "$REQUEST_FILE" ]]; then
   planting_args+=(--request "$REQUEST_FILE")
+else
+  planting_args+=(--preset "${PLANTING_PRESET:-dense_mixed}")
 fi
 python "${planting_args[@]}"
 

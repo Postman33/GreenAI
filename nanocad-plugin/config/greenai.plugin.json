@@ -15,6 +15,18 @@
   "maxPlacementsPerType": 5000,
   "diagnosticRejectedMaxCount": 300,
   "treeLayoutMode": "linear_preferred",
+  "plantingDesignDefaults": {
+    "alley": { "row_count": 1 },
+    "hedge": { "band_width_m": 1.5 },
+    "free_group": { "seed": 0 },
+    "mixed_flowerbed": {
+      "composition": [
+        { "species": "Герань гибридная", "share": 0.4 },
+        { "species": "Котовник Фассена", "share": 0.4 },
+        { "species": "Вейник остроцветковый 'Карл Форстер'", "share": 0.2 }
+      ]
+    }
+  },
   "protectExistingVegetation": true,
   "existingTreeCanopyRadiusM": 2.5,
   "existingTreeClearanceM": 2.0,

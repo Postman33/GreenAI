@@ -423,10 +423,15 @@ def main() -> None:
                 required = float(properties.get("spacing_m", 0.0)) * float(
                     properties.get("dxf_units_per_meter", 1.0)
                 )
-                if required <= 0:
-                    continue
-                for _other_properties, other in items[index + 1:]:
-                    if point.distance(other) + 1e-7 < required:
+                for other_properties, other in items[index + 1:]:
+                    other_units = float(other_properties.get("dxf_units_per_meter", 1.0))
+                    pair_required = max(
+                        required,
+                        float(other_properties.get("spacing_m", 0.0)) * other_units,
+                        float(properties.get("footprint_radius_m", 0.0)) * float(properties.get("dxf_units_per_meter", 1.0))
+                        + float(other_properties.get("footprint_radius_m", 0.0)) * other_units,
+                    )
+                    if point.distance(other) + 1e-7 < pair_required:
                         spacing_failures += 1
         area_unions: dict[str, Any] = {}
         for plant_type, geometries in areas_by_type.items():

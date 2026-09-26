@@ -415,7 +415,13 @@ while ($true) {
         "shrub_lawn" { "Кустарники и газон" }
         "shrubs_only" { "Только кустарники" }
         "lawn_only" { "Только газон" }
+        "alley" { "Аллея и газон" }
+        "hedge" { "Живая изгородь и газон" }
+        "shrub_mass" { "Массив кустарников и газон" }
+        "free_group" { "Свободные группы деревьев" }
+        "mixed_flowerbed" { "Цветник: пятна видов по долям площади" }
     }
+    if ($script:request) { $presetLabel = "Из файла: $([IO.Path]::GetFileName($script:request))" }
     $labels = @(
         "Исходный DXF      $dxfLabel",
         "Режим расчёта     $modeLabel",
@@ -448,11 +454,15 @@ while ($true) {
         "3" {
             $preset = Select-MenuOption "Стиль посадки" @(
                 "dense_mixed", "balanced_mixed", "tree_lawn", "trees_only",
-                "shrub_lawn", "shrubs_only", "lawn_only"
+                "shrub_lawn", "shrubs_only", "lawn_only",
+                "alley", "hedge", "shrub_mass", "free_group", "mixed_flowerbed"
             ) @(
                 "Плотная смешанная", "Сбалансированная смешанная",
                 "Деревья и газон", "Только деревья", "Кустарники и газон",
-                "Только кустарники", "Только газон"
+                "Только кустарники", "Только газон",
+                "Аллея: ровные ряды + газон", "Изгородь: полоса кустарников + газон",
+                "Массив: кустарники на всей допустимой площади", "Группы: деревья с просветами",
+                "Цветник: пятна видов (демо-состав, уточнить условия участка)"
             ) $preset
         }
         "4" { Show-SettingsMenu }
@@ -468,11 +478,13 @@ while ($true) {
                 InputDxf = $inputDxf
                 OutputDirectory = $outputPath
                 PipelineMode = $mode
-                PlantingPreset = $preset
             }
             if (-not $script:startDatabase) { $options.SkipDatabaseStart = $true }
-            if ($null -ne $script:spacing) { $options.TreeSpacingM = $script:spacing }
-            if ($null -ne $script:maxTrees) { $options.TreeMaxCount = $script:maxTrees }
+            if (-not $script:request) {
+                $options.PlantingPreset = $preset
+                if ($null -ne $script:spacing) { $options.TreeSpacingM = $script:spacing }
+                if ($null -ne $script:maxTrees) { $options.TreeMaxCount = $script:maxTrees }
+            }
             if ($null -ne $script:units) { $options.DxfUnitsPerMeter = $script:units }
             if ($script:model) { $options.UtilityDetectorModel = $script:model }
             if ($script:corrections) { $options.RoadCorrections = $script:corrections }

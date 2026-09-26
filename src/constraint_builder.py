@@ -50,6 +50,17 @@ REFERENCE_WORDS = (
 )
 
 
+def is_project_sidewalk_surface_layer(layer_name: str) -> bool:
+    """Recognize the proposed sidewalk, before the former surface in its name.
+
+    In these project layers ``за счет Газона`` describes what the sidewalk
+    replaces; it does not make the HATCH a planting surface.
+    """
+    return bool(re.search(
+        r"^дв_пп_тип[567]_[ур][ _]тр(?:_|$)", layer_name.casefold()
+    ))
+
+
 def is_road_surface_layer(layer_name: str) -> bool:
     """Return True for an unambiguous carriageway surface layer.
 
@@ -58,6 +69,8 @@ def is_road_surface_layer(layer_name: str) -> bool:
     name is the area represented by the HATCH, so its position matters.
     """
     normalized = layer_name.casefold()
+    if is_project_sidewalk_surface_layer(layer_name):
+        return False
     if "пч" not in normalized and "проезж" not in normalized:
         return False
     if any(word in normalized for word in PLANTABLE_WORDS):
@@ -76,7 +89,10 @@ def is_road_surface_layer(layer_name: str) -> bool:
 
 def is_sidewalk_partition_layer(layer_name: str) -> bool:
     """Match project HATCH layers whose rings partition sidewalk/road space."""
-    return bool(re.search(r"^дв_до_тип.*трот", layer_name.casefold()))
+    return (
+        is_project_sidewalk_surface_layer(layer_name)
+        or bool(re.search(r"^дв_до_тип.*трот", layer_name.casefold()))
+    )
 
 
 def read_object_geometry(
@@ -263,6 +279,8 @@ def classify_surface_layer(layer_name: str) -> str:
         return "reference_geometry"
     if any(word in normalized for word in REFERENCE_WORDS):
         return "reference_geometry"
+    if is_project_sidewalk_surface_layer(layer_name):
+        return "hard_surface"
     # In names like "ТРТ за ГАЗОН" or "ПЧ за ГАЗОН", the first material is
     # the proposed one.  The lawn after "за" is the surface being replaced.
     if re.search(r"(?:^|[_\s])(?:трт|тротуар|пч)\s+за\s+газон", normalized):
@@ -300,7 +318,9 @@ def surface_record_polygon(
         faces = list(polygonize(geometry))
         if not faces:
             return None
-        polygonal = unary_union(faces)
+        # Imported CAD HATCH rings can polygonize into self-intersecting
+        # faces. Repair each face before GEOS combines them.
+        polygonal = unary_union([as_polygonal(face) for face in faces])
     result = as_polygonal(polygonal)
     return result if not result.is_empty else None
 
@@ -1173,6 +1193,8 @@ def build(
         )
     except ValueError:
         sidewalks = Polygon()
+    if not direct_sidewalk_area.is_empty:
+        sidewalks = as_polygonal(unary_union([sidewalks, direct_sidewalk_area]))
     road_reconstruction: dict[str, Any]
     try:
         road_edges = read_object_geometry(normalized_path, "road_edge")
