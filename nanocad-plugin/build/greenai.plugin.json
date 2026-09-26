@@ -14,6 +14,7 @@
   "dxfUnitsPerMeter": 1.0,
   "maxPlacementsPerType": 5000,
   "diagnosticRejectedMaxCount": 300,
+  "treeLayoutMode": "linear_preferred",
   "protectExistingVegetation": true,
   "existingTreeCanopyRadiusM": 2.5,
   "existingTreeClearanceM": 2.0,
@@ -112,14 +113,6 @@
       "normReference": "СП 42.13330.2026, таблица 6.3"
     },
     {
-      "code": "TREE_SEWER_1_5",
-      "plantType": "tree",
-      "targetObjectType": "sewer_pipe",
-      "check": "manual_review",
-      "reason": "Нормативный отступ 1,5 м не применяется автоматически: исходный слой канализации содержит трассы и графические обозначения. Требуется ручная проверка или очистка геометрии.",
-      "normReference": "СП 42.13330.2026, таблица 6.3 и примечания"
-    },
-    {
       "code": "TREE_HEAT_2",
       "plantType": "tree",
       "targetObjectType": "heat_pipe",
@@ -136,39 +129,6 @@
       "minDistanceM": 2.0,
       "requireReconstructedGeometry": true,
       "normReference": "СП 42.13330.2026, таблица 6.3"
-    },
-    {
-      "code": "TREE_DRAINAGE_2",
-      "plantType": "tree",
-      "targetObjectType": "storm_drain",
-      "check": "manual_review",
-      "reason": "Нормативный отступ 2 м не применяется автоматически: слой водостока/дренажа содержит трассы, окружности, замкнутые контуры и большое количество коротких графических элементов.",
-      "normReference": "СП 42.13330.2026, таблица 6.3 и примечания"
-    },
-    {
-      "code": "TREE_POWER_CABLE_2",
-      "plantType": "tree",
-      "targetObjectType": "power_cable",
-      "check": "manual_review",
-      "requireReconstructedGeometry": true,
-      "reason": "Нормативный отступ 2 м не применяется автоматически: слой силового кабеля содержит повторяющиеся короткие отрезки и ломаные графические обозначения вместе с трассами.",
-      "normReference": "СП 42.13330.2026, таблица 6.3 и примечания"
-    },
-    {
-      "code": "TREE_TELECOM_MANUAL",
-      "plantType": "tree",
-      "targetObjectType": "telecom_cable",
-      "check": "manual_review",
-      "reason": "Для кабеля связи таблица отсылает к отдельным документам.",
-      "normReference": "СП 42.13330.2026, таблица 6.3 и примечания"
-    },
-    {
-      "code": "TREE_OVERHEAD_POWER_MANUAL",
-      "plantType": "tree",
-      "targetObjectType": "overhead_power_line",
-      "check": "manual_review",
-      "reason": "Стрелки ЛЭП неоднозначны, а напряжение нужно подтвердить по условным обозначениям или пояснительной записке.",
-      "normReference": "СП 42.13330.2026, таблица 6.3 и примечания"
     },
     {
       "code": "SHRUB_BUILDING_1_5",
@@ -202,62 +162,6 @@
       "minDistanceM": 1.0,
       "requireReconstructedGeometry": true,
       "normReference": "СП 42.13330.2026, таблица 6.3"
-    },
-    {
-      "code": "SHRUB_POWER_CABLE_0_75",
-      "plantType": "shrub",
-      "targetObjectType": "power_cable",
-      "check": "manual_review",
-      "reason": "Нормативный отступ 0,75 м не применяется автоматически: слой силового кабеля содержит повторяющиеся короткие отрезки и ломаные графические обозначения вместе с трассами.",
-      "normReference": "СП 42.13330.2026, таблица 6.3 и примечания"
-    },
-    {
-      "code": "SHRUB_GAS_MANUAL",
-      "plantType": "shrub",
-      "targetObjectType": "gas_pipe",
-      "check": "manual_review",
-      "reason": "Таблица 6.3 не задаёт расстояние для кустарника.",
-      "normReference": "СП 42.13330.2026, таблица 6.3 и примечания"
-    },
-    {
-      "code": "SHRUB_SEWER_MANUAL",
-      "plantType": "shrub",
-      "targetObjectType": "sewer_pipe",
-      "check": "manual_review",
-      "reason": "Таблица 6.3 не задаёт расстояние для кустарника.",
-      "normReference": "СП 42.13330.2026, таблица 6.3 и примечания"
-    },
-    {
-      "code": "SHRUB_WATER_MANUAL",
-      "plantType": "shrub",
-      "targetObjectType": "water_pipe",
-      "check": "manual_review",
-      "reason": "Таблица 6.3 не задаёт расстояние для кустарника.",
-      "normReference": "СП 42.13330.2026, таблица 6.3 и примечания"
-    },
-    {
-      "code": "SHRUB_DRAINAGE_MANUAL",
-      "plantType": "shrub",
-      "targetObjectType": "storm_drain",
-      "check": "manual_review",
-      "reason": "Таблица 6.3 не задаёт расстояние для кустарника.",
-      "normReference": "СП 42.13330.2026, таблица 6.3 и примечания"
-    },
-    {
-      "code": "SHRUB_TELECOM_MANUAL",
-      "plantType": "shrub",
-      "targetObjectType": "telecom_cable",
-      "check": "manual_review",
-      "reason": "Для кабеля связи таблица отсылает к отдельным документам.",
-      "normReference": "СП 42.13330.2026, таблица 6.3 и примечания"
-    },
-    {
-      "code": "SHRUB_OVERHEAD_POWER_MANUAL",
-      "plantType": "shrub",
-      "targetObjectType": "overhead_power_line",
-      "check": "manual_review",
-      "reason": "Стрелки ЛЭП неоднозначны, а напряжение нужно подтвердить по условным обозначениям или пояснительной записке.",
-      "normReference": "СП 42.13330.2026, таблица 6.3 и примечания"
     }
   ]
 }

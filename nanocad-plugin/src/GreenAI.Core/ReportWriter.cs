@@ -4,6 +4,12 @@ namespace GreenAI.Core;
 
 public static class ReportWriter
 {
+    private static readonly string[] UtilityObjectTypes =
+    {
+        "water_pipe", "storm_drain", "gas_pipe", "heat_pipe", "sewer_pipe",
+        "power_cable", "telecom_cable", "overhead_power_line"
+    };
+
     private static readonly JsonSerializerOptions Options = new()
     {
         WriteIndented = true,
@@ -30,6 +36,13 @@ public static class ReportWriter
                     edgeClearanceM = item.Value.Profile.EdgeClearanceM,
                     footprintRadiusM = item.Value.Profile.FootprintRadiusM,
                     allowedAreaInDxfSquareUnits = item.Value.AllowedArea.Area,
+                    verificationScope = "configured_rules_only",
+                    utilityTypesWithoutActiveRules = UtilityObjectTypes.Except(
+                        run.Model.Config.Rules
+                            .Where(rule => rule.PlantType.Equals(item.Key,
+                                StringComparison.OrdinalIgnoreCase))
+                            .Select(rule => rule.TargetObjectType),
+                        StringComparer.OrdinalIgnoreCase).ToArray(),
                     reviewReasons = item.Value.ReviewReasons,
                     rules = item.Value.RuleEvaluations.Select(rule => new
                     {

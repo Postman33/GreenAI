@@ -140,8 +140,16 @@ class ScriptTests(unittest.TestCase):
         generated = seed.distance_rule("TEST_RULE", "tree", "building", 2.5)
         self.assertEqual(generated.conditions["check"], "min_distance")
         self.assertEqual(generated.conditions["min_distance_m"], 2.5)
-        manual = seed.manual_rule("TEST_MANUAL", "tree", "gas_pipe", "inspect")
-        self.assertEqual(manual.conditions["check"], "manual_review")
+        self.assertTrue(
+            all(
+                item.conditions["check"] == "min_distance"
+                for item in seed.PLACEMENT_RULES
+            )
+        )
+        self.assertFalse(
+            {item.code for item in seed.PLACEMENT_RULES}
+            & set(seed.RETIRED_MANUAL_RULE_CODES)
+        )
 
         tree_gas_rule = next(
             rule for rule in seed.PLACEMENT_RULES if rule.code == "TREE_GAS_1_5"

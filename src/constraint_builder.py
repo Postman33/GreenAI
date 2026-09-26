@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 from collections import Counter
 from pathlib import Path
@@ -23,6 +24,7 @@ from shapely.geometry import GeometryCollection, mapping, shape
 from shapely.ops import polygonize, unary_union
 from shapely.validation import make_valid
 
+from core.heat_chamber_detector import detect_dashed_square_chambers
 from normalizer import primitive_to_geometry
 
 ObjectGeometry: TypeAlias = (
@@ -129,6 +131,76 @@ def read_object_geometry(
         )
 
     return result
+
+
+def infer_heat_chamber_footprints(
+    heat_lines: ObjectGeometry,
+    well_footprints: Polygon | MultiPolygon,
+    units_per_meter: float,
+) -> tuple[Polygon | MultiPolygon, Polygon | MultiPolygon, dict[str, Any]]:
+    """Find square heat-network cells and separate unconfirmed examples.
+
+    A pipe line alone must never turn an arbitrary enclosed lawn into a hard
+    obstacle. The well footprint provides independent evidence that the cell
+    is utility equipment rather than an accidental loop in the linework.
+    """
+    if heat_lines.is_empty:
+        return Polygon(), Polygon(), {
+            "candidate_faces": 0, "square_faces": 0,
+            "accepted_faces": 0, "review_faces": 0,
+        }
+
+    min_area = 4.0 * units_per_meter**2
+    max_area = 100.0 * units_per_meter**2
+    max_side = 20.0 * units_per_meter
+    min_side = 2.0 * units_per_meter
+    max_aspect_ratio = 1.6
+    min_rectangularity = 0.85
+    min_well_overlap = 0.2 * units_per_meter**2
+    accepted = []
+    review = []
+    face_count = 0
+    square_count = 0
+    for face in polygonize(unary_union(heat_lines)):
+        face_count += 1
+        if not min_area <= face.area <= max_area:
+            continue
+        rectangle = face.minimum_rotated_rectangle
+        if rectangle.area <= 0:
+            continue
+        corners = list(rectangle.exterior.coords)
+        sides = [
+            math.hypot(
+                corners[index + 1][0] - corners[index][0],
+                corners[index + 1][1] - corners[index][1],
+            )
+            for index in range(4)
+        ]
+        short_side, long_side = min(sides), max(sides)
+        if short_side < min_side or long_side > max_side:
+            continue
+        if long_side / short_side > max_aspect_ratio:
+            continue
+        if face.area / rectangle.area < min_rectangularity:
+            continue
+        square_count += 1
+        overlap = face.intersection(well_footprints).area
+        if overlap < min_well_overlap or overlap / face.area < 0.01:
+            review.append(face)
+            continue
+        accepted.append(face)
+    return (
+        as_polygonal(unary_union(accepted)) if accepted else Polygon(),
+        as_polygonal(unary_union(review)) if review else Polygon(),
+        {
+            "candidate_faces": face_count,
+            "square_faces": square_count,
+            "accepted_faces": len(accepted),
+            "review_faces": len(review),
+            "max_aspect_ratio": max_aspect_ratio,
+            "min_rectangularity": min_rectangularity,
+        },
+    )
 
 
 def read_work_boundary(path: Path) -> Polygon | MultiPolygon:
@@ -969,6 +1041,7 @@ def build(
     road_min_seed_overlap_area: float = 0.50,
     unit_metadata_path: Path | None = None,
     road_corrections_path: Path | None = None,
+    reconstructed_utilities_path: Path | None = None,
 ) -> None:
     """Calculate and persist the common base area for all plant types."""
     unit_metadata: dict[str, Any] = {}
@@ -989,16 +1062,61 @@ def build(
     buildings_in_work_area = as_polygonal(
         all_buildings.intersection(work_boundary)
     )
+    all_utility_well_footprints: Polygon | MultiPolygon = Polygon()
     utility_well_footprints: Polygon | MultiPolygon = Polygon()
     try:
+        all_utility_well_footprints = as_polygonal(
+            read_object_geometry(normalized_path, "utility_well_footprint")
+        )
         utility_well_footprints = as_polygonal(
-            read_object_geometry(
-                normalized_path, "utility_well_footprint"
-            ).intersection(work_boundary)
+            all_utility_well_footprints.intersection(work_boundary)
         )
     except ValueError:
         # Older normalized files and streets without wells remain supported.
         utility_well_footprints = Polygon()
+    heat_chamber_footprints: Polygon | MultiPolygon = Polygon()
+    heat_chamber_full_footprints: Polygon | MultiPolygon = Polygon()
+    heat_chamber_review_footprints: Polygon | MultiPolygon = Polygon()
+    heat_chamber_detection = {
+        "candidate_faces": 0, "square_faces": 0,
+        "accepted_faces": 0, "review_faces": 0,
+    }
+    if reconstructed_utilities_path is not None:
+        try:
+            heat_lines = read_object_geometry(
+                reconstructed_utilities_path, "heat_pipe"
+            )
+        except ValueError:
+            heat_lines = MultiLineString([])
+        (
+            heat_chamber_full_footprints,
+            heat_chamber_review_footprints,
+            heat_chamber_detection,
+        ) = (
+            infer_heat_chamber_footprints(
+                heat_lines, all_utility_well_footprints, units_per_meter
+            )
+        )
+        heat_chamber_review_footprints = as_polygonal(
+            heat_chamber_review_footprints.intersection(work_boundary)
+        )
+        try:
+            raw_heat_lines = read_object_geometry(normalized_path, "heat_pipe")
+        except ValueError:
+            raw_heat_lines = MultiLineString([])
+        dashed_chambers, dashed_report = detect_dashed_square_chambers(
+            raw_heat_lines,
+            all_utility_well_footprints,
+            work_boundary,
+            units_per_meter,
+        )
+        heat_chamber_full_footprints = as_polygonal(unary_union([
+            heat_chamber_full_footprints, dashed_chambers,
+        ]))
+        heat_chamber_footprints = as_polygonal(
+            heat_chamber_full_footprints.intersection(work_boundary)
+        )
+        heat_chamber_detection["dashed_square_detection"] = dashed_report
     hard_surface_area, surface_diagnostics = read_hard_surface_area(
         surface_candidates_path,
         work_boundary,
@@ -1156,7 +1274,11 @@ def build(
         ])
     )
     absolute_exclusions = as_polygonal(
-        unary_union([exclusions_without_utility_wells, utility_well_footprints])
+        unary_union([
+            exclusions_without_utility_wells,
+            utility_well_footprints,
+            heat_chamber_footprints,
+        ])
     )
 
     # A subtraction-only mask treats every unclassified part of the drawing as
@@ -1176,17 +1298,25 @@ def build(
     base_allowed_area = as_polygonal(
         planting_candidate_area.difference(absolute_exclusions)
     )
+    review_parts = [
+        face for face in polygon_parts(heat_chamber_review_footprints)
+        if face.intersection(base_allowed_area).area >= 0.1 * units_per_meter**2
+    ]
+    heat_chamber_review_footprints = (
+        as_polygonal(unary_union(review_parts)) if review_parts else Polygon()
+    )
+    heat_chamber_detection["review_faces_with_planting_potential"] = len(review_parts)
     if base_allowed_area.is_empty:
         raise ValueError(
             "planting candidate area - sidewalks - hard_surface_area - "
-            "road_area - buildings - utility_well_footprints "
+            "road_area - buildings - utility_well_footprints - heat_chamber_footprints "
             "produced an empty geometry"
         )
 
     formula = (
         f"{planting_candidate_source} - sidewalk_area - "
         "hard_surface_area - road_area - buildings_in_work_area - "
-        "utility_well_footprints"
+        "utility_well_footprints - heat_chamber_footprints"
     )
 
     output_features = [
@@ -1204,6 +1334,7 @@ def build(
                     "reconstructed_road_area",
                     "verified_building_footprints",
                     "utility_well_footprints",
+                    "heat_chamber_footprints",
                 ],
             },
         ),
@@ -1281,6 +1412,47 @@ def build(
                 },
             )
         )
+    if not heat_chamber_footprints.is_empty:
+        output_features.append(
+            geometry_feature(
+                "heat_chamber_footprints",
+                heat_chamber_footprints,
+                {
+                    "stage": "base_constraint_builder",
+                    "source": str(reconstructed_utilities_path),
+                    "evidence": "closed_or_dashed_square_heat_network_with_well_footprint",
+                    "role": "physical_hard_obstacle",
+                    "requires_visual_confirmation": True,
+                },
+            )
+        )
+    if not heat_chamber_full_footprints.is_empty:
+        output_features.append(
+            geometry_feature(
+                "heat_chamber_full_footprints",
+                heat_chamber_full_footprints,
+                {
+                    "stage": "base_constraint_builder",
+                    "role": "diagnostic_complete_reconstruction",
+                    "constraint_geometry": "heat_chamber_footprints",
+                    "requires_visual_confirmation": True,
+                },
+            )
+        )
+    if not heat_chamber_review_footprints.is_empty:
+        output_features.append(
+            geometry_feature(
+                "heat_chamber_review_footprints",
+                heat_chamber_review_footprints,
+                {
+                    "stage": "base_constraint_builder",
+                    "source": str(reconstructed_utilities_path),
+                    "evidence": "square_heat_network_face_without_well_footprint",
+                    "role": "visual_review_only",
+                    "excluded_from_planting": False,
+                },
+            )
+        )
 
     output_path.write_text(
         "".join(
@@ -1330,6 +1502,13 @@ def build(
         .intersection(planting_candidate_area)
         .difference(exclusions_without_utility_wells)
     ).area
+    incremental_heat_chamber_exclusion = as_polygonal(
+        heat_chamber_footprints
+        .intersection(planting_candidate_area)
+        .difference(unary_union([
+            exclusions_without_utility_wells, utility_well_footprints
+        ]))
+    ).area
     area_balance_error = abs(
         planting_candidate_area.area
         - base_allowed_area.area
@@ -1363,8 +1542,14 @@ def build(
             "all_normalized_buildings": all_buildings.area,
             "buildings_in_work_area": buildings_in_work_area.area,
             "utility_well_footprints": utility_well_footprints.area,
+            "heat_chamber_footprints": heat_chamber_footprints.area,
+            "heat_chamber_full_footprints": heat_chamber_full_footprints.area,
+            "heat_chamber_review_footprints": heat_chamber_review_footprints.area,
             "incremental_utility_well_exclusion_inside_planting_candidate": (
                 incremental_utility_well_exclusion
+            ),
+            "incremental_heat_chamber_exclusion_inside_planting_candidate": (
+                incremental_heat_chamber_exclusion
             ),
             "absolute_exclusions": excluded_area,
             "exclusions_inside_planting_candidate": excluded_from_candidate_area,
@@ -1378,6 +1563,7 @@ def build(
         "direct_sidewalk_detection": direct_sidewalk_diagnostics,
         "road_reconstruction": road_reconstruction,
         "road_review_corrections": road_review,
+        "heat_chamber_detection": heat_chamber_detection,
         "applied_restrictions": [
             "confirmed_plantable_surface_mask",
             "sidewalk_area",
@@ -1385,6 +1571,7 @@ def build(
             "reconstructed_road_area",
             "verified_building_footprints",
             "utility_well_footprints",
+            "heat_chamber_footprints",
         ],
         "deferred_restrictions": [
             "building_setbacks",
@@ -1415,6 +1602,10 @@ def build(
         "Utility well footprints in work area: "
         f"{utility_well_footprints.area:.3f} square DXF units"
     )
+    print(
+        "Heat chamber footprints in work area: "
+        f"{heat_chamber_footprints.area:.3f} square DXF units"
+    )
     print(f"Base allowed area: {base_allowed_area.area:.3f} square DXF units")
     for warning in warnings:
         print(f"WARNING: {warning}")
@@ -1443,6 +1634,11 @@ def main() -> None:
         "--road-corrections",
         type=Path,
         help="Optional reviewed road/sidewalk GeoJSON polygons for this drawing",
+    )
+    parser.add_argument(
+        "--reconstructed-utilities",
+        type=Path,
+        help="Accepted reconstructed utility GeoJSONL used to identify heat chambers",
     )
     parser.add_argument("--curve-tolerance", type=float, default=0.1)
     parser.add_argument("--min-area", type=float, default=0.01)
@@ -1478,6 +1674,7 @@ def main() -> None:
             args.road_min_seed_overlap_area,
             args.unit_metadata,
             args.road_corrections,
+            args.reconstructed_utilities,
         )
     except (OSError, ValueError, json.JSONDecodeError) as error:
         raise SystemExit(f"Constraint builder error: {error}") from error

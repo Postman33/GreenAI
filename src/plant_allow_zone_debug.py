@@ -62,6 +62,9 @@ DEBUG_CONTEXT_LAYERS = {
     "utility_marker": ("DEBUG_UTILITY_MARKERS", 200),
     "utility_well": ("DEBUG_UTILITY_WELLS", 210),
     "utility_well_footprint": ("DEBUG_UTILITY_WELL_FOOTPRINTS", 20),
+    "heat_chamber_footprints": ("DEBUG_HEAT_CHAMBERS", 1),
+    "heat_chamber_full_footprints": ("DEBUG_HEAT_CHAMBERS_FULL", 6),
+    "heat_chamber_review_footprints": ("DEBUG_REVIEW_HEAT_CHAMBERS", 2),
     "clean_water_pipe": ("DEBUG_CLEAN_WATER_PIPE", 6),
     "clean_storm_drain": ("DEBUG_CLEAN_STORM_DRAIN", 34),
     "clean_gas_pipe": ("DEBUG_CLEAN_GAS_PIPE", 3),
@@ -256,6 +259,9 @@ def export_diagnostic_legend(
         "| DEBUG_SIDEWALKS | Тротуар: посадка исключена. |",
         "| DEBUG_HARD_SURFACES | Другие твёрдые покрытия: посадка исключена. |",
         "| DEBUG_BUILDINGS | Контуры зданий: посадка исключена. |",
+        "| DEBUG_HEAT_CHAMBERS | Часть восстановленных камер внутри границы работ; посадка исключена. |",
+        "| DEBUG_HEAT_CHAMBERS_FULL | Полный выпрямленный контур камеры, включая часть за границей работ; слой для проверки восстановления. |",
+        "| DEBUG_REVIEW_HEAT_CHAMBERS | Похожие на камеры контуры без колодца: требуется визуальная проверка, посадка автоматически не исключена. |",
         "| DEBUG_BASE_ALLOWED | Базовая область после абсолютных исключений. |",
         "| DEBUG_ALLOW_TREE / DEBUG_ALLOW_SHRUB | Область после применённых правил отступа. |",
         "| DEBUG_REJECTED_* | Отклонённые точки; пояснение находится на соответствующем слое DEBUG_REJECT_REASON_*. |",
@@ -912,6 +918,16 @@ def build_debug_export(
 ) -> None:
     zones = load_plant_zones(plant_zones_path)
     normalized_objects = load_normalized_objects(normalized_path)
+    for object_type in (
+        "heat_chamber_footprints", "heat_chamber_full_footprints",
+        "heat_chamber_review_footprints"
+    ):
+        try:
+            normalized_objects[object_type] = as_polygonal(
+                read_object_geometry(constraint_map_path, object_type)
+            )
+        except ValueError:
+            pass
     if cleaned_utilities_path is not None:
         cleaned = load_cleaned_utilities(cleaned_utilities_path)
         for object_type in RAW_UTILITY_CONTEXT_TYPES:
@@ -964,6 +980,9 @@ def build_debug_export(
         if (geometry := normalized_objects.get(object_type)) is not None
         and not geometry.is_empty
     }
+    full_chambers = normalized_objects.get("heat_chamber_full_footprints")
+    if full_chambers is not None and not full_chambers.is_empty:
+        context_geometries["heat_chamber_full_footprints"] = full_chambers
     # Buildings must remain whole in the diagnostic drawing. Clipping them to
     # the street work boundary makes valid footprints look like thin strips.
     full_buildings = normalized_objects.get("building")

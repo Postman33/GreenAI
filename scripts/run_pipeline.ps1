@@ -597,7 +597,8 @@ try {
                 ".\src\constraint_builder.py", $normalized, $surfaces,
                 "--output", $constraints,
                 "--report", $constraintReport,
-                "--unit-metadata", $unitReport
+                "--unit-metadata", $unitReport,
+                "--reconstructed-utilities", $reconstructedUtilities
             )
             if ($null -ne $roadCorrectionsPath) {
                 $constraintArguments += @("--road-corrections", $roadCorrectionsPath)

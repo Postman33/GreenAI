@@ -221,25 +221,6 @@ def distance_rule(
     )
 
 
-def manual_rule(
-    code: str,
-    plant_type: str,
-    target_object: str,
-    reason: str,
-) -> PlacementRule:
-    return PlacementRule(
-        code=code,
-        norm_code="SP42_2026",
-        plant_type=plant_type,
-        target_object=target_object,
-        conditions={
-            "check": "manual_review",
-            "reason": reason,
-        },
-        norm_reference="СП 42.13330.2026, таблица 6.3 и примечания",
-    )
-
-
 PLACEMENT_RULES = (
     distance_rule("TREE_BUILDING_5", "tree", "building", 5.0),
     distance_rule("TREE_SIDEWALK_0_7", "tree", "sidewalk", 0.7),
@@ -247,105 +228,32 @@ PLACEMENT_RULES = (
     # Применяется только к очищенной моделью геометрии газопровода CLEAN_*.
     # Расстояние измеряется от оси ствола дерева до оси газопровода.
     distance_rule("TREE_GAS_1_5", "tree", "gas_pipe", 1.5),
-    # Слой самотечной канализации смешивает трассы с окружностями, стрелками
-    # и компактными условными знаками. До очистки геометрии отступ 1,5 м
-    # проверяется вручную, а исходный слой сохраняется в debug DXF.
-    manual_rule(
-        "TREE_SEWER_1_5",
-        "tree",
-        "sewer_pipe",
-        (
-            "Нормативный отступ 1,5 м не применяется автоматически: "
-            "исходный слой канализации содержит трассы и графические "
-            "обозначения. Требуется ручная проверка или очистка геометрии."
-        ),
-    ),
     # Эти расстояния применяются только к геометрии CLEAN_* после отдельного
     # этапа очистки инженерных сетей. Сырые CAD-слои для buffer не используются.
     distance_rule("TREE_HEAT_2", "tree", "heat_pipe", 2.0),
     distance_rule("TREE_WATER_2", "tree", "water_pipe", 2.0),
-    manual_rule(
-        "TREE_DRAINAGE_2",
-        "tree",
-        "storm_drain",
-        (
-            "Нормативный отступ 2 м не применяется автоматически: слой "
-            "водостока/дренажа содержит трассы, окружности, замкнутые "
-            "контуры и большое количество коротких графических элементов."
-        ),
-    ),
-    manual_rule(
-        "TREE_POWER_CABLE_2",
-        "tree",
-        "power_cable",
-        (
-            "Нормативный отступ 2 м не применяется автоматически: слой "
-            "силового кабеля содержит повторяющиеся короткие отрезки и "
-            "ломаные графические обозначения вместе с трассами."
-        ),
-    ),
-    manual_rule(
-        "TREE_TELECOM_MANUAL",
-        "tree",
-        "telecom_cable",
-        "Для кабеля связи таблица отсылает к отдельным документам.",
-    ),
-    manual_rule(
-        "TREE_OVERHEAD_POWER_MANUAL",
-        "tree",
-        "overhead_power_line",
-        "Стрелки ЛЭП неоднозначны, а напряжение нужно подтвердить по условным обозначениям или пояснительной записке.",
-    ),
     distance_rule("SHRUB_BUILDING_1_5", "shrub", "building", 1.5),
     distance_rule("SHRUB_SIDEWALK_0_5", "shrub", "sidewalk", 0.5),
     distance_rule("SHRUB_ROAD_EDGE_1", "shrub", "road_edge", 1.0),
     distance_rule("SHRUB_HEAT_1", "shrub", "heat_pipe", 1.0),
-    manual_rule(
-        "SHRUB_POWER_CABLE_0_75",
-        "shrub",
-        "power_cable",
-        (
-            "Нормативный отступ 0,75 м не применяется автоматически: слой "
-            "силового кабеля содержит повторяющиеся короткие отрезки и "
-            "ломаные графические обозначения вместе с трассами."
-        ),
-    ),
-    manual_rule(
-        "SHRUB_GAS_MANUAL",
-        "shrub",
-        "gas_pipe",
-        "Таблица 6.3 не задаёт расстояние для кустарника.",
-    ),
-    manual_rule(
-        "SHRUB_SEWER_MANUAL",
-        "shrub",
-        "sewer_pipe",
-        "Таблица 6.3 не задаёт расстояние для кустарника.",
-    ),
-    manual_rule(
-        "SHRUB_WATER_MANUAL",
-        "shrub",
-        "water_pipe",
-        "Таблица 6.3 не задаёт расстояние для кустарника.",
-    ),
-    manual_rule(
-        "SHRUB_DRAINAGE_MANUAL",
-        "shrub",
-        "storm_drain",
-        "Таблица 6.3 не задаёт расстояние для кустарника.",
-    ),
-    manual_rule(
-        "SHRUB_TELECOM_MANUAL",
-        "shrub",
-        "telecom_cable",
-        "Для кабеля связи таблица отсылает к отдельным документам.",
-    ),
-    manual_rule(
-        "SHRUB_OVERHEAD_POWER_MANUAL",
-        "shrub",
-        "overhead_power_line",
-        "Стрелки ЛЭП неоднозначны, а напряжение нужно подтвердить по условным обозначениям или пояснительной записке.",
-    ),
+)
+
+# Legacy rows remain in existing databases until seed.py is run again. The
+# loader also ignores manual_review rows, so an ordinary pipeline run uses only
+# computable rules without requiring a database reseed.
+RETIRED_MANUAL_RULE_CODES = (
+    "TREE_SEWER_1_5",
+    "TREE_DRAINAGE_2",
+    "TREE_POWER_CABLE_2",
+    "TREE_TELECOM_MANUAL",
+    "TREE_OVERHEAD_POWER_MANUAL",
+    "SHRUB_POWER_CABLE_0_75",
+    "SHRUB_GAS_MANUAL",
+    "SHRUB_SEWER_MANUAL",
+    "SHRUB_WATER_MANUAL",
+    "SHRUB_DRAINAGE_MANUAL",
+    "SHRUB_TELECOM_MANUAL",
+    "SHRUB_OVERHEAD_POWER_MANUAL",
 )
 
 
@@ -648,6 +556,15 @@ def seed(dsn: str) -> tuple[int, int, int]:
                         rule.norm_code,
                     ),
                 )
+
+            cursor.execute(
+                """
+                DELETE FROM placement_rules
+                WHERE rule_code = ANY(%s)
+                  AND conditions->>'check' = 'manual_review'
+                """,
+                (list(RETIRED_MANUAL_RULE_CODES),),
+            )
 
             for plant in PLANTS:
                 cursor.execute(

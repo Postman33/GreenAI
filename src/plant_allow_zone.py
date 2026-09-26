@@ -1,8 +1,7 @@
-"""Build a provisional planting zone for every configured plant class.
+"""Build a planting zone from the active computable placement rules.
 
-The module applies database rules with ``check=min_distance`` to the common
-``base_allowed_area``. Rules that require manual review or missing DXF data
-are recorded in the report and make the result provisional.
+Unsupported utility types are listed in the report, but are not placement
+rules and do not change the status of every proposed planting.
 """
 
 from __future__ import annotations
@@ -204,6 +203,11 @@ def load_rules(
         conditions = row[3]
         if isinstance(conditions, str):
             conditions = json.loads(conditions)
+        conditions = conditions or {}
+        # Previously seeded manual_review rows may still exist in a database
+        # that has not been reseeded. They are no longer active rules.
+        if conditions.get("check") == "manual_review":
+            continue
         grouped[plant_type].append(
             {
                 "rule_code": row[0],
@@ -647,6 +651,22 @@ def build_plant_allow_zones(
             geometry_sources,
             utility_geometry_metadata,
         )
+        configured_utility_types = {
+            rule["target_object_type"]
+            for rule in rules_by_plant_type[plant_type]
+            if rule["target_object_type"] in UTILITY_OBJECT_TYPES
+        }
+        unchecked_utility_types = sorted(
+            object_type
+            for object_type in UTILITY_OBJECT_TYPES - configured_utility_types
+            if object_type in normalized_objects
+            and not normalized_objects[object_type].is_empty
+        )
+        if unchecked_utility_types:
+            warnings.append(
+                "No active placement rule for utility types: "
+                + ", ".join(unchecked_utility_types)
+            )
         unresolved = [
             item["rule_code"]
             for item in evaluations
@@ -673,6 +693,7 @@ def build_plant_allow_zones(
                     "area_in_dxf_square_units": allowed_area.area,
                     "applied_rules": applied,
                     "unresolved_rules": unresolved,
+                    "unchecked_utility_object_types": unchecked_utility_types,
                     "selectable_plants": selectable_plants,
                     "excluded_invasive_plants": [
                         plant["name"] for plant in invasive_plants
@@ -691,6 +712,8 @@ def build_plant_allow_zones(
                 base_allowed_area.area - allowed_area.area
             ),
             "rules": evaluations,
+            "unchecked_utility_object_types": unchecked_utility_types,
+            "verification_scope": "configured_rules_only",
             "warnings": warnings,
             "plant_catalog": {
                 "total": len(catalog_plants),

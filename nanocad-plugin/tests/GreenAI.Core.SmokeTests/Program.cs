@@ -78,6 +78,11 @@ try
     if (!reportJson.RootElement.TryGetProperty("placements", out var reportPlacements) ||
         reportPlacements.GetArrayLength() != run.Placements.Count)
         throw new InvalidOperationException("Per-placement report is incomplete");
+    var treeReport = reportJson.RootElement.GetProperty("plantTypes").GetProperty("tree");
+    if (treeReport.GetProperty("verificationScope").GetString() != "configured_rules_only" ||
+        !treeReport.GetProperty("utilityTypesWithoutActiveRules")
+            .EnumerateArray().Any(item => item.GetString() == "sewer_pipe"))
+        throw new InvalidOperationException("Unchecked utility types are missing from the report");
 }
 finally
 {

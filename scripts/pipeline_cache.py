@@ -26,6 +26,7 @@ DEPENDENCIES = (
     "src/core/surface_inspector_config.yaml",
     "src/normalizer.py",
     "src/constraint_builder.py",
+    "src/core/heat_chamber_detector.py",
     "src/plant_allow_zone.py",
     "src/network_reconstructor.py",
     "src/overhead_power_reconstructor.py",

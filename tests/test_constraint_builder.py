@@ -1,18 +1,305 @@
 from __future__ import annotations
 
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
 
-from shapely.geometry import LineString, MultiPolygon, box, mapping, shape
+from shapely.geometry import LineString, MultiLineString, MultiPolygon, Point, Polygon, box, mapping, shape
+from shapely.ops import unary_union
 
 from tests import ROOT  # noqa: F401 - initializes script-module import paths
+from core.heat_chamber_detector import detect_dashed_square_chambers
 from src import constraint_builder as constraints
 from tests.helpers import feature, raw_hatch, write_jsonl
 
 
 class ConstraintBuilderTests(unittest.TestCase):
+    def test_dashed_chamber_ignores_annotation_leader_spurs(self) -> None:
+        fixture = json.loads(
+            (Path(__file__).parent / "fixtures" / "heat_chamber_leader_spur.json")
+            .read_text(encoding="utf-8")
+        )
+        lines = MultiLineString(fixture["lines"])
+        well_x, well_y, well_radius = fixture["well"]
+        chamber, report = detect_dashed_square_chambers(
+            lines,
+            Point(well_x, well_y).buffer(well_radius),
+            box(-1, -1, 6, 7),
+            1.0,
+        )
+
+        self.assertEqual(report["accepted"], 1)
+        self.assertTrue(chamber.covers(Point(1.3681, 3.4484)))
+        self.assertLess(chamber.bounds[3], 5.1)
+        self.assertEqual(len(chamber.exterior.coords), 5)
+
+    def test_dashed_chamber_with_jog_is_filled_but_solid_pipe_box_is_not(self) -> None:
+        def dashed_outline(corners):
+            segments = []
+            for start, end in zip(corners, corners[1:]):
+                length = math.dist(start, end)
+                offset = 0.0
+                while offset < length:
+                    finish = min(offset + 0.72, length)
+                    segments.append(LineString([
+                        (
+                            start[0] + (end[0] - start[0]) * offset / length,
+                            start[1] + (end[1] - start[1]) * offset / length,
+                        ),
+                        (
+                            start[0] + (end[0] - start[0]) * finish / length,
+                            start[1] + (end[1] - start[1]) * finish / length,
+                        ),
+                    ]))
+                    offset += 1.2
+            return segments
+
+        jogged = dashed_outline([
+            (0, 0), (8, 0), (8, 5), (7, 5),
+            (7, 11), (0, 11), (0, 0),
+        ])
+        solid_pipe_box = box(20, 0, 28, 5).boundary
+        wells = unary_union([
+            box(6.7, 0.7, 7.7, 1.7),
+            box(22, 1, 23, 2),
+        ])
+        recovered, report = detect_dashed_square_chambers(
+            unary_union(jogged + [solid_pipe_box]),
+            wells,
+            box(-2, -2, 30, 13),
+            1.0,
+        )
+        self.assertTrue(recovered.covers(box(7.5, 2, 7.8, 3)))
+        self.assertFalse(recovered.covers(box(22, 1, 23, 2)))
+        self.assertLessEqual(len(recovered.exterior.coords), 20)
+        self.assertGreaterEqual(report["buffered_refinements"], 1)
+
+    def test_large_dashed_chamber_beside_small_chamber(self) -> None:
+        def dashed_side(start, end):
+            length = math.dist(start, end)
+            return [
+                LineString([
+                    (
+                        start[0] + (end[0] - start[0]) * offset / length,
+                        start[1] + (end[1] - start[1]) * offset / length,
+                    ),
+                    (
+                        start[0] + (end[0] - start[0])
+                         * min(offset + 0.7, length) / length,
+                        start[1] + (end[1] - start[1])
+                         * min(offset + 0.7, length) / length,
+                    ),
+                ])
+                for offset in (index * 1.2 for index in range(10))
+                if offset < length
+            ]
+
+        outlines = [
+            [(0, 0), (5, 0), (5, 10), (0, 10), (0, 0)],
+            [(5, 0), (7.2, 0), (7.2, 2.8), (5, 2.8), (5, 0)],
+        ]
+        raw = unary_union([
+            stroke
+            for outline in outlines
+            for start, end in zip(outline, outline[1:])
+            for stroke in dashed_side(start, end)
+        ])
+        wells = unary_union([box(0.5, 8.5, 1.5, 9.5), box(5.5, 0.5, 6.5, 1.5)])
+        recovered, _ = detect_dashed_square_chambers(
+            raw, wells, box(-2, -2, 9, 12), 1.0
+        )
+        self.assertTrue(recovered.covers(box(1, 8, 2, 9)))
+        self.assertTrue(recovered.covers(box(5.6, 0.6, 6.2, 1.2)))
+
+    def test_heat_chamber_uses_full_well_at_work_boundary(self) -> None:
+        outline = [(2, 2), (7, 2), (7, 7), (2, 7), (2, 2)]
+        strokes = [
+            LineString([
+                (
+                    start[0] + (end[0] - start[0]) * offset / 5,
+                    start[1] + (end[1] - start[1]) * offset / 5,
+                ),
+                (
+                    start[0] + (end[0] - start[0]) * (offset + 0.7) / 5,
+                    start[1] + (end[1] - start[1]) * (offset + 0.7) / 5,
+                ),
+            ])
+            for start, end in zip(outline, outline[1:])
+            for offset in (0, 1.2, 2.4, 3.6)
+        ]
+        work = box(2.98, 0, 10, 10)
+        well = box(2, 4.5, 3, 5.5)
+        self.assertLess(well.intersection(work).area, 0.1)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            normalized = root / "normalized.geojsonl"
+            surfaces = root / "surfaces.jsonl"
+            reconstructed = root / "reconstructed.geojsonl"
+            output = root / "constraints.geojsonl"
+            report_path = root / "report.json"
+            write_jsonl(normalized, [
+                feature("work_boundary", work),
+                feature("building", box(20, 20, 21, 21)),
+                feature("utility_well_footprint", well),
+                feature("heat_pipe", unary_union(strokes)),
+            ])
+            write_jsonl(surfaces, [raw_hatch(
+                [(2.98, 0), (10, 0), (10, 10), (2.98, 10)],
+                layer="Р“Р°Р·РѕРЅ",
+            )])
+            write_jsonl(reconstructed, [feature(
+                "heat_pipe", LineString([(20, 20), (30, 30)])
+            )])
+            constraints.build(
+                normalized, surfaces, output, report_path,
+                reconstructed_utilities_path=reconstructed,
+            )
+            chambers = constraints.read_object_geometry(
+                output, "heat_chamber_footprints"
+            )
+            full_chambers = constraints.read_object_geometry(
+                output, "heat_chamber_full_footprints"
+            )
+            base = constraints.read_object_geometry(output, "base_allowed_area")
+            self.assertTrue(chambers.covers(box(4, 4, 5, 5)))
+            self.assertTrue(full_chambers.covers(box(2.2, 4, 2.6, 5)))
+            self.assertFalse(chambers.covers(box(2.2, 4, 2.6, 5)))
+            self.assertFalse(base.covers(box(4, 4, 5, 5)))
+
+    def test_dashed_square_heat_chamber_is_recovered_from_raw_lines(self) -> None:
+        angle = math.radians(14)
+
+        def rotate(point):
+            x, y = point
+            return (
+                10 + x * math.cos(angle) - y * math.sin(angle),
+                10 + x * math.sin(angle) + y * math.cos(angle),
+            )
+
+        corners = [rotate(point) for point in (
+            (-2, -2), (2, -2), (2, 2), (-2, 2),
+        )]
+        sides = [
+            (corners[index], corners[(index + 1) % 4])
+            for index in range(4)
+        ]
+        strokes = [
+            LineString([
+                (start[0] + (end[0] - start[0]) * lo,
+                 start[1] + (end[1] - start[1]) * lo),
+                (start[0] + (end[0] - start[0]) * hi,
+                 start[1] + (end[1] - start[1]) * hi),
+            ])
+            for start, end in sides
+            for lo, hi in ((0, 0.185), (0.31, 0.495), (0.62, 0.805))
+        ]
+        raw_heat = unary_union(strokes)
+        well = box(9.7, 9.7, 10.3, 10.3)
+        work = box(0, 0, 20, 20)
+        recovered, detection = detect_dashed_square_chambers(
+            raw_heat, well, work, 1.0
+        )
+        self.assertEqual(detection["accepted"], 1)
+        self.assertTrue(recovered.covers(box(9.9, 9.9, 10.1, 10.1)))
+        incomplete, _ = detect_dashed_square_chambers(
+            unary_union(strokes[:9]), well, work, 1.0
+        )
+        self.assertTrue(incomplete.is_empty)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            normalized = root / "normalized.geojsonl"
+            surfaces = root / "surfaces.jsonl"
+            reconstructed = root / "reconstructed.geojsonl"
+            output = root / "constraints.geojsonl"
+            report_path = root / "report.json"
+            write_jsonl(normalized, [
+                feature("work_boundary", work),
+                feature("building", box(30, 30, 31, 31)),
+                feature("utility_well_footprint", well),
+                feature("heat_pipe", raw_heat),
+            ])
+            write_jsonl(surfaces, [raw_hatch(
+                [(0, 0), (20, 0), (20, 20), (0, 20)], layer="Газон"
+            )])
+            write_jsonl(reconstructed, [feature(
+                "heat_pipe", LineString([(30, 30), (40, 40)])
+            )])
+            constraints.build(
+                normalized, surfaces, output, report_path,
+                reconstructed_utilities_path=reconstructed,
+            )
+            records = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+            by_type = {
+                record["properties"]["object_type"]: shape(record["geometry"])
+                for record in records
+            }
+            self.assertFalse(by_type["base_allowed_area"].covers(box(9.9, 9.9, 10.1, 10.1)))
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                report["heat_chamber_detection"]["dashed_square_detection"]["accepted"], 1
+            )
+
+    def test_heat_chamber_exclusion_requires_well_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            normalized = root / "normalized.geojsonl"
+            surfaces = root / "surfaces.jsonl"
+            reconstructed = root / "reconstructed.geojsonl"
+            output = root / "constraints.geojsonl"
+            report_path = root / "report.json"
+            chamber = box(2, 2, 7, 7)
+            unrelated_loop = box(12, 2, 17, 7)
+            heat_lines = unary_union([chamber.boundary, unrelated_loop.boundary])
+            write_jsonl(normalized, [
+                feature("work_boundary", box(0, 0, 20, 10)),
+                feature("building", box(30, 30, 31, 31)),
+                feature("utility_well_footprint", box(2, 4, 3, 5)),
+            ])
+            write_jsonl(surfaces, [
+                raw_hatch(
+                    [(0, 0), (20, 0), (20, 10), (0, 10)],
+                    layer="Газон",
+                ),
+            ])
+            write_jsonl(reconstructed, [feature("heat_pipe", heat_lines)])
+
+            constraints.build(
+                normalized, surfaces, output, report_path,
+                reconstructed_utilities_path=reconstructed,
+            )
+
+            records = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+            by_type = {
+                record["properties"]["object_type"]: shape(record["geometry"])
+                for record in records
+            }
+            self.assertAlmostEqual(by_type["heat_chamber_footprints"].area, 25.0)
+            self.assertAlmostEqual(
+                by_type["heat_chamber_review_footprints"].area, 25.0
+            )
+            self.assertFalse(by_type["base_allowed_area"].covers(chamber.centroid))
+            self.assertTrue(by_type["base_allowed_area"].covers(unrelated_loop.centroid))
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["heat_chamber_detection"]["accepted_faces"], 1)
+            self.assertEqual(
+                report["heat_chamber_detection"]["review_faces_with_planting_potential"], 1
+            )
+
+    def test_irregular_heat_loop_with_well_is_not_chamber(self) -> None:
+        irregular = Polygon([
+            (0, 0), (6, 0), (6, 2), (2, 2), (2, 6), (0, 6),
+        ])
+        accepted, review, report = constraints.infer_heat_chamber_footprints(
+            irregular.boundary, box(0.2, 0.2, 1.2, 1.2), 1.0
+        )
+        self.assertTrue(accepted.is_empty)
+        self.assertTrue(review.is_empty)
+        self.assertEqual(report["accepted_faces"], 0)
+
     def test_surface_and_road_layer_classification(self) -> None:
         self.assertEqual(
             constraints.classify_surface_layer("_АД_граница покрытия"),

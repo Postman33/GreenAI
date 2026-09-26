@@ -142,6 +142,14 @@ def main() -> None:
     utility_wells = (
         unary_union(utility_well_parts) if utility_well_parts else GeometryCollection()
     )
+    heat_chamber_parts = [
+        geometry
+        for _properties, geometry in constraints.get("heat_chamber_footprints", [])
+    ]
+    heat_chambers = (
+        unary_union(heat_chamber_parts)
+        if heat_chamber_parts else GeometryCollection()
+    )
 
     checks: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -153,6 +161,7 @@ def main() -> None:
         sidewalk_overlap = geometry.intersection(sidewalks).area
         building_overlap = geometry.intersection(buildings).area
         utility_well_overlap = geometry.intersection(utility_wells).area
+        heat_chamber_overlap = geometry.intersection(heat_chambers).area
         outside_confirmed_plantable = geometry.difference(
             confirmed_plantable
         ).area
@@ -171,6 +180,7 @@ def main() -> None:
             "sidewalk_overlap_area": sidewalk_overlap,
             "building_overlap_area": building_overlap,
             "utility_well_overlap_area": utility_well_overlap,
+            "heat_chamber_overlap_area": heat_chamber_overlap,
             "outside_confirmed_plantable_area": outside_confirmed_plantable,
         }
         checks.append(record)
@@ -190,6 +200,8 @@ def main() -> None:
             failures.append(f"{plant_type}: zone overlaps buildings")
         if utility_well_overlap > AREA_TOLERANCE:
             failures.append(f"{plant_type}: zone overlaps utility wells")
+        if heat_chamber_overlap > AREA_TOLERANCE:
+            failures.append(f"{plant_type}: zone overlaps heat chambers")
         if outside_confirmed_plantable > AREA_TOLERANCE:
             failures.append(
                 f"{plant_type}: zone extends outside confirmed plantable surfaces"
@@ -816,6 +828,7 @@ def main() -> None:
             f"sidewalk_overlap={item['sidewalk_overlap_area']:.6f}, "
             f"building_overlap={item['building_overlap_area']:.6f}, "
             f"utility_well_overlap={item['utility_well_overlap_area']:.6f}, "
+            f"heat_chamber_overlap={item['heat_chamber_overlap_area']:.6f}, "
             "outside_confirmed_plantable="
             f"{item['outside_confirmed_plantable_area']:.6f}"
         )

@@ -4,7 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from shapely.geometry import LineString, MultiLineString, Point, box, shape
 
@@ -36,6 +36,37 @@ def manual_rule(code: str, target: str) -> dict:
 
 
 class PlantAllowZoneTests(unittest.TestCase):
+    def test_load_rules_ignores_legacy_manual_rows(self) -> None:
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        connection.cursor.return_value.__enter__.return_value.fetchall.return_value = [
+            (
+                "TREE_BUILDING",
+                "tree",
+                "building",
+                {"check": "min_distance", "min_distance_m": 5},
+                "TEST 1",
+                "TEST",
+                "Test norm",
+                "2026",
+                None,
+            ),
+            (
+                "TREE_SEWER_1_5",
+                "tree",
+                "sewer_pipe",
+                {"check": "manual_review", "reason": "Inspect"},
+                "TEST 1",
+                "TEST",
+                "Test norm",
+                "2026",
+                None,
+            ),
+        ]
+        with patch.object(plant_allow_zone.psycopg, "connect", return_value=connection):
+            loaded = plant_allow_zone.load_rules("unused", {"tree"})
+        self.assertEqual([item["rule_code"] for item in loaded["tree"]], ["TREE_BUILDING"])
+
     def test_validate_distance_rule_rejects_bool_and_negative(self) -> None:
         with self.assertRaises(ValueError):
             plant_allow_zone.validate_distance_rule(
@@ -136,7 +167,10 @@ class PlantAllowZoneTests(unittest.TestCase):
             write_jsonl(constraints, [feature("base_allowed_area", box(0, 0, 10, 10))])
             write_jsonl(
                 normalized,
-                [feature("building", LineString([(5, 0), (5, 10)]))],
+                [
+                    feature("building", LineString([(5, 0), (5, 10)])),
+                    feature("sewer_pipe", LineString([(0, 5), (10, 5)])),
+                ],
             )
             catalog = {
                 "tree": [
@@ -171,6 +205,17 @@ class PlantAllowZoneTests(unittest.TestCase):
             report_data = json.loads(report.read_text(encoding="utf-8"))
             self.assertAlmostEqual(shape(zone["geometry"]).area, 80.0, places=5)
             self.assertEqual(zone["properties"]["verification_status"], "verified_by_available_rules")
+            self.assertEqual(
+                zone["properties"]["unchecked_utility_object_types"],
+                ["sewer_pipe"],
+            )
+            self.assertEqual(
+                report_data["plant_types"]["tree"]["verification_scope"],
+                "configured_rules_only",
+            )
+            self.assertIn(
+                "sewer_pipe", report_data["plant_types"]["tree"]["warnings"][0]
+            )
             self.assertEqual(zone["properties"]["selectable_plants"][0]["name"], "Test tree")
             self.assertEqual(report_data["plant_catalog"]["tree"][0]["name"], "Test tree")
 
