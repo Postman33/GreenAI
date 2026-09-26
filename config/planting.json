@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "maxPlacementsPerType": 5000,
+  "dxfUnitsPerMeter": 1.0,
+  "diagnosticRejectedMaxCount": 1000,
+  "treeLayoutMode": "linear_preferred",
+  "plantingProfiles": [
+    {
+      "plantType": "tree",
+      "species": "Липа мелколистная",
+      "geometryKind": "point",
+      "spacingM": 6.0,
+      "footprintRadiusM": 3.0,
+      "symbolRadiusM": 2.0,
+      "avoidOtherPlantingsM": 2.0,
+      "catalogReference": "project planting catalog",
+      "selectionReasons": ["Подходит для линейных городских посадок"]
+    },
+    {
+      "plantType": "shrub",
+      "species": "Дерен белый",
+      "geometryKind": "point",
+      "spacingM": 1.5,
+      "footprintRadiusM": 0.75,
+      "symbolRadiusM": 0.5,
+      "avoidOtherPlantingsM": 0.5,
+      "catalogReference": "project planting catalog",
+      "selectionReasons": ["Подходит для групповых и линейных посадок"]
+    },
+    {
+      "plantType": "herbaceous",
+      "species": "Газонная травосмесь",
+      "geometryKind": "area",
+      "spacingM": 0.5,
+      "footprintRadiusM": 0.0,
+      "symbolRadiusM": 0.0,
+      "avoidOtherPlantingsM": 0.0,
+      "catalogReference": "project planting catalog",
+      "selectionReasons": ["Заполнение подтверждённой травянистой зоны"]
+    }
+  ],
+  "plantingDesignDefaults": {
+    "alley": {"row_count": 1},
+    "hedge": {"band_width_m": 1.5},
+    "shrub_mass": {},
+    "free_group": {"seed": 2026},
+    "mixed_flowerbed": {
+      "composition": [
+        {"species": "Многолетники светлых тонов", "share": 0.4},
+        {"species": "Многолетники жёлтых тонов", "share": 0.35},
+        {"species": "Многолетники фиолетовых тонов", "share": 0.25}
+      ]
+    }
+  }
+}
