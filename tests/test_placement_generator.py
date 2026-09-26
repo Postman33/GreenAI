@@ -18,6 +18,19 @@ def write_jsonl(path: Path, features: list[dict]) -> None:
 
 
 class PlacementGeneratorTests(unittest.TestCase):
+    def test_sidewalk_check_uses_site_geometry_instead_of_distant_sheet_hatch(self) -> None:
+        normalized = {
+            "work_boundary": box(0, 0, 10, 10),
+            "sidewalk": box(1000, 1000, 1010, 1010),
+        }
+        constraints = {"sidewalk_area": box(4, 0, 6, 10)}
+        report = {"plant_types": {"tree": {"rules": [
+            {"target_object_type": "sidewalk", "min_distance_m": 0.5},
+        ]}}}
+        placement_generator.prepare_sidewalk_for_checks(normalized, constraints, report, 1.0)
+        self.assertAlmostEqual(normalized["sidewalk"].distance(Point(2, 5)), 2.0)
+        self.assertLess(normalized["sidewalk"].area, 100)
+
     def test_layout_audit_replays_winner_and_explains_discarded_points(self) -> None:
         profile = placement_generator.PlantingProfile(
             plant_type="tree", species="Test tree", spacing_m=5.0,

@@ -329,6 +329,8 @@ class ConstraintBuilderTests(unittest.TestCase):
             "ДВ_ПП_Тип5_Р ТР",
             "ДВ_ПП_Тип6_У_ТР_3м за счет Газона",
             "ДВ_ПП_Тип7_У_ТР_до 3м за счет АБ_ПЧ",
+            "ДВ_ПП_Тип5_Тротуар АБ сущий",
+            "ДВ_ПП_Тип7_Тротуар АБ менее 2м за Газон",
         ):
             with self.subTest(layer=layer):
                 self.assertEqual(constraints.classify_surface_layer(layer), "hard_surface")
@@ -356,7 +358,7 @@ class ConstraintBuilderTests(unittest.TestCase):
                 ),
                 raw_hatch(
                     [(4, 0), (6, 0), (6, 10), (4, 10)],
-                    layer="ДВ_ПП_Тип6_У_ТР_3м за счет Газона",
+                    layer="ДВ_ПП_Тип7_Тротуар АБ менее 2м за Газон",
                 ),
             ])
             constraints.build(normalized, surfaces, output, root / "report.json")

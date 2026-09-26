@@ -24,6 +24,7 @@ from shapely.validation import make_valid
 
 from ..domain.models import PlantingProfile
 from ..geometry.parts import polygon_parts
+from ..geometry.sidewalk_geometry import relevant_sidewalk_geometry
 
 
 LINEAR_MIN_ASPECT_RATIO = 2.5
@@ -463,6 +464,35 @@ def rule_geometry(
     return first_available(normalized.get(target_type), constraints.get(target_type))
 
 
+def prepare_sidewalk_for_checks(
+    normalized: dict[str, Any],
+    constraints: dict[str, Any],
+    zone_report: dict[str, Any],
+    units_per_meter: float,
+) -> None:
+    """Use the same local sidewalk geometry for point checks and allow zones."""
+    setback = max(
+        (
+            float(rule["min_distance_m"]) * units_per_meter
+            for plant in zone_report.get("plant_types", {}).values()
+            for rule in plant.get("rules", [])
+            if rule.get("target_object_type") == "sidewalk"
+            and rule.get("min_distance_m") is not None
+        ),
+        default=0.0,
+    )
+    sidewalk = relevant_sidewalk_geometry(
+        normalized.get("sidewalk"),
+        constraints.get("sidewalk_area"),
+        normalized.get("work_boundary", constraints.get("base_allowed_area")),
+        setback,
+    )
+    if sidewalk is None:
+        normalized.pop("sidewalk", None)
+    else:
+        normalized["sidewalk"] = sidewalk
+
+
 def build_checks(
     point: Point,
     profile: PlantingProfile,
@@ -504,7 +534,7 @@ def build_checks(
         status = str(evaluation.get("status", "unavailable"))
         required = evaluation.get("min_distance_m")
         actual = None
-        if geometry is not None and not geometry.is_empty:
+        if status != "unavailable" and geometry is not None and not geometry.is_empty:
             actual = point.distance(geometry) / units_per_meter
         if status == "applied" and required is not None:
             check_status = "passed" if actual is not None and actual + 1e-7 >= float(required) else "failed"
@@ -551,6 +581,7 @@ def generate_plan(
     units_per_meter = float(zone_report.get("dxf_units_per_meter", config.get("dxfUnitsPerMeter", 1.0)))
     if not math.isfinite(units_per_meter) or units_per_meter <= 0:
         raise ValueError("dxf_units_per_meter must be finite and positive")
+    prepare_sidewalk_for_checks(normalized, constraints, zone_report, units_per_meter)
     accepted: list[tuple[str, float, float]] = []
     features: list[dict[str, Any]] = []
     summary: dict[str, Any] = {}

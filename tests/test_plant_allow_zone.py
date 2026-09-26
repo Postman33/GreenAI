@@ -293,6 +293,34 @@ class PlantAllowZoneTests(unittest.TestCase):
             self.assertEqual(evaluation["status"], "applied")
             self.assertEqual(evaluation["geometry_source"], "reconstructed_sidewalk_area")
 
+    def test_distant_sheet_sidewalk_does_not_pass_setback_check(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            constraints = root / "constraints.jsonl"
+            normalized = root / "normalized.jsonl"
+            output = root / "zones.jsonl"
+            report = root / "report.json"
+            write_jsonl(constraints, [feature("base_allowed_area", box(0, 0, 10, 10))])
+            write_jsonl(normalized, [
+                feature("work_boundary", box(0, 0, 10, 10)),
+                feature("sidewalk", box(1000, 1000, 1010, 1010)),
+            ])
+            with patch.object(
+                plant_allow_zone, "load_rules",
+                return_value={"tree": [rule("TREE_SIDEWALK", "sidewalk", 0.5)]},
+            ), patch.object(plant_allow_zone, "load_plants", return_value={}):
+                plant_allow_zone.build_plant_allow_zones(
+                    constraints, normalized, output, report, "unused", {"tree"}, 1.0,
+                )
+            evaluation = json.loads(report.read_text(encoding="utf-8"))[
+                "plant_types"
+            ]["tree"]["rules"][0]
+            self.assertNotEqual(evaluation["status"], "applied")
+            self.assertAlmostEqual(
+                shape(json.loads(output.read_text(encoding="utf-8"))["geometry"]).area,
+                100.0,
+            )
+
     def test_manual_utility_rule_reports_reconstructed_geometry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

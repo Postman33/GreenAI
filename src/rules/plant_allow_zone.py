@@ -22,6 +22,7 @@ from shapely.ops import clip_by_rect, unary_union
 from shapely.validation import make_valid
 
 from ..geometry.constraint_builder import as_polygonal, read_object_geometry
+from ..geometry.sidewalk_geometry import relevant_sidewalk_geometry
 
 
 DEFAULT_DSN = "postgresql://admin:admin@localhost:5432/admin"
@@ -499,13 +500,29 @@ def build_plant_allow_zones(
         )
     except ValueError:
         reconstructed_sidewalk = None
-    if reconstructed_sidewalk is not None and not reconstructed_sidewalk.is_empty:
-        raw_sidewalk = normalized_objects.get("sidewalk")
-        sidewalk_sources = [reconstructed_sidewalk]
-        if raw_sidewalk is not None and not raw_sidewalk.is_empty:
-            sidewalk_sources.append(raw_sidewalk)
-        normalized_objects["sidewalk"] = unary_union(sidewalk_sources)
-        geometry_sources["sidewalk"] = "reconstructed_sidewalk_area"
+    sidewalk_setback = max(
+        (
+            validate_distance_rule(rule) * dxf_units_per_meter
+            for rules in rules_by_plant_type.values()
+            for rule in rules
+            if rule["target_object_type"] == "sidewalk"
+            and rule["conditions"].get("check") == "min_distance"
+        ),
+        default=0.0,
+    )
+    resolved_sidewalk = relevant_sidewalk_geometry(
+        normalized_objects.get("sidewalk"),
+        reconstructed_sidewalk,
+        normalized_objects.get("work_boundary", base_allowed_area),
+        sidewalk_setback,
+    )
+    if resolved_sidewalk is not None:
+        normalized_objects["sidewalk"] = resolved_sidewalk
+        if reconstructed_sidewalk is not None and not reconstructed_sidewalk.is_empty:
+            geometry_sources["sidewalk"] = "reconstructed_sidewalk_area"
+    else:
+        normalized_objects.pop("sidewalk", None)
+        geometry_sources.pop("sidewalk", None)
     building_linework = normalized_objects.get("building_linework")
     if building_linework is not None and not building_linework.is_empty:
         building_footprints = normalized_objects.get("building")

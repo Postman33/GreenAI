@@ -57,7 +57,8 @@ def is_project_sidewalk_surface_layer(layer_name: str) -> bool:
     replaces; it does not make the HATCH a planting surface.
     """
     return bool(re.search(
-        r"^дв_пп_тип[567]_[ур][ _]тр(?:_|$)", layer_name.casefold()
+        r"^дв_пп_(?:до_)?тип[567]_(?:[ур][ _]тр|тротуар|трот|трт)(?:[ _]|$)",
+        layer_name.casefold(),
     ))
 
 

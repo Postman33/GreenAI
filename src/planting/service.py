@@ -33,6 +33,7 @@ from .placement_generator import (
     load_profiles,
     load_zones,
     polygon_parts,
+    prepare_sidewalk_for_checks,
     required_spacing,
     safe_scope,
 )
@@ -891,6 +892,7 @@ def plan(
     units = float(zone_report.get("dxf_units_per_meter", config.get("dxfUnitsPerMeter", 1.0)))
     if not math.isfinite(units) or units <= 0:
         raise ValueError("dxf_units_per_meter must be finite and positive")
+    prepare_sidewalk_for_checks(normalized, constraints, zone_report, units)
     diagnostic_rejected_max = int(
         diagnostic_rejected_max_count
         if diagnostic_rejected_max_count is not None
