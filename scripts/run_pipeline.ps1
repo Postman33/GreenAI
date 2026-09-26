@@ -328,6 +328,7 @@ $plantingPlan = Join-Path $outputPath "planting_plan.geojsonl"
 $plantingDecisions = Join-Path $outputPath "planting_decisions.geojsonl"
 $plantingPlanReport = Join-Path $outputPath "planting_plan_report.json"
 $plantingExplanations = Join-Path $outputPath "planting_explanations.md"
+$plantingLayoutTrace = Join-Path $outputPath "planting_layout_trace.jsonl"
 $debugDxf = Join-Path $outputPath "planting_diagnostics.dxf"
 $debugPng = Join-Path $outputPath "plant_allow_zones_debug.png"
 $debugLegend = Join-Path $outputPath "planting_diagnostics_legend.md"
@@ -682,7 +683,8 @@ try {
         "--output", $plantingPlan,
         "--decisions-output", $plantingDecisions,
         "--report", $plantingPlanReport,
-        "--explanations-output", $plantingExplanations
+        "--explanations-output", $plantingExplanations,
+        "--layout-trace-output", $plantingLayoutTrace
     )
     if ($null -ne $plantingRequestPath) {
         $plantingArguments += @("--request", $plantingRequestPath)
@@ -702,7 +704,7 @@ try {
         )
     }
     Invoke-TimedPipelineStage -Id "12" -Name "Planting plan generation" `
-        -Artifacts @($plantingPlan, $plantingDecisions, $plantingPlanReport, $plantingExplanations) -Action {
+        -Artifacts @($plantingPlan, $plantingDecisions, $plantingPlanReport, $plantingExplanations, $plantingLayoutTrace) -Action {
             & $python @plantingArguments
             if ($LASTEXITCODE -ne 0) { throw "Planting plan generation failed" }
         }
@@ -788,6 +790,7 @@ try {
     $pdfArguments = @(
         ".\scripts\generate_pdf_report.py",
         "--decisions", $plantingDecisions,
+        "--planting-plan", $plantingPlan,
         "--plan-report", $plantingPlanReport,
         "--zone-report", $zoneReport,
         "--verification-report", $verificationReport,
@@ -833,6 +836,7 @@ try {
     Write-Host "Rule report: $zoneReport"
     Write-Host "Per-plant report: $plantingPlanReport"
     Write-Host "Planting explanations: $plantingExplanations"
+    Write-Host "Placement audit: $plantingLayoutTrace"
     Write-Host "Network reconstruction: $networkReconstructionReport"
     Write-Host "Overhead power reconstruction: $overheadPowerReport"
     Write-Host "Verification: $verificationReport"

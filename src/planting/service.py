@@ -506,6 +506,8 @@ def _point_feature(
     checks: list[dict[str, Any]],
     units: float,
     layout_style: str,
+    layout_trace_id: str | None = None,
+    species_selection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "type": "Feature",
@@ -516,6 +518,8 @@ def _point_feature(
             "request_id": selection.request_id,
             "selection_mode": selection.mode,
             "layout_style": layout_style,
+            "layout_trace_id": layout_trace_id,
+            "species_selection": species_selection,
             "design_style": selection.design_style,
             "plant_type": profile.plant_type,
             "species": profile.species,
@@ -538,6 +542,8 @@ def _decision_feature(
     status: str,
     checks: list[dict[str, Any]],
     diagnostic: bool = False,
+    layout_trace_id: str | None = None,
+    species_selection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     failed = [str(item["code"]) for item in checks if item["status"] == "failed"]
     manual = [str(item["code"]) for item in checks if item["status"] == "manual_review"]
@@ -553,6 +559,9 @@ def _decision_feature(
             "status": status,
             "accepted_into_plan": status != "rejected",
             "diagnostic_candidate": diagnostic,
+            "candidate_kind": "diagnostic_sample" if diagnostic else "generated_or_requested_point",
+            "layout_trace_id": layout_trace_id,
+            "species_selection": species_selection,
             "failed_checks": failed,
             "manual_review_checks": manual,
             "rejection_reasons": [
@@ -747,6 +756,22 @@ def _markdown_cell(value: Any) -> str:
     return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
 
 
+def _species_selection(selection: PlantingSelection, profile: PlantingProfile | dict[str, Any],
+                       request_path: Path | None, species: str | None = None) -> dict[str, Any]:
+    """Record provenance without implying that the planner ranked species."""
+    reasons = (profile.selection_reasons if isinstance(profile, PlantingProfile)
+               else profile.get("selectionReasons", []))
+    reference = (profile.catalog_reference if isinstance(profile, PlantingProfile)
+                 else profile.get("catalogReference"))
+    return {
+        "species": species or selection.species,
+        "source": "explicit_request" if request_path is not None else "preset_profile",
+        "method": "configured_species_not_ranked",
+        "selection_reasons": list(reasons),
+        "catalog_reference": reference,
+    }
+
+
 def write_explanations_markdown(
     path: Path, features: list[dict[str, Any]], units_per_meter: float
 ) -> None:
@@ -778,6 +803,20 @@ def write_explanations_markdown(
                 f"- Статус: `{_markdown_cell(properties.get('status'))}`",
             ]
         )
+        species_choice = properties.get("species_selection") or {}
+        if species_choice:
+            lines.append(
+                f"- Источник вида: `{_markdown_cell(species_choice.get('source'))}`; "
+                "вид задан запросом или профилем, автоматического ранжирования видов нет."
+            )
+            if species_choice.get("selection_reasons"):
+                lines.append("- Основание выбора вида: " + _markdown_cell(
+                    "; ".join(species_choice["selection_reasons"])))
+        if properties.get("layout_trace_id"):
+            lines.append(f"- Схема размещения: `{_markdown_cell(properties['layout_trace_id'])}` "
+                         "(варианты и отсеянные точки — в planting_layout_trace.jsonl).")
+        elif properties.get("layout_style"):
+            lines.append(f"- Способ размещения: `{_markdown_cell(properties['layout_style'])}`.")
         if geometry.geom_type == "Point":
             lines.append(f"- Координаты DXF: X={geometry.x:.3f}; Y={geometry.y:.3f}")
         else:
@@ -829,6 +868,7 @@ def plan(
     tree_spacing_m: float | None = None,
     tree_max_count: int | None = None,
     diagnostic_rejected_max_count: int | None = None,
+    layout_trace_path: Path | None = None,
 ) -> dict[str, Any]:
     zones = load_zones(zones_path)
     zone_report = json.loads(zone_report_path.read_text(encoding="utf-8-sig"))
@@ -888,6 +928,9 @@ def plan(
     }
     features: list[dict[str, Any]] = []
     decisions: list[dict[str, Any]] = []
+    layout_traces: list[dict[str, Any]] = []
+    if layout_trace_path is None:
+        layout_trace_path = output_path.with_name("planting_layout_trace.jsonl")
     occupied: list[tuple[str, float, float]] = []
     counters: Counter[str] = Counter()
     diagnostic_counters: Counter[str] = Counter()
@@ -903,6 +946,7 @@ def plan(
         if selection.plant_type not in zones:
             raise ValueError(f"No allow zone calculated for {selection.plant_type}")
         profile = point_profiles[selection.request_id]
+        species_choice = _species_selection(selection, profile, request_path)
         layout_profile = layout_profiles[selection.request_id]
         # Occupied points retain the selection identity (species/spacing).
         current_layout_profiles = layout_profiles
@@ -919,9 +963,9 @@ def plan(
             existing_tree_clearance,
             units,
         )
-        candidates: list[tuple[Point, str]]
+        candidates: list[tuple[Point, str, str | None]]
         if selection.mode == "points":
-            candidates = [(point, "manual") for point in selection.points]
+            candidates = [(point, "manual", None) for point in selection.points]
         elif selection.design_style in {"alley", "free_group"}:
             if selection.design_style == "alley":
                 reference = selection.area if selection.area is not None else selected_zone
@@ -936,9 +980,9 @@ def plan(
                     profile.max_count, selection.seed,
                     profile_key=selection.request_id,
                 )
-            candidates = [(Point(x, y), selection.design_style) for x, y in designed]
+            candidates = [(Point(x, y), selection.design_style, None) for x, y in designed]
         else:
-            generated: list[tuple[float, float, str]] = []
+            generated: list[tuple[float, float, str, str]] = []
             use_linear = selection.plant_type == "tree" and tree_layout_mode == "linear_preferred"
             parents = (
                 sorted(polygon_parts(selected_zone), key=lambda item: item.area, reverse=True)
@@ -955,35 +999,69 @@ def plan(
                 if inset.is_empty:
                     continue
                 occupied_now = occupied + [
-                    (selection.request_id, x, y) for x, y, _style in generated
+                    (selection.request_id, x, y) for x, y, _style, _trace_id in generated
                 ]
+                linear_trace: dict[str, Any] = {}
                 linear = (
                     best_linear_layout(
                         inset, parent, layout_profile, current_layout_profiles,
-                        occupied_now, remaining,
+                        occupied_now, remaining, trace=linear_trace,
                     ) if use_linear else None
                 )
                 if linear:
-                    generated.extend((x, y, "linear") for x, y in linear)
+                    trace_id = f"{selection.request_id}:layout_{len(layout_traces) + 1:04d}"
+                    linear_trace.update({"trace_id": trace_id, "request_id": selection.request_id,
+                                         "plant_type": selection.plant_type,
+                                         "spacing_m": profile.spacing_m,
+                                         "max_count_for_component": remaining})
+                    layout_traces.append(linear_trace)
+                    generated.extend((x, y, "linear", trace_id) for x, y in linear)
                     continue
                 for component in sorted(polygon_parts(inset), key=lambda item: item.area, reverse=True):
                     remaining = profile.max_count - len(generated)
                     if remaining <= 0:
                         break
+                    area_trace: dict[str, Any] = {}
                     area_points = best_component_layout(
                         component, layout_profile, current_layout_profiles,
-                        occupied + [(selection.request_id, x, y) for x, y, _style in generated],
-                        remaining,
+                        occupied + [(selection.request_id, x, y) for x, y, _style, _trace_id in generated],
+                        remaining, trace=area_trace,
                     )
-                    generated.extend((x, y, "area_fill") for x, y in area_points)
-            candidates = [(Point(x, y), style) for x, y, style in generated]
+                    trace_id = f"{selection.request_id}:layout_{len(layout_traces) + 1:04d}"
+                    area_trace.update({"trace_id": trace_id, "request_id": selection.request_id,
+                                       "plant_type": selection.plant_type,
+                                       "spacing_m": profile.spacing_m,
+                                       "max_count_for_component": remaining})
+                    layout_traces.append(area_trace)
+                    generated.extend((x, y, "area_fill", trace_id) for x, y in area_points)
+            candidates = [(Point(x, y), style, trace_id) for x, y, style, trace_id in generated]
+
+        if selection.mode == "points" or selection.design_style in {"alley", "free_group"}:
+            trace_id = f"{selection.request_id}:layout_{len(layout_traces) + 1:04d}"
+            layout_traces.append({
+                "trace_id": trace_id,
+                "request_id": selection.request_id,
+                "plant_type": selection.plant_type,
+                "method": "explicit_points" if selection.mode == "points" else selection.design_style,
+                "source": "explicit_request" if request_path is not None else "preset_profile",
+                "generated_count": len(candidates),
+                "spacing_m": profile.spacing_m,
+                "row_count": selection.row_count if selection.design_style == "alley" else None,
+                "seed": selection.seed if selection.design_style == "free_group" else None,
+                "audit_scope": "provided points" if selection.mode == "points"
+                               else "generated points inside safe planting scope",
+                "variants": [],
+                "winner": None,
+                "winning_grid_rejections": [],
+            })
+            candidates = [(point, style, trace_id) for point, style, _old_id in candidates]
 
         accepted_count = 0
         rejected_count = 0
         accepted_selection_points: list[Point] = []
         plant_report = zone_report.get("plant_types", {}).get(selection.plant_type, {})
         layout_style_counts: Counter[str] = Counter()
-        for point, layout_style in candidates:
+        for point, layout_style, trace_id in candidates:
             counters[selection.plant_type] += 1
             candidate_id = f"{prefixes.get(selection.plant_type, 'P')}-{counters[selection.plant_type]:04d}"
             status, checks = _point_decision(
@@ -1000,12 +1078,15 @@ def plan(
                 occupied,
                 rule_geometry_cache,
             )
-            decisions.append(_decision_feature(candidate_id, point, selection, status, checks))
+            decisions.append(_decision_feature(candidate_id, point, selection, status, checks,
+                                               layout_trace_id=trace_id,
+                                               species_selection=species_choice))
             if status == "rejected":
                 rejected_count += 1
                 continue
             accepted_count += 1
-            features.append(_point_feature(candidate_id, point, profile, selection, status, checks, units, layout_style))
+            features.append(_point_feature(candidate_id, point, profile, selection, status, checks,
+                                           units, layout_style, trace_id, species_choice))
             layout_style_counts[layout_style] += 1
             occupied.append((selection.request_id, point.x, point.y))
             accepted_selection_points.append(point)
@@ -1059,6 +1140,7 @@ def plan(
                         "rejected",
                         checks,
                         diagnostic=True,
+                        species_selection=species_choice,
                     )
                 )
                 diagnostic_rejected_count += 1
@@ -1179,6 +1261,8 @@ def plan(
                 "band_width_m": selection.band_width_m if selection.design_style == "hedge" else None,
                 "plant_type": "shrub",
                 "species": selection.species,
+                "species_selection": _species_selection(selection, profile, request_path),
+                "layout_style": selection.design_style if selection.design_style != "auto" else "safe_zone_cover",
                 "status": status,
                 "coordinate_reference": "local_dxf_coordinates",
                 "dxf_units_per_meter": units,
@@ -1297,6 +1381,9 @@ def plan(
                         "design_style": selection.design_style,
                         "plant_type": "herbaceous",
                         "species": species,
+                        "species_selection": _species_selection(selection, species_profile,
+                                                                  request_path, species),
+                        "layout_style": selection.design_style if selection.design_style != "auto" else "safe_zone_cover",
                         "composition_share": mixture_part["share"] if mixture_part else None,
                         "plants_per_m2": mixture_part["plants_per_m2"] if mixture_part else None,
                         "estimated_plant_count": (
@@ -1325,6 +1412,20 @@ def plan(
 
     _write_jsonl(output_path, features)
     _write_jsonl(decisions_path, decisions)
+    final_status_by_trace: dict[str, Counter[str]] = {}
+    for decision in decisions:
+        properties = decision["properties"]
+        trace_id = properties.get("layout_trace_id")
+        if trace_id:
+            final_status_by_trace.setdefault(trace_id, Counter())[properties["status"]] += 1
+    for trace in layout_traces:
+        rejected_grid = trace.get("winning_grid_rejections", [])
+        trace["discarded_count_by_reason"] = dict(Counter(
+            item["reason"] for item in rejected_grid))
+        trace["final_status_counts"] = dict(final_status_by_trace.get(trace["trace_id"], {}))
+        trace["distance_unit"] = "local_dxf_unit"
+        trace["dxf_units_per_meter"] = units
+    _write_jsonl(layout_trace_path, layout_traces)
     if explanations_path is not None:
         write_explanations_markdown(explanations_path, features, units)
     point_features = [
@@ -1339,6 +1440,13 @@ def plan(
         "request": str(request_path) if request_path is not None else f"preset:{preset}",
         "output": str(output_path),
         "decisions_output": str(decisions_path),
+        "layout_trace_output": str(layout_trace_path),
+        "layout_trace_count": len(layout_traces),
+        "layout_audit_scope": (
+            "Only enumerated layout variants and points in their winning safe-scope grid are audited. "
+            "Diagnostic rejections sample other coordinates; arbitrary coordinates are not exhaustively tested."
+        ),
+        "species_selection_method": "configured_species_not_ranked",
         "explanations_output": (
             str(explanations_path) if explanations_path is not None else None
         ),
@@ -1385,6 +1493,8 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("planting_plan.geojsonl"))
     parser.add_argument("--decisions-output", type=Path, default=Path("planting_decisions.geojsonl"))
     parser.add_argument("--report", type=Path, default=Path("planting_plan_report.json"))
+    parser.add_argument("--layout-trace-output", type=Path,
+                        help="JSONL audit of placement variants and points discarded in the selected layout")
     parser.add_argument(
         "--explanations-output",
         type=Path,
@@ -1418,12 +1528,14 @@ def main() -> None:
             args.tree_spacing_m,
             args.tree_max_count,
             args.diagnostic_rejected_max_count,
+            args.layout_trace_output,
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
         raise SystemExit(f"Planting service error: {error}") from error
     print(f"Output: {args.output}")
     print(f"Decisions: {args.decisions_output}")
     print(f"Report: {args.report}")
+    print(f"Layout trace: {report['layout_trace_output']}")
     if args.explanations_output is not None:
         print(f"Explanations: {args.explanations_output}")
     for request_id, item in report["summary"].items():

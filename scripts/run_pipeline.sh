@@ -41,6 +41,7 @@ plan="$OUTPUT_DIR/planting_plan.geojsonl"
 decisions="$OUTPUT_DIR/planting_decisions.geojsonl"
 plan_report="$OUTPUT_DIR/planting_plan_report.json"
 planting_explanations="$OUTPUT_DIR/planting_explanations.md"
+planting_layout_trace="$OUTPUT_DIR/planting_layout_trace.jsonl"
 result="$OUTPUT_DIR/result_with_planting_plan.dxf"
 verification="$OUTPUT_DIR/verification_report.json"
 pdf_report="$OUTPUT_DIR/greenai_planting_report.pdf"
@@ -108,6 +109,7 @@ planting_args=(
   --decisions-output "$decisions"
   --report "$plan_report"
   --explanations-output "$planting_explanations"
+  --layout-trace-output "$planting_layout_trace"
 )
 if [[ -n "$REQUEST_FILE" ]]; then
   planting_args+=(--request "$REQUEST_FILE")
@@ -135,6 +137,7 @@ python scripts/verify_outputs.py "$constraints" "$zones" \
 echo "[13/14] Generating human-readable PDF report"
 python scripts/generate_pdf_report.py \
   --decisions "$decisions" \
+  --planting-plan "$plan" \
   --plan-report "$plan_report" \
   --zone-report "$zone_report" \
   --verification-report "$verification" \
@@ -155,6 +158,7 @@ echo "Pipeline completed"
 echo "DXF: $result"
 echo "Plant explanations: $plan"
 echo "Readable planting passports: $planting_explanations"
+echo "Placement audit: $planting_layout_trace"
 echo "Point decisions: $decisions"
 echo "Verification: $verification"
 echo "PDF report: $pdf_report"

@@ -18,6 +18,33 @@ def write_jsonl(path: Path, features: list[dict]) -> None:
 
 
 class PlacementGeneratorTests(unittest.TestCase):
+    def test_layout_audit_replays_winner_and_explains_discarded_points(self) -> None:
+        profile = placement_generator.PlantingProfile(
+            plant_type="tree", species="Test tree", spacing_m=5.0,
+            footprint_radius_m=2.5, symbol_radius_m=2.5,
+            avoid_other_plantings_m=0.0, max_count=2,
+            catalog_reference="test", selection_reasons=(),
+        )
+        trace: dict = {}
+        points = placement_generator.best_component_layout(
+            box(0, 0, 30, 20), profile, {"tree": profile}, [], 2, trace=trace,
+        )
+        self.assertEqual(len(points), 2)
+        self.assertEqual(len(trace["variants"]), 96)
+        self.assertEqual(trace["winner"]["accepted_count"], len(points))
+        self.assertTrue(any(item["reason"] == "max_count"
+                            for item in trace["winning_grid_rejections"]))
+        self.assertEqual(trace["objective"], "maximum accepted count; first variant wins ties")
+
+        audit: list[dict] = []
+        packed = placement_generator.pack_candidates(
+            [(0, 0), (1, 0), (6, 0)], profile, {"tree": profile}, [], 3, audit=audit,
+        )
+        self.assertEqual(packed, [(0, 0), (6, 0)])
+        self.assertEqual(audit[0]["reason"], "spacing")
+        self.assertAlmostEqual(audit[0]["actual_distance"], 1.0)
+        self.assertAlmostEqual(audit[0]["required_distance"], 5.0)
+
     def test_linear_layout_keeps_one_row_phase_across_an_obstacle(self) -> None:
         profile = placement_generator.PlantingProfile(
             plant_type="tree", species="Test tree", spacing_m=5.0,

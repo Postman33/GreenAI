@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 from collections import Counter
@@ -28,10 +29,21 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
+from shapely.geometry import shape
 
 
 PAGE_SIZE = landscape(A4)
 TARGET_ZONE_LABEL = "USDA 4 (Москва)"
+NPA_URLS = {
+    "СП 42.13330.2026": "https://protect.gost.ru/sp/details/f6917ab4-63d8-4ecb-9794-0b4990ba3b99",
+    "743-ПП": "https://www.mos.ru/upload/documents/files/7389/Postanovlenie743-PP.pdf",
+}
+TARGET_LABELS = {
+    "building": "здание", "heat_pipe": "теплосеть", "road_edge": "край дороги",
+    "sidewalk": "тротуар", "water_pipe": "водопровод", "gas_pipe": "газопровод",
+    "power_cable": "силовой кабель", "existing_tree": "существующее дерево",
+    "auto_tree": "другое дерево", "auto_shrub": "другой кустарник",
+}
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -54,6 +66,53 @@ def read_decisions(path: Path) -> list[dict[str, Any]]:
                 raise ValueError(f"Line {line_number}: expected GeoJSON Feature")
             decisions.append(feature)
     return decisions
+
+
+def read_plan(path: Path) -> list[dict[str, Any]]:
+    features: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8-sig") as source:
+        for line_number, line in enumerate(source, start=1):
+            if not line.strip():
+                continue
+            feature = json.loads(line)
+            if feature.get("type") != "Feature" or not feature.get("properties", {}).get("planting_id"):
+                raise ValueError(f"{path}:{line_number}: expected a planting Feature with ID")
+            features.append(feature)
+    return features
+
+
+def normative_references(checks: list[dict[str, Any]]) -> list[str]:
+    references: list[str] = []
+    for check in checks:
+        reference = str(check.get("norm_reference") or "").strip()
+        if (reference.startswith("СП ") and ("таблиц" in reference or "п." in reference)) or (
+            "Постановление" in reference and "743-ПП" in reference and "п." in reference
+        ):
+            if reference not in references:
+                references.append(reference)
+    return references
+
+
+def normative_link(reference: str) -> str:
+    escaped = html.escape(reference)
+    for marker, url in NPA_URLS.items():
+        if marker in reference:
+            return f'<link href="{html.escape(url, quote=True)}" color="#176B6A">{escaped}</link>'
+    return escaped
+
+
+def target_label(check: dict[str, Any]) -> str:
+    target = str(check.get("target") or "")
+    if not target:
+        code = str(check.get("code") or "")
+        for fragment, object_type in (("_GAS_", "gas_pipe"), ("_WATER_", "water_pipe"),
+                                      ("_HEAT_", "heat_pipe"), ("_BUILDING_", "building")):
+            if fragment in code:
+                target = object_type
+                break
+        if not target:
+            target = code or "?"
+    return html.escape(TARGET_LABELS.get(target, target))
 
 
 def find_font_files() -> tuple[Path, Path]:
@@ -166,6 +225,86 @@ def rejection_rows(
     return rows, cause_counts
 
 
+def planting_explanation_rows(
+    plan: Iterable[dict[str, Any]], cell_style: ParagraphStyle
+) -> tuple[list[list[Any]], int]:
+    """One auditable explanation and an exact NPA clause for every plan feature."""
+    rows: list[list[Any]] = []
+    manual_count = 0
+    for feature in plan:
+        properties = feature["properties"]
+        planting_id = str(properties["planting_id"])
+        checks = properties.get("checks") or []
+        references = normative_references(checks)
+        if not references:
+            raise ValueError(f"Planting {planting_id} has no NPA reference with a clause/table")
+        status = str(properties.get("status") or "")
+        if status not in {"accepted", "manual_review"}:
+            raise ValueError(f"Planting {planting_id} has unexpected status {status!r}")
+        if status == "manual_review":
+            manual_count += 1
+        geometry = feature.get("geometry", {})
+        coordinates = geometry.get("coordinates", [])
+        if geometry.get("type") == "Point" and len(coordinates) >= 2:
+            location = f"X {float(coordinates[0]):.2f}; Y {float(coordinates[1]):.2f}"
+        else:
+            polygon = shape(geometry)
+            units = float(properties.get("dxf_units_per_meter") or 1)
+            location = (f"Контур {polygon.area / units ** 2:.2f} м²; "
+                        f"центр X {polygon.centroid.x:.2f}, Y {polygon.centroid.y:.2f}")
+        source = (properties.get("species_selection") or {}).get("source")
+        source_label = {"preset_profile": "профиль", "explicit_request": "запрос"}.get(source, "не указан")
+        layout = properties.get("layout_style") or properties.get("design_style") or "-"
+        identity = (
+            f"<b>{html.escape(planting_id)}</b><br/>"
+            f"{html.escape(str(properties.get('species') or '-'))}<br/>"
+            f"{html.escape(location)}<br/>"
+            f"Вид: {source_label}; схема: {html.escape(str(layout))}"
+        )
+        measured = [
+            check for check in checks
+            if check.get("actual_distance_m") is not None
+            and check.get("required_distance_m") is not None
+            and check.get("status") == "passed"
+        ]
+        measured.sort(key=lambda check: float(check["actual_distance_m"])
+                      - float(check["required_distance_m"]))
+        nearest = measured[:3]
+        facts = [
+            f"{target_label(check)}: "
+            f"{float(check['actual_distance_m']):.2f} / {float(check['required_distance_m']):.2f} м"
+            for check in nearest
+        ]
+        if geometry.get("type") == "Point":
+            conclusion = "Центр посадки внутри допустимой зоны; проверенные расстояния соблюдены."
+        else:
+            conclusion = "Контур находится внутри рассчитанной допустимой зоны."
+        if facts:
+            conclusion += " Ближайшие к порогу (факт / минимум): " + "; ".join(facts) + "."
+            if len(measured) > len(nearest):
+                conclusion += f" Ещё {len(measured) - len(nearest)} проверки пройдены."
+        review_checks = [check for check in checks if check.get("status") == "manual_review"]
+        if review_checks:
+            review_labels = [
+                f"{target_label(check)} "
+                f"({html.escape(str(check.get('code') or '?'))})"
+                for check in review_checks
+            ]
+            conclusion += " Требуется ручная проверка: " + ", ".join(review_labels) + "."
+        if geometry.get("type") != "Point":
+            applied_rules = [str(check.get("code")) for check in checks
+                             if check.get("geometry_source") and check.get("status") == "passed"]
+            if applied_rules:
+                conclusion += f" Применено площадных ограничений: {len(applied_rules)}."
+        npa = "<br/>".join(normative_link(reference) for reference in references)
+        rows.append([
+            paragraph(identity, cell_style),
+            paragraph(conclusion, cell_style),
+            paragraph(npa, cell_style),
+        ])
+    return rows, manual_count
+
+
 def page_decorator(canvas: Any, document: Any) -> None:
     canvas.saveState()
     width, height = PAGE_SIZE
@@ -187,10 +326,22 @@ def build_pdf(
     output_path: Path,
     input_dxf: Path | None = None,
     preview_path: Path | None = None,
+    plan_path: Path | None = None,
 ) -> Path:
     regular_font, bold_font = register_fonts()
     decisions = read_decisions(decisions_path)
     plan_report = read_json(plan_report_path)
+    if plan_path is None and plan_report.get("output"):
+        reported_path = Path(str(plan_report["output"]))
+        plan_path = reported_path if reported_path.exists() else plan_report_path.parent / reported_path
+    if plan_path is None or not plan_path.is_file():
+        raise ValueError("Planting plan is required for per-planting PDF explanations")
+    plan = read_plan(plan_path)
+    reported_count = plan_report.get("feature_count")
+    if reported_count is not None and int(reported_count) != len(plan):
+        raise ValueError("Planting plan feature count differs from the plan report")
+    if len({item["properties"]["planting_id"] for item in plan}) != len(plan):
+        raise ValueError("Planting plan contains duplicate IDs")
     zone_report = read_json(zone_report_path)
     verification = read_json(verification_report_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -222,6 +373,10 @@ def build_pdf(
         "GreenTableHeader", parent=small, fontName=bold_font,
         textColor=colors.white, leading=7.5,
     )
+    appendix_style = ParagraphStyle(
+        "GreenAppendix", parent=small, fontSize=7.1, leading=9.3,
+    )
+    explanation_rows, explained_manual_count = planting_explanation_rows(plan, appendix_style)
 
     document = SimpleDocTemplate(
         str(output_path), pagesize=PAGE_SIZE,
@@ -380,6 +535,36 @@ def build_pdf(
     ]
     story.append(paragraph("<br/>".join(f"- {item}" for item in files), body))
 
+    story.append(PageBreak())
+    story.append(paragraph("7. Объяснение каждой посадки", heading))
+    story.append(paragraph(
+        f"Приведены все {len(plan)} объекта плана, включая {explained_manual_count} со статусом ручной проверки. "
+        "Показаны три проверки, ближайшие к порогу; факт / минимум дан в метрах. "
+        "Ссылка на НПА указывает конкретную таблицу или пункт. "
+        "Источник вида и схема отражают проектный выбор, а не отдельную норму. "
+        "Полный журнал проверок каждого ID находится в planting_plan.geojsonl.",
+        body,
+    ))
+    story.append(Spacer(1, 3 * mm))
+    appendix_headers = ["Посадка и место", "Почему предложена / что проверить", "НПА и пункт"]
+    appendix_data = [[paragraph(item, table_header) for item in appendix_headers], *explanation_rows]
+    appendix_table = LongTable(
+        appendix_data, colWidths=[58 * mm, 129 * mm, 77 * mm],
+        repeatRows=1, splitByRow=True,
+    )
+    appendix_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#143B5D")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.5, colors.HexColor("#143B5D")),
+        ("LINEBELOW", (0, 1), (-1, -1), 0.2, colors.HexColor("#D6E2E7")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F7F8")]),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+    ]))
+    story.append(appendix_table)
+
     document.build(story, onFirstPage=page_decorator, onLaterPages=page_decorator)
     if not output_path.is_file() or output_path.stat().st_size == 0:
         raise RuntimeError(f"PDF report was not created: {output_path}")
@@ -389,6 +574,7 @@ def build_pdf(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate the GreenAI PDF report.")
     parser.add_argument("--decisions", type=Path, required=True)
+    parser.add_argument("--planting-plan", type=Path, required=True)
     parser.add_argument("--plan-report", type=Path, required=True)
     parser.add_argument("--zone-report", type=Path, required=True)
     parser.add_argument("--verification-report", type=Path, required=True)
@@ -404,6 +590,7 @@ def main() -> None:
         args.output,
         args.input_dxf,
         args.preview,
+        args.planting_plan,
     )
     print(f"PDF report: {result}")
 

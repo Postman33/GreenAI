@@ -151,6 +151,7 @@ def pack_candidates(
     profiles: dict[str, PlantingProfile],
     occupied: list[tuple[str, float, float]],
     max_count: int,
+    audit: list[dict[str, Any]] | None = None,
 ) -> list[tuple[float, float]]:
     maximum_spacing = max(
         required_spacing(profile, other)
@@ -168,21 +169,31 @@ def pack_candidates(
     accepted: list[tuple[float, float]] = []
     for x, y in candidates:
         if len(accepted) >= max_count:
-            break
+            if audit is None:
+                break
+            audit.append({"point": [x, y], "reason": "max_count", "limit": max_count})
+            continue
         cell_x, cell_y = math.floor(x / cell_size), math.floor(y / cell_size)
-        valid = True
+        conflict: tuple[PlantingProfile, float, float, float] | None = None
         for offset_x in (-1, 0, 1):
             for offset_y in (-1, 0, 1):
                 for other_profile, other_x, other_y in grid.get((cell_x + offset_x, cell_y + offset_y), []):
                     distance = required_spacing(profile, other_profile)
                     if (x - other_x) ** 2 + (y - other_y) ** 2 + 1e-9 < distance ** 2:
-                        valid = False
+                        conflict = (other_profile, other_x, other_y, distance)
                         break
-                if not valid:
+                if conflict is not None:
                     break
-            if not valid:
+            if conflict is not None:
                 break
-        if not valid:
+        if conflict is not None:
+            if audit is not None:
+                other_profile, other_x, other_y, required = conflict
+                audit.append({"point": [x, y], "reason": "spacing",
+                              "other_point": [other_x, other_y],
+                              "other_species": other_profile.species,
+                              "actual_distance": math.hypot(x - other_x, y - other_y),
+                              "required_distance": required})
             continue
         accepted.append((x, y))
         add(profile, x, y)
@@ -195,8 +206,12 @@ def best_component_layout(
     profiles: dict[str, PlantingProfile],
     occupied: list[tuple[str, float, float]],
     max_count: int,
+    trace: dict[str, Any] | None = None,
 ) -> list[tuple[float, float]]:
     best: list[tuple[float, float]] = []
+    winner: dict[str, Any] | None = None
+    winner_angle: float | None = None
+    variants: list[dict[str, Any]] = []
     phases = (0.0, 0.25, 0.5, 0.75)
     for angle_index in range(6):
         angle = angle_index * math.pi / 18.0
@@ -209,8 +224,30 @@ def best_component_layout(
                     occupied,
                     max_count,
                 )
+                variant = {"angle_deg": round(math.degrees(angle), 3),
+                           "phase_x": phase_x, "phase_y": phase_y,
+                           "accepted_count": len(packed)}
+                if trace is not None:
+                    variants.append(variant)
                 if len(packed) > len(best):
                     best = packed
+                    winner = variant
+                    winner_angle = angle
+    if trace is not None:
+        rejected: list[dict[str, Any]] = []
+        if winner is not None and winner_angle is not None:
+            replay = pack_candidates(
+                grid_candidates(component, profile.spacing_m,
+                                winner_angle,
+                                winner["phase_x"], winner["phase_y"]),
+                profile, profiles, occupied, max_count, rejected,
+            )
+            if replay != best:
+                raise ValueError("Layout audit replay differs from selected hex-grid layout")
+        trace.update({"method": "hex_grid", "objective": "maximum accepted count; first variant wins ties",
+                      "variants": variants, "winner": winner,
+                      "winning_grid_rejections": rejected,
+                      "audit_scope": "grid points inside the winning safe-scope component"})
     return best
 
 
@@ -274,6 +311,7 @@ def best_linear_layout(
     profiles: dict[str, PlantingProfile],
     occupied: list[tuple[str, float, float]],
     max_count: int,
+    trace: dict[str, Any] | None = None,
 ) -> list[tuple[float, float]] | None:
     """Prefer long, aligned runs over a few extra staggered trees."""
     frame = linear_reference(reference, profile.spacing_m)
@@ -281,7 +319,8 @@ def best_linear_layout(
         return None
     angle, min_u, max_u, min_v, max_v = frame
     cos_angle, sin_angle = math.cos(angle), math.sin(angle)
-    variants: list[tuple[list[tuple[float, float]], int, int, float]] = []
+    variants: list[tuple[list[tuple[float, float]], int, int, float, float, float]] = []
+    empty_phases: list[tuple[float, float]] = []
     for phase_u in (0.0, 0.25, 0.5, 0.75):
         for phase_v in (0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875):
             packed = pack_candidates(
@@ -292,6 +331,7 @@ def best_linear_layout(
                 max_count,
             )
             if not packed:
+                empty_phases.append((phase_u, phase_v))
                 continue
             rows: dict[int, list[float]] = defaultdict(list)
             for x, y in packed:
@@ -309,15 +349,49 @@ def best_linear_layout(
             v_values = [-x * sin_angle + y * cos_angle for x, y in packed]
             margin_imbalance = abs((min(u_values) - min_u) - (max_u - max(u_values)))
             margin_imbalance += abs((min(v_values) - min_v) - (max_v - max(v_values)))
-            variants.append((packed, adjacent_pairs, isolated_rows, margin_imbalance))
+            variants.append((packed, adjacent_pairs, isolated_rows, margin_imbalance,
+                             phase_u, phase_v))
     if not variants:
+        if trace is not None:
+            trace.update({"method": "linear", "variants": [
+                            {"phase_u": u, "phase_v": v, "accepted_count": 0,
+                             "eligible": False} for u, v in empty_phases], "winner": None,
+                          "winning_grid_rejections": []})
         return []
     best_count = max(len(item[0]) for item in variants)
     eligible = (item for item in variants if len(item[0]) >= math.ceil(best_count * LINEAR_COUNT_RETENTION))
-    return max(
+    winner = max(
         eligible,
         key=lambda item: (item[1], -item[2], -item[3], len(item[0])),
-    )[0]
+    )
+    if trace is not None:
+        rejected = []
+        replay = pack_candidates(
+            linear_grid_candidates(scope, frame, profile.spacing_m, winner[4], winner[5]),
+            profile, profiles, occupied, max_count, rejected,
+        )
+        if replay != winner[0]:
+            raise ValueError("Layout audit replay differs from selected linear layout")
+        trace.update({
+            "method": "linear", "angle_deg": math.degrees(angle),
+            "objective": "retain near-maximum count, then maximize adjacent row pairs, "
+                         "minimize isolated rows and margin imbalance",
+            "count_retention_ratio": LINEAR_COUNT_RETENTION,
+            "variants": [
+                {"phase_u": item[4], "phase_v": item[5], "accepted_count": len(item[0]),
+                 "adjacent_pairs": item[1], "isolated_rows": item[2],
+                 "margin_imbalance": item[3],
+                 "eligible": len(item[0]) >= math.ceil(best_count * LINEAR_COUNT_RETENTION)}
+                for item in variants
+            ] + [{"phase_u": u, "phase_v": v, "accepted_count": 0,
+                  "eligible": False} for u, v in empty_phases],
+            "winner": {"phase_u": winner[4], "phase_v": winner[5],
+                       "accepted_count": len(winner[0]), "adjacent_pairs": winner[1],
+                       "isolated_rows": winner[2], "margin_imbalance": winner[3]},
+            "winning_grid_rejections": rejected,
+            "audit_scope": "grid points inside the winning safe-scope band",
+        })
+    return winner[0]
 
 
 def safe_scope(

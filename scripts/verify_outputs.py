@@ -531,6 +531,46 @@ def main() -> None:
             explanations_output = resolve_report_reference(
                 args.plan_report, plan_report.get("explanations_output")
             )
+            layout_trace_output = resolve_report_reference(
+                args.plan_report, plan_report.get("layout_trace_output")
+            )
+            layout_audit_check: dict[str, Any] | None = None
+            if layout_trace_output is not None:
+                traces = []
+                if layout_trace_output.exists():
+                    traces = [json.loads(line) for line in
+                              layout_trace_output.read_text(encoding="utf-8-sig").splitlines()
+                              if line.strip()]
+                trace_ids = [str(item.get("trace_id", "")) for item in traces]
+                missing_point_trace_ids = sorted({
+                    str(properties.get("layout_trace_id") or "")
+                    for properties, _geometry in point_records
+                    if str(properties.get("layout_trace_id") or "") not in trace_ids
+                })
+                missing_species_provenance = sum(
+                    not isinstance(properties.get("species_selection"), dict)
+                    or not properties["species_selection"].get("source")
+                    for properties, _geometry in point_records + area_records
+                )
+                invalid_discarded_counts = sum(
+                    sum(item.get("discarded_count_by_reason", {}).values())
+                    != len(item.get("winning_grid_rejections", []))
+                    for item in traces
+                )
+                layout_audit_check = {
+                    "trace_output": str(layout_trace_output),
+                    "trace_output_exists": layout_trace_output.exists(),
+                    "trace_count": len(traces),
+                    "missing_point_trace_ids": missing_point_trace_ids,
+                    "missing_species_provenance": missing_species_provenance,
+                    "invalid_discarded_counts": invalid_discarded_counts,
+                }
+                if (not layout_trace_output.exists()
+                    or len(traces) != plan_report.get("layout_trace_count")
+                    or len(trace_ids) != len(set(trace_ids))
+                    or missing_point_trace_ids or missing_species_provenance
+                    or invalid_discarded_counts):
+                    failures.append("Planting layout audit is incomplete or inconsistent")
             explanation_ids: set[str] = set()
             if explanations_output is not None and explanations_output.exists():
                 for line in explanations_output.read_text(encoding="utf-8-sig").splitlines():
@@ -574,6 +614,7 @@ def main() -> None:
                     explanation_ids - expected_explanation_ids
                 ),
                 "count_mismatch_fields": count_mismatches,
+                "layout_audit": layout_audit_check,
             }
             plan_checks["plan_report"] = plan_report_check
             if plan_report.get("status") != "passed":

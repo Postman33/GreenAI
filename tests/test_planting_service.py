@@ -75,6 +75,17 @@ class PlantingServiceTests(unittest.TestCase):
             self.assertGreaterEqual(len(points), 8)
             self.assertEqual({item["properties"]["layout_style"] for item in points}, {"linear"})
             self.assertEqual(len({round(item["geometry"]["coordinates"][1], 6) for item in points}), 1)
+            traces = [json.loads(line) for line in
+                      (root / "planting_layout_trace.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(traces), 1)
+            self.assertEqual(traces[0]["method"], "linear")
+            self.assertEqual(len(traces[0]["variants"]), 32)
+            self.assertEqual({item["properties"]["layout_trace_id"] for item in points},
+                             {traces[0]["trace_id"]})
+            self.assertEqual({item["properties"]["species_selection"]["source"]
+                              for item in points}, {"preset_profile"})
+            self.assertEqual({item["properties"]["species_selection"]["method"]
+                              for item in points}, {"configured_species_not_ranked"})
 
     def test_catalog_dimensions_control_default_spacing_and_crown(self) -> None:
         base = planting_service.PlantingProfile(
@@ -314,6 +325,12 @@ class PlantingServiceTests(unittest.TestCase):
 
             self.assertEqual(len(points), 1)
             self.assertEqual(points[0]["properties"]["species"], "Test shrub B")
+            self.assertEqual(points[0]["properties"]["species_selection"]["source"],
+                             "explicit_request")
+            self.assertEqual(areas[0]["properties"]["species_selection"]["source"],
+                             "explicit_request")
+            self.assertEqual(points[0]["properties"]["layout_trace_id"],
+                             "manual_shrubs:layout_0001")
             self.assertIn("plant_catalog#12", str(points[0]["properties"]["checks"]))
             self.assertEqual(len(areas), 1)
             self.assertEqual(areas[0]["properties"]["species"], "Test grass")
@@ -334,6 +351,7 @@ class PlantingServiceTests(unittest.TestCase):
             self.assertIn("plant_catalog#12", explanation_text)
             self.assertIn("743-ПП", explanation_text)
             self.assertEqual(result["explanations_output"], str(explanations))
+            self.assertEqual(result["layout_trace_count"], 1)
 
     def test_rejects_species_missing_from_catalog_and_config(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
