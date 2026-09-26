@@ -28,6 +28,17 @@ def feature(object_type: str, geometry, **properties) -> dict:
 
 
 class PlantingServiceTests(unittest.TestCase):
+    def test_diagnostic_candidates_cover_small_components_before_repeating_large_ones(self) -> None:
+        small = box(0, 0, 2, 2)
+        large = box(100, 0, 200, 100)
+        points = planting_service._diagnostic_candidate_points(
+            small.union(large), [], spacing_dxf=6.0, maximum=2
+        )
+
+        self.assertEqual(len(points), 2)
+        self.assertTrue(any(small.covers(point) for point in points))
+        self.assertTrue(any(large.covers(point) for point in points))
+
     def test_auto_tree_uses_linear_rows_in_an_elongated_band(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

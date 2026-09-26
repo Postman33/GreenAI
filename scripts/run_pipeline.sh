@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,9 +43,12 @@ plan_report="$OUTPUT_DIR/planting_plan_report.json"
 planting_explanations="$OUTPUT_DIR/planting_explanations.md"
 result="$OUTPUT_DIR/result_with_planting_plan.dxf"
 verification="$OUTPUT_DIR/verification_report.json"
+pdf_report="$OUTPUT_DIR/greenai_planting_report.pdf"
+planting_atlas="$OUTPUT_DIR/planting_plan_atlas.pdf"
+area_schedule="$OUTPUT_DIR/planting_area_schedule.json"
 
 cd "$ROOT"
-echo "[1/12] Detecting and confirming DXF units"
+echo "[1/14] Detecting and confirming DXF units"
 unit_args=(scripts/detect_dxf_units.py "$INPUT_DXF" --output "$unit_report")
 if [[ -n "$DXF_UNITS_PER_METER" ]]; then
   unit_args+=(--dxf-units-per-meter "$DXF_UNITS_PER_METER")
@@ -53,16 +56,16 @@ fi
 python "${unit_args[@]}"
 DXF_UNITS_PER_METER="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["dxf_units_per_meter"])' "$unit_report")"
 
-echo "[2/12] Extracting semantic DXF objects"
+echo "[2/14] Extracting semantic DXF objects"
 "$EXTRACTOR" --config src/core/config.yaml --output "$objects" "$INPUT_DXF"
 
-echo "[3/12] Extracting surface candidates"
+echo "[3/14] Extracting surface candidates"
 "$EXTRACTOR" --config src/core/surface_inspector_config.yaml --output "$surfaces" "$INPUT_DXF"
 
-echo "[4/12] Normalizing CAD geometry"
+echo "[4/14] Normalizing CAD geometry"
 python src/normalizer.py "$objects" --output "$normalized" --report "$normalization_report"
 
-echo "[5/12] Cleaning engineering utilities with ONNX models"
+echo "[5/14] Cleaning engineering utilities with ONNX models"
 python -m src.detection.utilities.detector predict "$objects" \
   --model "$MODEL_DIR" \
   --output "$cleaned" \
@@ -70,7 +73,7 @@ python -m src.detection.utilities.detector predict "$objects" \
   --rejected-output "$rejected_utilities" \
   --report "$cleaning_report"
 
-echo "[6/12] Reconstructing utility gaps"
+echo "[6/14] Reconstructing utility gaps"
 python src/network_reconstructor.py "$cleaned" \
   --output "$reconstructed" \
   --inferred-output "$inferred_connections" \
@@ -78,12 +81,12 @@ python src/network_reconstructor.py "$cleaned" \
   --report "$reconstruction_report" \
   --dxf-units-per-meter "$DXF_UNITS_PER_METER"
 
-echo "[7/12] Building physical constraints"
+echo "[7/14] Building physical constraints"
 python src/constraint_builder.py "$normalized" "$surfaces" \
   --output "$constraints" --report "$constraint_report" \
   --unit-metadata "$unit_report"
 
-echo "[8/12] Applying normative plant rules"
+echo "[8/14] Applying normative plant rules"
 DATABASE_URL="$DATABASE_URL" python src/plant_allow_zone.py "$constraints" "$normalized" \
   --output "$zones" \
   --report "$zone_report" \
@@ -91,12 +94,12 @@ DATABASE_URL="$DATABASE_URL" python src/plant_allow_zone.py "$constraints" "$nor
   --dxf-units-per-meter "$DXF_UNITS_PER_METER" \
   --unit-metadata "$unit_report"
 
-echo "[9/12] Verifying calculated allow zones"
+echo "[9/14] Verifying calculated allow zones"
 python scripts/verify_outputs.py "$constraints" "$zones" \
   --zone-report "$zone_report" \
   --output "$OUTPUT_DIR/zone_verification_report.json"
 
-echo "[10/12] Generating concrete planting plan"
+echo "[10/14] Generating concrete planting plan"
 planting_args=(
   src/planting_service.py "$zones" "$zone_report" "$normalized" "$constraints"
   --utilities "$reconstructed"
@@ -113,14 +116,14 @@ else
 fi
 python "${planting_args[@]}"
 
-echo "[11/12] Exporting dedicated result layers to DXF"
+echo "[11/14] Exporting dedicated result layers to DXF"
 python src/dxf_exporter.py "$INPUT_DXF" "$zones" \
   --constraint-map "$constraints" \
   --planting-plan "$plan" \
   --output "$result" \
   --strict-output
 
-echo "[12/12] Verifying plan and source-DXF preservation"
+echo "[12/14] Verifying plan and source-DXF preservation"
 python scripts/verify_outputs.py "$constraints" "$zones" \
   --planting-plan "$plan" \
   --zone-report "$zone_report" \
@@ -129,10 +132,32 @@ python scripts/verify_outputs.py "$constraints" "$zones" \
   --output-dxf "$result" \
   --output "$verification"
 
+echo "[13/14] Generating human-readable PDF report"
+python scripts/generate_pdf_report.py \
+  --decisions "$decisions" \
+  --plan-report "$plan_report" \
+  --zone-report "$zone_report" \
+  --verification-report "$verification" \
+  --input-dxf "$INPUT_DXF" \
+  --output "$pdf_report"
+
+echo "[14/14] Generating illustrated planting plan and area schedule"
+python scripts/generate_planting_atlas.py \
+  --normalized "$normalized" \
+  --constraints "$constraints" \
+  --zones "$zones" \
+  --planting-plan "$plan" \
+  --input-dxf "$INPUT_DXF" \
+  --output "$planting_atlas" \
+  --schedule "$area_schedule"
+
 echo "Pipeline completed"
 echo "DXF: $result"
 echo "Plant explanations: $plan"
 echo "Readable planting passports: $planting_explanations"
 echo "Point decisions: $decisions"
 echo "Verification: $verification"
+echo "PDF report: $pdf_report"
+echo "Illustrated planting plan: $planting_atlas"
+echo "Area schedule: $area_schedule"
 

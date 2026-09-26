@@ -498,6 +498,7 @@ class ExporterTests(unittest.TestCase):
             self.assertNotIn("DEBUG_REJECT_REASON_R_T_0001", result.layers)
             self.assertIn("DEBUG_REJECT_REASONS", result.layers)
             self.assertTrue(result.layers.get("DEBUG_REJECT_REASONS").is_off())
+            self.assertFalse(result.layers.get("DEBUG_REJECTED_TREE_IDS").is_off())
             reasons = list(
                 modelspace.query('MTEXT[layer=="DEBUG_REJECT_REASONS"]')
             )

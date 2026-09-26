@@ -1,4 +1,4 @@
-﻿param(
+param(
     [Parameter(Mandatory = $false)]
     [string]$InputDxf = "",
 
@@ -333,6 +333,9 @@ $debugPng = Join-Path $outputPath "plant_allow_zones_debug.png"
 $debugLegend = Join-Path $outputPath "planting_diagnostics_legend.md"
 $zoneVerificationReport = Join-Path $outputPath "zone_verification_report.json"
 $verificationReport = Join-Path $outputPath "verification_report.json"
+$pdfReport = Join-Path $outputPath "greenai_planting_report.pdf"
+$plantingAtlas = Join-Path $outputPath "planting_plan_atlas.pdf"
+$areaSchedule = Join-Path $outputPath "planting_area_schedule.json"
 $fullResultDxf = Join-Path $outputPath "result_with_planting_plan.dxf"
 $overlayDxf = Join-Path $outputPath "planting_overlay.dxf"
 $runParametersReport = Join-Path $outputPath "pipeline_run_parameters.json"
@@ -447,13 +450,13 @@ Push-Location $workspace
 $pipelineSucceeded = $false
 try {
     if ($reusePreprocessing) {
-        Write-Host "[1/14] Preprocessing cache hit; PostGIS and stages 2-11 are not needed"
+        Write-Host "[1/16] Preprocessing cache hit; PostGIS and stages 2-11 are not needed"
         $unitMetadata = Get-Content -LiteralPath $unitReport -Raw -Encoding UTF8 | ConvertFrom-Json
         $DxfUnitsPerMeter = [double]$unitMetadata.dxf_units_per_meter
         Add-SkippedPipelineStage -Id "01" -Name "PostGIS startup" -Status "cached"
     }
     elseif (-not $SkipDatabaseStart) {
-        Write-Host "[1/14] Starting PostGIS"
+        Write-Host "[1/16] Starting PostGIS"
         Invoke-TimedPipelineStage -Id "01" -Name "PostGIS startup" -Action {
             if ($null -ne $dockerComposeCommand) {
                 & $dockerComposeCommand.Source up -d --wait
@@ -463,12 +466,12 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "PostGIS startup failed" }
         }
     } else {
-        Write-Host "[1/14] PostGIS start skipped"
+        Write-Host "[1/16] PostGIS start skipped"
         Add-SkippedPipelineStage -Id "01" -Name "PostGIS startup" -Status "skipped"
     }
 
     if (-not $reusePreprocessing) {
-    Write-Host "[2/14] Detecting and confirming DXF units"
+    Write-Host "[2/16] Detecting and confirming DXF units"
     $unitArguments = @(".\scripts\detect_dxf_units.py", $inputPath, "--output", $unitReport)
     if ($PSBoundParameters.ContainsKey("DxfUnitsPerMeter")) {
         $unitArguments += @("--dxf-units-per-meter", $DxfUnitsPerMeter)
@@ -481,28 +484,28 @@ try {
     $unitMetadata = Get-Content -LiteralPath $unitReport -Raw -Encoding UTF8 | ConvertFrom-Json
     $DxfUnitsPerMeter = [double]$unitMetadata.dxf_units_per_meter
 
-    Write-Host "[3/14] Extracting semantic DXF objects"
+    Write-Host "[3/16] Extracting semantic DXF objects"
     Invoke-TimedPipelineStage -Id "03" -Name "Semantic DXF extraction (Go)" `
         -Artifacts @($objects) -Action {
             & $extractor --config $semanticConfigPath --output $objects $inputPath
             if ($LASTEXITCODE -ne 0) { throw "Semantic extraction failed" }
         }
 
-    Write-Host "[4/14] Extracting surface candidates"
+    Write-Host "[4/16] Extracting surface candidates"
     Invoke-TimedPipelineStage -Id "04" -Name "Surface DXF extraction (Go)" `
         -Artifacts @($surfaces) -Action {
             & $extractor --config $surfaceConfigPath --output $surfaces $inputPath
             if ($LASTEXITCODE -ne 0) { throw "Surface extraction failed" }
         }
 
-    Write-Host "[5/14] Normalizing semantic geometry"
+    Write-Host "[5/16] Normalizing semantic geometry"
     Invoke-TimedPipelineStage -Id "05" -Name "Geometry normalization" `
         -Artifacts @($normalized, $normalizationReport) -Action {
             & $python -m src.geometry.normalizer $objects --output $normalized --report $normalizationReport
             if ($LASTEXITCODE -ne 0) { throw "Normalization failed" }
         }
 
-    Write-Host "[6/14] Cleaning engineering utility geometry"
+    Write-Host "[6/16] Cleaning engineering utility geometry"
     Invoke-TimedPipelineStage -Id "06" -Name "Engineering utility cleaning and ONNX inference" `
         -Artifacts @($cleanedUtilities, $reviewUtilities, $rejectedUtilities, $utilityCleaningReport, $utilityDebugDxf, $utilityDebugPng) -Action {
             if ($null -ne $detectorModelPath) {
@@ -543,7 +546,7 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "Utility cleaning failed" }
         }
 
-    Write-Host "[7/14] Reconstructing utility gaps and junctions"
+    Write-Host "[7/16] Reconstructing utility gaps and junctions"
     Invoke-TimedPipelineStage -Id "07" -Name "Utility network reconstruction" `
         -Artifacts @($reconstructedUtilities, $inferredUtilityConnections, $reviewUtilityConnections, $networkReconstructionReport, $networkReconstructionDebugDxf) -Action {
             $networkArguments = @(
@@ -561,7 +564,7 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "Utility network reconstruction failed" }
         }
 
-    Write-Host "[7b/14] Reconstructing overhead power-line hypotheses from arrows"
+    Write-Host "[7b/16] Reconstructing overhead power-line hypotheses from arrows"
     Invoke-TimedPipelineStage -Id "07b" -Name "Overhead power reconstruction" `
         -Artifacts @($reconstructedUtilities, $overheadPowerReview, $overheadPowerReport, $overheadPowerDebugDxf) -Action {
             $overheadArguments = @(
@@ -581,10 +584,10 @@ try {
         }
 
     if ($actualPipelineMode -eq "lean") {
-        Write-Host "[8/14] Source surface diagnostics skipped in lean mode"
+        Write-Host "[8/16] Source surface diagnostics skipped in lean mode"
         Add-SkippedPipelineStage -Id "08" -Name "Surface diagnostics rendering" -Status "skipped"
     } else {
-        Write-Host "[8/14] Rendering source surface diagnostics"
+        Write-Host "[8/16] Rendering source surface diagnostics"
         Invoke-TimedPipelineStage -Id "08" -Name "Surface diagnostics rendering" `
             -Artifacts @($surfaceDxf, $surfacePng, $surfaceReport) -Action {
                 & $python -m src.cad_io.surface_inspector $surfaces $normalized `
@@ -595,7 +598,7 @@ try {
             }
     }
 
-    Write-Host "[9/14] Building common constraints and reconstructed road"
+    Write-Host "[9/16] Building common constraints and reconstructed road"
     Invoke-TimedPipelineStage -Id "09" -Name "Constraint and road construction" `
         -Artifacts @($constraints, $constraintReport) -Action {
             $constraintArguments = @(
@@ -612,7 +615,7 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "Constraint building failed" }
         }
 
-    Write-Host "[10/14] Applying plant rules to reconstructed utility geometry"
+    Write-Host "[10/16] Applying plant rules to reconstructed utility geometry"
     Invoke-TimedPipelineStage -Id "10" -Name "Plant allow-zone calculation" `
         -Artifacts @($zones, $zoneReport) -Action {
             & $python -m src.rules.plant_allow_zone $constraints $normalized `
@@ -624,7 +627,7 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "Plant allow-zone calculation failed" }
         }
 
-    Write-Host "[11/14] Verifying calculated zones"
+    Write-Host "[11/16] Verifying calculated zones"
     Invoke-TimedPipelineStage -Id "11" -Name "Calculated-zone verification" `
         -Artifacts @($zoneVerificationReport) -Action {
             & $python .\scripts\verify_outputs.py $constraints $zones `
@@ -656,7 +659,7 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "Preprocessing cache write failed" }
         }
     } else {
-        Write-Host "[2-11/14] Reusing extraction, cleaned networks, constraints and allow zones"
+        Write-Host "[2-11/16] Reusing extraction, cleaned networks, constraints and allow zones"
         Add-SkippedPipelineStage -Id "02" -Name "DXF unit detection" -Status "cached"
         Add-SkippedPipelineStage -Id "03" -Name "Semantic DXF extraction (Go)" -Status "cached"
         Add-SkippedPipelineStage -Id "04" -Name "Surface DXF extraction (Go)" -Status "cached"
@@ -671,7 +674,7 @@ try {
         Add-SkippedPipelineStage -Id "11b" -Name "Preprocessing cache write" -Status "cached"
     }
 
-    Write-Host "[12/14] Generating concrete planting points and explanations"
+    Write-Host "[12/16] Generating concrete planting points and explanations"
     $plantingArguments = @(
         "-m", "src.planting.service", $zones, $zoneReport, $normalized, $constraints,
         "--utilities", $reconstructedUtilities,
@@ -704,7 +707,7 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "Planting plan generation failed" }
         }
 
-    Write-Host "[12b/14] Writing separate CAD diagnostic layers"
+    Write-Host "[12b/16] Writing separate CAD diagnostic layers"
     $debugArguments = @(
         "-m", "src.rules.plant_allow_zone_debug", $zones, $constraints, $normalized,
         "--dxf-output", $debugDxf,
@@ -733,7 +736,7 @@ try {
         }
 
     if ($actualPipelineMode -in @("fast", "lean")) {
-        Write-Host "[13/14] Writing lightweight planting overlay DXF"
+        Write-Host "[13/16] Writing lightweight planting overlay DXF"
         Invoke-TimedPipelineStage -Id "13" -Name "Lightweight planting overlay DXF export" `
             -Artifacts @($resultDxf) -Action {
                 & $python -m src.cad_io.dxf_exporter $inputPath $zones `
@@ -746,7 +749,7 @@ try {
                 if ($LASTEXITCODE -ne 0) { throw "Planting overlay DXF export failed" }
             }
 
-        Write-Host "[14/14] Verifying plan geometry, rules and explanations"
+        Write-Host "[14/16] Verifying plan geometry, rules and explanations"
         Invoke-TimedPipelineStage -Id "14" -Name "Final geometry and rule verification" `
             -Artifacts @($verificationReport) -Action {
                 & $python .\scripts\verify_outputs.py $constraints $zones `
@@ -757,7 +760,7 @@ try {
                 if ($LASTEXITCODE -ne 0) { throw "Final delivery verification failed" }
             }
     } else {
-        Write-Host "[13/14] Writing result layers into a copy of the source DXF"
+        Write-Host "[13/16] Writing result layers into a copy of the source DXF"
         Invoke-TimedPipelineStage -Id "13" -Name "Full result DXF export" `
             -Artifacts @($resultDxf) -Action {
                 & $python -m src.cad_io.dxf_exporter $inputPath $zones `
@@ -768,7 +771,7 @@ try {
                 if ($LASTEXITCODE -ne 0) { throw "Final DXF export failed" }
             }
 
-        Write-Host "[14/14] Verifying plan, explanations and source-DXF preservation"
+        Write-Host "[14/16] Verifying plan, explanations and source-DXF preservation"
         Invoke-TimedPipelineStage -Id "14" -Name "Final DXF preservation and rule verification" `
             -Artifacts @($verificationReport) -Action {
                 & $python .\scripts\verify_outputs.py $constraints $zones `
@@ -781,6 +784,39 @@ try {
                 if ($LASTEXITCODE -ne 0) { throw "Final delivery verification failed" }
             }
     }
+    Write-Host "[15/16] Generating human-readable PDF report"
+    $pdfArguments = @(
+        ".\scripts\generate_pdf_report.py",
+        "--decisions", $plantingDecisions,
+        "--plan-report", $plantingPlanReport,
+        "--zone-report", $zoneReport,
+        "--verification-report", $verificationReport,
+        "--input-dxf", $inputPath,
+        "--output", $pdfReport
+    )
+    if (Test-Path -LiteralPath $debugPng) {
+        $pdfArguments += @("--preview", $debugPng)
+    }
+    Invoke-TimedPipelineStage -Id "15" -Name "PDF delivery report" `
+        -Artifacts @($pdfReport) -Action {
+            & $python @pdfArguments
+            if ($LASTEXITCODE -ne 0) { throw "PDF report generation failed" }
+        }
+
+    Write-Host "[16/16] Generating illustrated planting plan and area schedule"
+    Invoke-TimedPipelineStage -Id "16" -Name "Illustrated planting plan" `
+        -Artifacts @($plantingAtlas, $areaSchedule) -Action {
+            & $python .\scripts\generate_planting_atlas.py `
+                --normalized $normalized `
+                --constraints $constraints `
+                --zones $zones `
+                --planting-plan $plantingPlan `
+                --input-dxf $inputPath `
+                --output $plantingAtlas `
+                --schedule $areaSchedule
+            if ($LASTEXITCODE -ne 0) { throw "Illustrated planting plan generation failed" }
+        }
+
     $pipelineSucceeded = $true
     $timingReports = Write-PipelineTimingReports -OutputDirectory $outputPath `
         -Mode $actualPipelineMode -InputFile $inputPath -FinalStatus "passed"
@@ -800,6 +836,9 @@ try {
     Write-Host "Network reconstruction: $networkReconstructionReport"
     Write-Host "Overhead power reconstruction: $overheadPowerReport"
     Write-Host "Verification: $verificationReport"
+    Write-Host "PDF report: $pdfReport"
+    Write-Host "Illustrated planting plan: $plantingAtlas"
+    Write-Host "Area schedule: $areaSchedule"
     Write-Host "Run parameters: $runParametersReport"
     Write-Host "Stage timings: $($timingReports.markdown)"
 } finally {

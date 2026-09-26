@@ -1,0 +1,412 @@
+"""Build a human-readable PDF delivery report for one planting pipeline run."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from collections import Counter
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Iterable
+
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import (
+    Image,
+    KeepTogether,
+    LongTable,
+    PageBreak,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
+
+
+PAGE_SIZE = landscape(A4)
+TARGET_ZONE_LABEL = "USDA 4 (Москва)"
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def read_decisions(path: Path) -> list[dict[str, Any]]:
+    decisions: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8-sig") as source:
+        for line_number, line in enumerate(source, start=1):
+            if not line.strip():
+                continue
+            try:
+                feature = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    f"Line {line_number}: invalid planting decision JSON"
+                ) from error
+            if feature.get("type") != "Feature":
+                raise ValueError(f"Line {line_number}: expected GeoJSON Feature")
+            decisions.append(feature)
+    return decisions
+
+
+def find_font_files() -> tuple[Path, Path]:
+    custom_dir = os.getenv("GREENAI_PDF_FONT_DIR")
+    candidates: list[tuple[Path, Path]] = []
+    if custom_dir:
+        root = Path(custom_dir)
+        candidates.append((root / "DejaVuSans.ttf", root / "DejaVuSans-Bold.ttf"))
+        candidates.append((root / "arial.ttf", root / "arialbd.ttf"))
+    candidates.extend(
+        [
+            (
+                Path("C:/Windows/Fonts/arial.ttf"),
+                Path("C:/Windows/Fonts/arialbd.ttf"),
+            ),
+            (
+                Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+                Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+            ),
+        ]
+    )
+    for regular, bold in candidates:
+        if regular.is_file() and bold.is_file():
+            return regular, bold
+    raise RuntimeError(
+        "No Cyrillic TrueType font found. Install DejaVu Sans or set "
+        "GREENAI_PDF_FONT_DIR."
+    )
+
+
+def register_fonts() -> tuple[str, str]:
+    regular, bold = find_font_files()
+    pdfmetrics.registerFont(TTFont("GreenAI", regular))
+    pdfmetrics.registerFont(TTFont("GreenAI-Bold", bold))
+    return "GreenAI", "GreenAI-Bold"
+
+
+def paragraph(text: Any, style: ParagraphStyle) -> Paragraph:
+    value = str(text if text is not None else "-")
+    value = value.replace("\n", "<br/>")
+    return Paragraph(value, style)
+
+
+def format_distance(value: Any) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value):.2f} м"
+
+
+def failed_checks(properties: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        check
+        for check in properties.get("checks", [])
+        if check.get("status") == "failed"
+    ]
+
+
+def rejection_rows(
+    decisions: Iterable[dict[str, Any]], cell_style: ParagraphStyle
+) -> tuple[list[list[Any]], Counter[str]]:
+    rows: list[list[Any]] = []
+    cause_counts: Counter[str] = Counter()
+    type_labels = {"tree": "Дерево", "shrub": "Кустарник", "herbaceous": "Травы"}
+    for feature in decisions:
+        properties = feature.get("properties", {})
+        if properties.get("status") != "rejected":
+            continue
+        failures = failed_checks(properties)
+        codes = [str(item.get("code", "UNKNOWN")) for item in failures]
+        cause_counts.update(codes)
+        metrics = []
+        for check in failures:
+            actual = format_distance(check.get("actual_distance_m"))
+            required = format_distance(check.get("required_distance_m"))
+            deficit = "-"
+            if (
+                check.get("actual_distance_m") is not None
+                and check.get("required_distance_m") is not None
+            ):
+                missing = max(
+                    0.0,
+                    float(check["required_distance_m"])
+                    - float(check["actual_distance_m"]),
+                )
+                deficit = f"не хватает {missing:.2f} м" if missing > 0 else "граница зоны"
+            metrics.append(f"{check.get('code', '?')}: {actual} / {required}; {deficit}")
+        reasons = properties.get("rejection_reasons") or [
+            str(item.get("explanation", "Причина не указана")) for item in failures
+        ]
+        coordinates = feature.get("geometry", {}).get("coordinates", [None, None])
+        coordinate_text = (
+            f"X {float(coordinates[0]):.2f}<br/>Y {float(coordinates[1]):.2f}"
+            if len(coordinates) >= 2 and coordinates[0] is not None
+            else "-"
+        )
+        rows.append(
+            [
+                paragraph(properties.get("candidate_id", "-"), cell_style),
+                paragraph(
+                    f"{type_labels.get(properties.get('plant_type'), properties.get('plant_type', '-'))}<br/>"
+                    f"{properties.get('species', '-')}",
+                    cell_style,
+                ),
+                paragraph(coordinate_text, cell_style),
+                paragraph("<br/>".join(codes) or "-", cell_style),
+                paragraph("<br/>".join(metrics) or "-", cell_style),
+                paragraph("<br/>".join(str(item) for item in reasons), cell_style),
+            ]
+        )
+    return rows, cause_counts
+
+
+def page_decorator(canvas: Any, document: Any) -> None:
+    canvas.saveState()
+    width, height = PAGE_SIZE
+    canvas.setStrokeColor(colors.HexColor("#B8C8D8"))
+    canvas.setLineWidth(0.5)
+    canvas.line(14 * mm, height - 11 * mm, width - 14 * mm, height - 11 * mm)
+    canvas.setFont("GreenAI", 7)
+    canvas.setFillColor(colors.HexColor("#526579"))
+    canvas.drawString(14 * mm, 7 * mm, "GreenAI - отчёт по плану озеленения")
+    canvas.drawRightString(width - 14 * mm, 7 * mm, f"Страница {document.page}")
+    canvas.restoreState()
+
+
+def build_pdf(
+    decisions_path: Path,
+    plan_report_path: Path,
+    zone_report_path: Path,
+    verification_report_path: Path,
+    output_path: Path,
+    input_dxf: Path | None = None,
+    preview_path: Path | None = None,
+) -> Path:
+    regular_font, bold_font = register_fonts()
+    decisions = read_decisions(decisions_path)
+    plan_report = read_json(plan_report_path)
+    zone_report = read_json(zone_report_path)
+    verification = read_json(verification_report_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    styles = getSampleStyleSheet()
+    title = ParagraphStyle(
+        "GreenTitle", parent=styles["Title"], fontName=bold_font,
+        fontSize=20, leading=24, textColor=colors.HexColor("#143B5D"),
+        spaceAfter=5 * mm, alignment=TA_LEFT,
+    )
+    heading = ParagraphStyle(
+        "GreenHeading", parent=styles["Heading1"], fontName=bold_font,
+        fontSize=14, leading=17, textColor=colors.HexColor("#176B6A"),
+        spaceBefore=3 * mm, spaceAfter=3 * mm,
+    )
+    subheading = ParagraphStyle(
+        "GreenSubheading", parent=styles["Heading2"], fontName=bold_font,
+        fontSize=10, leading=12, textColor=colors.HexColor("#143B5D"),
+        spaceBefore=2 * mm, spaceAfter=1.5 * mm,
+    )
+    body = ParagraphStyle(
+        "GreenBody", parent=styles["BodyText"], fontName=regular_font,
+        fontSize=8.5, leading=11, textColor=colors.HexColor("#263746"),
+    )
+    small = ParagraphStyle(
+        "GreenSmall", parent=body, fontSize=6.5, leading=8,
+    )
+    table_header = ParagraphStyle(
+        "GreenTableHeader", parent=small, fontName=bold_font,
+        textColor=colors.white, leading=7.5,
+    )
+
+    document = SimpleDocTemplate(
+        str(output_path), pagesize=PAGE_SIZE,
+        leftMargin=14 * mm, rightMargin=14 * mm,
+        topMargin=16 * mm, bottomMargin=13 * mm,
+        title="GreenAI - отчёт по плану озеленения",
+        author="GreenAI",
+    )
+    story: list[Any] = []
+    story.append(paragraph("Отчёт по плану озеленения", title))
+    source_name = input_dxf.name if input_dxf else "не указан"
+    story.append(paragraph(
+        f"Исходный чертёж: <b>{source_name}</b><br/>"
+        f"Дата формирования: {datetime.now().astimezone().strftime('%d.%m.%Y %H:%M')}<br/>"
+        f"Система координат: локальные координаты DXF; масштаб: "
+        f"{zone_report.get('dxf_units_per_meter', 1):g} ед./м",
+        body,
+    ))
+    story.append(Spacer(1, 4 * mm))
+
+    rejected_rows, cause_counts = rejection_rows(decisions, small)
+    story.append(paragraph("1. Причины отклонения кандидатов", heading))
+    story.append(paragraph(
+        "Таблица связывает красные диагностические точки в DXF с конкретными "
+        "нарушенными проверками. Поиск выполняется по идентификатору кандидата.",
+        body,
+    ))
+    story.append(Spacer(1, 2 * mm))
+    headers = ["ID", "Тип и растение", "Координаты", "Проверки", "Факт / требование", "Причина"]
+    data = [[paragraph(item, table_header) for item in headers], *rejected_rows]
+    rejection_table = LongTable(
+        data,
+        colWidths=[19 * mm, 31 * mm, 25 * mm, 34 * mm, 55 * mm, 103 * mm],
+        repeatRows=1,
+        splitByRow=True,
+    )
+    rejection_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#176B6A")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#B8C8D8")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F7F8")]),
+        ("LEFTPADDING", (0, 0), (-1, -1), 2.2),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2.2),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+    ]))
+    story.append(rejection_table)
+    story.append(PageBreak())
+
+    story.append(paragraph("2. Сводка результата", heading))
+    summary_rows = [[
+        paragraph("Сценарий", table_header), paragraph("Тип", table_header),
+        paragraph("Растение", table_header), paragraph("Принято", table_header),
+        paragraph("Диагностических отказов", table_header),
+    ]]
+    for request_id, item in plan_report.get("summary", {}).items():
+        accepted = item.get("accepted_count", item.get("accepted_area_count", 0))
+        summary_rows.append([
+            paragraph(request_id, body), paragraph(item.get("plant_type", "-"), body),
+            paragraph(item.get("species", "-"), body), paragraph(accepted, body),
+            paragraph(item.get("diagnostic_rejected_count", 0), body),
+        ])
+    summary_table = Table(summary_rows, colWidths=[46 * mm, 33 * mm, 75 * mm, 31 * mm, 55 * mm])
+    summary_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#143B5D")),
+        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#B8C8D8")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F7F8")]),
+        ("PADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(summary_table)
+    story.append(Spacer(1, 4 * mm))
+
+    status_color = "#277A4B" if verification.get("status") == "passed" else "#B63737"
+    status_text = "ПРОЙДЕНА" if verification.get("status") == "passed" else "НЕ ПРОЙДЕНА"
+    status_box = Table([[paragraph(
+        f"Итоговая верификация: <font color='{status_color}'><b>{status_text}</b></font><br/>"
+        f"Точек посадки: {plan_report.get('point_placement_count', 0)}; "
+        f"площадных посадок: {plan_report.get('area_placement_count', 0)}; "
+        f"ручная проверка: {plan_report.get('manual_review_count', 0)}.", body
+    )]], colWidths=[240 * mm])
+    status_box.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 1, colors.HexColor(status_color)),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F5FAF6")),
+        ("PADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story.append(status_box)
+
+    if preview_path and preview_path.is_file():
+        story.append(Spacer(1, 4 * mm))
+        image = Image(str(preview_path))
+        max_width, max_height = 250 * mm, 115 * mm
+        ratio = min(max_width / image.imageWidth, max_height / image.imageHeight)
+        image.drawWidth = image.imageWidth * ratio
+        image.drawHeight = image.imageHeight * ratio
+        story.append(image)
+
+    story.append(PageBreak())
+    story.append(paragraph("3. Частые причины отказа", heading))
+    cause_data = [[paragraph("Проверка", table_header), paragraph("Количество", table_header)]]
+    for code, count in cause_counts.most_common():
+        cause_data.append([paragraph(code, body), paragraph(count, body)])
+    cause_table = Table(cause_data, colWidths=[130 * mm, 35 * mm], repeatRows=1)
+    cause_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#176B6A")),
+        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#B8C8D8")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F7F8")]),
+        ("PADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(cause_table)
+
+    story.append(Spacer(1, 4 * mm))
+    story.append(paragraph("4. Допустимые зоны и правила", heading))
+    rule_rows = [[
+        paragraph("Тип", table_header), paragraph("Площадь, м²", table_header),
+        paragraph("Статус", table_header), paragraph("Применённые правила", table_header),
+    ]]
+    for plant_type, item in zone_report.get("plant_types", {}).items():
+        rules = [
+            rule.get("rule_code", "-")
+            for rule in item.get("rules", [])
+            if rule.get("status") == "applied"
+        ]
+        rule_rows.append([
+            paragraph(plant_type, body),
+            paragraph(f"{float(item.get('allowed_area_in_dxf_square_units', 0)):.2f}", body),
+            paragraph(item.get("verification_status", "-"), body),
+            paragraph(", ".join(rules) or "-", body),
+        ])
+    rule_table = Table(rule_rows, colWidths=[32 * mm, 35 * mm, 55 * mm, 135 * mm], repeatRows=1)
+    rule_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#143B5D")),
+        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#B8C8D8")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("PADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(rule_table)
+
+    story.append(Spacer(1, 4 * mm))
+    story.append(paragraph("5. Климатический отбор растений", heading))
+    story.append(paragraph(
+        f"Расчётный климатический профиль: <b>{TARGET_ZONE_LABEL}</b>. "
+        "Виды со статусом seasonal_only исключаются из автоматического каталога "
+        "многолетних посадок; conditional требуют подтверждения сорта, партии и "
+        "микроклимата участка.", body,
+    ))
+
+    story.append(Spacer(1, 4 * mm))
+    story.append(paragraph("6. Комплект результата", heading))
+    files = [
+        output_path.name,
+        "result_with_planting_plan.dxf или planting_overlay.dxf",
+        "planting_diagnostics.dxf",
+        "planting_decisions.geojsonl",
+        "verification_report.json",
+    ]
+    story.append(paragraph("<br/>".join(f"- {item}" for item in files), body))
+
+    document.build(story, onFirstPage=page_decorator, onLaterPages=page_decorator)
+    if not output_path.is_file() or output_path.stat().st_size == 0:
+        raise RuntimeError(f"PDF report was not created: {output_path}")
+    return output_path
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate the GreenAI PDF report.")
+    parser.add_argument("--decisions", type=Path, required=True)
+    parser.add_argument("--plan-report", type=Path, required=True)
+    parser.add_argument("--zone-report", type=Path, required=True)
+    parser.add_argument("--verification-report", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--input-dxf", type=Path)
+    parser.add_argument("--preview", type=Path)
+    args = parser.parse_args()
+    result = build_pdf(
+        args.decisions,
+        args.plan_report,
+        args.zone_report,
+        args.verification_report,
+        args.output,
+        args.input_dxf,
+        args.preview,
+    )
+    print(f"PDF report: {result}")
+
+
+if __name__ == "__main__":
+    main()

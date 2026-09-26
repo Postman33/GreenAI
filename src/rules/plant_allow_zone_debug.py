@@ -739,6 +739,10 @@ def export_dxf(
         "DEBUG_PLANT_TREE",
         "DEBUG_REJECTED_TREE",
     }
+    for plant_type in (rejected_points or {}):
+        suffix = re.sub(r"[^A-Z0-9_]+", "_", plant_type.upper()) or "PLANT"
+        visible_layers.add(f"DEBUG_REJECTED_{suffix}")
+        visible_layers.add(f"DEBUG_REJECTED_{suffix}_IDS")
     for layer in layer_colors:
         if layer not in visible_layers:
             document.layers.get(layer).off()

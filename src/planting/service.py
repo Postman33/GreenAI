@@ -17,6 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterable
 
+from shapely import STRtree
 from shapely.geometry import GeometryCollection, Point, mapping, shape
 from shapely.validation import make_valid
 
@@ -652,24 +653,44 @@ def _diagnostic_candidate_points(
 ) -> list[Point]:
     """Create deterministic alternatives used only to explain rejected locations.
 
-    Row continuations make gaps beside an accepted row easy to understand in
-    CAD.  A coarse grid also covers components where no planting was accepted.
+    Every disconnected component is sampled before any component receives a
+    second grid point. Row continuations then make gaps beside an accepted row
+    easy to understand in CAD. This prevents large polygons from exhausting
+    the diagnostic limit before small territories are inspected.
     """
     if maximum <= 0 or selected_zone.is_empty or spacing_dxf <= 0:
         return []
     result: list[Point] = []
     seen: set[tuple[int, int]] = set()
     tolerance = max(spacing_dxf * 0.02, 1e-5)
+    accepted_tree = STRtree(accepted_points) if accepted_points else None
 
-    def add(point: Point) -> None:
+    def add(point: Point) -> bool:
         if len(result) >= maximum or not selected_zone.covers(point):
-            return
-        if any(point.distance(accepted) <= tolerance for accepted in accepted_points):
-            return
+            return False
+        if accepted_tree is not None and len(
+            accepted_tree.query(point, predicate="dwithin", distance=tolerance)
+        ):
+            return False
         key = (round(point.x / tolerance), round(point.y / tolerance))
         if key not in seen:
             seen.add(key)
             result.append(point)
+            return True
+        return False
+
+    components = sorted(
+        polygon_parts(selected_zone),
+        key=lambda item: (item.bounds[0], item.bounds[1], item.bounds[2], item.bounds[3]),
+    )
+
+    # Guarantee an initial inspection point for every territory whenever the
+    # configured limit permits it. representative_point() is inside even a
+    # narrow or concave polygon, where a spacing grid can yield no points.
+    for component in components:
+        add(component.representative_point())
+        if len(result) >= maximum:
+            return result
 
     # Extend locally visible rows in both directions.  This produces the
     # intuitive "why is there no third tree here?" candidates.
@@ -690,13 +711,25 @@ def _diagnostic_candidate_points(
         add(Point(first.x - dx, first.y - dy))
         add(Point(second.x + dx, second.y + dy))
 
-    # Diagnose broad unused pieces as well.  These points are alternatives,
-    # not additional proposals, and only failed checks are exported later.
-    for component in sorted(polygon_parts(selected_zone), key=lambda item: item.area, reverse=True):
-        for x, y in grid_candidates(component, spacing_dxf, 0.0, 0.5, 0.5):
-            add(Point(x, y))
+    # Add the regular diagnostic grid round-robin: one new point per component
+    # in each pass. These are alternatives, not additional proposals.
+    active = [
+        iter(grid_candidates(component, spacing_dxf, 0.0, 0.5, 0.5))
+        for component in components
+    ]
+    while active and len(result) < maximum:
+        next_active = []
+        for iterator in active:
+            added = False
+            for x, y in iterator:
+                if add(Point(x, y)):
+                    added = True
+                    break
+            if added:
+                next_active.append(iterator)
             if len(result) >= maximum:
                 return result
+        active = next_active
     return result
 
 
@@ -821,7 +854,7 @@ def plan(
     diagnostic_rejected_max = int(
         diagnostic_rejected_max_count
         if diagnostic_rejected_max_count is not None
-        else config.get("diagnosticRejectedMaxCount", 300)
+        else config.get("diagnosticRejectedMaxCount", 1000)
     )
     if diagnostic_rejected_max < 0:
         raise ValueError("diagnosticRejectedMaxCount must be non-negative")
@@ -1000,18 +1033,19 @@ def plan(
                     occupied,
                     rule_geometry_cache,
                 )
-                if status != "rejected":
-                    continue
-                checks.extend(
-                    _scope_diagnostic_checks(
-                        point,
-                        selected_zone,
-                        profile,
-                        normalized,
-                        existing_tree_clearance,
-                        units,
-                    )
+                scope_checks = _scope_diagnostic_checks(
+                    point,
+                    selected_zone,
+                    profile,
+                    normalized,
+                    existing_tree_clearance,
+                    units,
                 )
+                if status != "rejected" and not any(
+                    check.get("status") == "failed" for check in scope_checks
+                ):
+                    continue
+                checks.extend(scope_checks)
                 diagnostic_counters[selection.plant_type] += 1
                 diagnostic_id = (
                     f"R-{prefixes.get(selection.plant_type, 'P')}-"
