@@ -8,7 +8,7 @@ from pathlib import Path
 from shapely.geometry import box
 
 from tests import ROOT  # noqa: F401 - initializes script-module import paths
-from src import surface_inspector
+from src.cad_io import surface_inspector
 from tests.helpers import feature, raw_hatch, write_jsonl
 
 

@@ -10,7 +10,7 @@ from shapely.geometry import LineString
 from sklearn.ensemble import RandomForestClassifier
 
 from tests import ROOT  # noqa: F401 - initializes script-module import paths
-from utility_detector import detector, onnx_model
+from src.detection.utilities import detector, onnx_model
 
 
 class UtilityDetectorTests(unittest.TestCase):

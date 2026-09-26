@@ -212,6 +212,7 @@ function Write-PipelineTimingReports {
 
 $workspace = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $python = Join-Path $workspace ".venv\Scripts\python.exe"
+$dockerComposeCommand = Get-Command docker-compose -ErrorAction SilentlyContinue
 $extractorDirectory = Join-Path $workspace ".gotmp"
 $extractor = Join-Path $extractorDirectory "dxf_extract_go.exe"
 $semanticConfigPath = (Resolve-Path -LiteralPath (Join-Path $workspace $SemanticConfig)).Path
@@ -454,7 +455,11 @@ try {
     elseif (-not $SkipDatabaseStart) {
         Write-Host "[1/14] Starting PostGIS"
         Invoke-TimedPipelineStage -Id "01" -Name "PostGIS startup" -Action {
-            docker compose up -d --wait
+            if ($null -ne $dockerComposeCommand) {
+                & $dockerComposeCommand.Source up -d --wait
+            } else {
+                docker compose up -d --wait
+            }
             if ($LASTEXITCODE -ne 0) { throw "PostGIS startup failed" }
         }
     } else {
@@ -493,7 +498,7 @@ try {
     Write-Host "[5/14] Normalizing semantic geometry"
     Invoke-TimedPipelineStage -Id "05" -Name "Geometry normalization" `
         -Artifacts @($normalized, $normalizationReport) -Action {
-            & $python .\src\normalizer.py $objects --output $normalized --report $normalizationReport
+            & $python -m src.geometry.normalizer $objects --output $normalized --report $normalizationReport
             if ($LASTEXITCODE -ne 0) { throw "Normalization failed" }
         }
 
@@ -503,7 +508,7 @@ try {
             if ($null -ne $detectorModelPath) {
                 Write-Host "       Using supervised ONNX utility detector: $detectorModelPath"
                 $detectorArguments = @(
-                    ".\utility_detector\detector.py", "predict", $objects,
+                    "-m", "src.detection.utilities.detector", "predict", $objects,
                     "--model", $detectorModelPath,
                     "--output", $cleanedUtilities,
                     "--review-output", $reviewUtilities,
@@ -519,7 +524,7 @@ try {
                 & $python @detectorArguments
             } else {
                 $cleanerArguments = @(
-                    ".\utility_cleaner\clean_utilities.py", $objects,
+                    "-m", "src.detection.cleaning.clean_utilities", $objects,
                     "--work-boundary", $normalized,
                     "--output", $cleanedUtilities,
                     "--review-output", $reviewUtilities,
@@ -542,7 +547,7 @@ try {
     Invoke-TimedPipelineStage -Id "07" -Name "Utility network reconstruction" `
         -Artifacts @($reconstructedUtilities, $inferredUtilityConnections, $reviewUtilityConnections, $networkReconstructionReport, $networkReconstructionDebugDxf) -Action {
             $networkArguments = @(
-                ".\src\network_reconstructor.py", $cleanedUtilities,
+                "-m", "src.detection.network_reconstructor", $cleanedUtilities,
                 "--output", $reconstructedUtilities,
                 "--inferred-output", $inferredUtilityConnections,
                 "--review-output", $reviewUtilityConnections,
@@ -560,7 +565,7 @@ try {
     Invoke-TimedPipelineStage -Id "07b" -Name "Overhead power reconstruction" `
         -Artifacts @($reconstructedUtilities, $overheadPowerReview, $overheadPowerReport, $overheadPowerDebugDxf) -Action {
             $overheadArguments = @(
-                ".\src\overhead_power_reconstructor.py", $inputPath,
+                "-m", "src.detection.overhead_power_reconstructor", $inputPath,
                 "--objects", $objects,
                 "--base-utilities", $reconstructedUtilities,
                 "--output", $reconstructedUtilities,
@@ -582,7 +587,7 @@ try {
         Write-Host "[8/14] Rendering source surface diagnostics"
         Invoke-TimedPipelineStage -Id "08" -Name "Surface diagnostics rendering" `
             -Artifacts @($surfaceDxf, $surfacePng, $surfaceReport) -Action {
-                & $python .\src\surface_inspector.py $surfaces $normalized `
+                & $python -m src.cad_io.surface_inspector $surfaces $normalized `
                     --dxf-output $surfaceDxf `
                     --png-output $surfacePng `
                     --report $surfaceReport
@@ -594,7 +599,7 @@ try {
     Invoke-TimedPipelineStage -Id "09" -Name "Constraint and road construction" `
         -Artifacts @($constraints, $constraintReport) -Action {
             $constraintArguments = @(
-                ".\src\constraint_builder.py", $normalized, $surfaces,
+                "-m", "src.geometry.constraint_builder", $normalized, $surfaces,
                 "--output", $constraints,
                 "--report", $constraintReport,
                 "--unit-metadata", $unitReport,
@@ -610,7 +615,7 @@ try {
     Write-Host "[10/14] Applying plant rules to reconstructed utility geometry"
     Invoke-TimedPipelineStage -Id "10" -Name "Plant allow-zone calculation" `
         -Artifacts @($zones, $zoneReport) -Action {
-            & $python .\src\plant_allow_zone.py $constraints $normalized `
+            & $python -m src.rules.plant_allow_zone $constraints $normalized `
                 --output $zones `
                 --report $zoneReport `
                 --utility-geometries $reconstructedUtilities `
@@ -668,9 +673,9 @@ try {
 
     Write-Host "[12/14] Generating concrete planting points and explanations"
     $plantingArguments = @(
-        ".\src\planting_service.py", $zones, $zoneReport, $normalized, $constraints,
+        "-m", "src.planting.service", $zones, $zoneReport, $normalized, $constraints,
         "--utilities", $reconstructedUtilities,
-        "--config", ".\nanocad-plugin\config\greenai.plugin.json",
+        "--config", ".\config\planting.json",
         "--output", $plantingPlan,
         "--decisions-output", $plantingDecisions,
         "--report", $plantingPlanReport,
@@ -701,7 +706,7 @@ try {
 
     Write-Host "[12b/14] Writing separate CAD diagnostic layers"
     $debugArguments = @(
-        ".\src\plant_allow_zone_debug.py", $zones, $constraints, $normalized,
+        "-m", "src.rules.plant_allow_zone_debug", $zones, $constraints, $normalized,
         "--dxf-output", $debugDxf,
         "--legend-output", $debugLegend,
         "--utility-geometries", $reconstructedUtilities,
@@ -731,7 +736,7 @@ try {
         Write-Host "[13/14] Writing lightweight planting overlay DXF"
         Invoke-TimedPipelineStage -Id "13" -Name "Lightweight planting overlay DXF export" `
             -Artifacts @($resultDxf) -Action {
-                & $python .\src\dxf_exporter.py $inputPath $zones `
+                & $python -m src.cad_io.dxf_exporter $inputPath $zones `
                     --constraint-map $constraints `
                     --planting-plan $plantingPlan `
                     --output $resultDxf `
@@ -755,7 +760,7 @@ try {
         Write-Host "[13/14] Writing result layers into a copy of the source DXF"
         Invoke-TimedPipelineStage -Id "13" -Name "Full result DXF export" `
             -Artifacts @($resultDxf) -Action {
-                & $python .\src\dxf_exporter.py $inputPath $zones `
+                & $python -m src.cad_io.dxf_exporter $inputPath $zones `
                     --constraint-map $constraints `
                     --planting-plan $plantingPlan `
                     --output $resultDxf `
@@ -805,3 +810,6 @@ try {
             -Mode $failedMode -InputFile $inputPath -FinalStatus "failed" | Out-Null
     }
 }
+
+
+

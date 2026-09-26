@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from tests import ROOT  # noqa: F401 - initializes script-module import paths
-from src import georeference
+from src.cad_io import georeference
 
 
 class GeoreferenceTests(unittest.TestCase):

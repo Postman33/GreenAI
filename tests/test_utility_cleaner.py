@@ -7,7 +7,7 @@ from pathlib import Path
 from shapely.geometry import LineString, box
 
 from tests import ROOT  # noqa: F401 - initializes script-module import paths
-from utility_cleaner import clean_utilities as cleaner
+from src.detection.cleaning import clean_utilities as cleaner
 
 
 RULES = {

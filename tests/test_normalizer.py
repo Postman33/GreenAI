@@ -9,7 +9,7 @@ from pathlib import Path
 from shapely.geometry import LineString, Point, shape
 
 from tests import ROOT  # noqa: F401 - initializes script-module import paths
-from src import normalizer
+from src.geometry import normalizer
 from tests.helpers import raw_polyline, write_jsonl
 
 

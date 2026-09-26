@@ -7,7 +7,7 @@ import ezdxf
 from shapely.geometry import shape
 
 from tests import ROOT  # noqa: F401 - initializes src imports
-from overhead_power_reconstructor import (
+from src.detection.overhead_power_reconstructor import (
     Arrow,
     Primitive,
     build_nodes,

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from shapely.geometry import MultiPoint, Point, box, mapping, shape
 
-from src import placement_generator
+from src.planting import placement_generator
 
 
 def write_jsonl(path: Path, features: list[dict]) -> None:

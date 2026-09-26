@@ -11,7 +11,7 @@ from shapely.ops import unary_union
 
 from tests import ROOT  # noqa: F401 - initializes script-module import paths
 from core.heat_chamber_detector import detect_dashed_square_chambers
-from src import constraint_builder as constraints
+from src.geometry import constraint_builder as constraints
 from tests.helpers import feature, raw_hatch, write_jsonl
 
 

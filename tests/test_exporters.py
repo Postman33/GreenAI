@@ -9,7 +9,8 @@ import ezdxf
 from shapely.geometry import LineString, Point, Polygon, box, mapping
 
 from tests import ROOT  # noqa: F401 - initializes script-module import paths
-from src import debug_export, dxf_exporter, plant_allow_zone_debug
+from src.cad_io import debug_export, dxf_exporter
+from src.rules import plant_allow_zone_debug
 from tests.helpers import feature, raw_hatch, write_jsonl
 
 

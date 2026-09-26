@@ -16,8 +16,9 @@ from shapely.geometry import LineString, Point, Polygon, box, mapping, shape
 from shapely.ops import unary_union
 
 from tests import ROOT  # noqa: F401
-from src import dxf_exporter, planting_service
-from src.planting_design import flowerbed_patches
+from src.cad_io import dxf_exporter
+from src.planting import service as planting_service
+from src.planting.design import flowerbed_patches
 
 
 def write_jsonl(path, features):

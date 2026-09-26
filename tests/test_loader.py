@@ -8,7 +8,7 @@ from pathlib import Path
 import ezdxf
 
 from tests import ROOT  # noqa: F401 - initializes script-module import paths
-from src import loader
+from src.cad_io import loader
 
 
 class LoaderTests(unittest.TestCase):

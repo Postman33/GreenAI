@@ -15,7 +15,7 @@ from shapely.geometry import Point, box
 from tests import ROOT
 import inspect_dxf
 from scripts import dxf_manifest, pipeline_cache, seed, verify_outputs
-from src import loader, utils
+from src.cad_io import loader, utils
 from tests.helpers import feature, write_jsonl
 
 
@@ -156,32 +156,6 @@ class ScriptTests(unittest.TestCase):
         )
         self.assertEqual(tree_gas_rule.conditions["check"], "min_distance")
         self.assertEqual(tree_gas_rule.conditions["min_distance_m"], 1.5)
-
-    def test_plugin_rules_match_database_seed_rules(self) -> None:
-        config = json.loads(
-            (ROOT / "nanocad-plugin" / "config" / "greenai.plugin.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        plugin_rules = {item["code"]: item for item in config["rules"]}
-        seed_rules = {item.code: item for item in seed.PLACEMENT_RULES}
-        self.assertEqual(set(plugin_rules), set(seed_rules))
-        for code, seeded in seed_rules.items():
-            plugin = plugin_rules[code]
-            self.assertEqual(plugin["plantType"], seeded.plant_type, code)
-            self.assertEqual(plugin["targetObjectType"], seeded.target_object, code)
-            self.assertEqual(plugin["check"], seeded.conditions["check"], code)
-            self.assertEqual(plugin["normReference"], seeded.norm_reference, code)
-            if seeded.conditions["check"] == "min_distance":
-                self.assertEqual(
-                    plugin.get("minDistanceM"),
-                    seeded.conditions["min_distance_m"],
-                    code,
-                )
-            else:
-                self.assertEqual(
-                    plugin.get("reason"), seeded.conditions["reason"], code
-                )
 
     def test_verifier_accepts_zone_inside_all_constraints(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

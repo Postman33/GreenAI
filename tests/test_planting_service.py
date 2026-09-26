@@ -9,7 +9,7 @@ from pathlib import Path
 from shapely.geometry import Point, box, mapping, shape
 
 from tests import ROOT  # noqa: F401 - initializes import paths
-from src import planting_service
+from src.planting import service as planting_service
 
 
 def write_jsonl(path: Path, features: list[dict]) -> None:

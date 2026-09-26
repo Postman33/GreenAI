@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -63,7 +63,7 @@ echo "[4/12] Normalizing CAD geometry"
 python src/normalizer.py "$objects" --output "$normalized" --report "$normalization_report"
 
 echo "[5/12] Cleaning engineering utilities with ONNX models"
-python utility_detector/detector.py predict "$objects" \
+python -m src.detection.utilities.detector predict "$objects" \
   --model "$MODEL_DIR" \
   --output "$cleaned" \
   --review-output "$review_utilities" \
@@ -135,3 +135,4 @@ echo "Plant explanations: $plan"
 echo "Readable planting passports: $planting_explanations"
 echo "Point decisions: $decisions"
 echo "Verification: $verification"
+

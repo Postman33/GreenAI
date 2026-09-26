@@ -5,7 +5,7 @@ import unittest
 from shapely.geometry import LineString
 
 from tests import ROOT  # noqa: F401 - initializes script-module import paths
-from network_reconstructor import (
+from src.detection.network_reconstructor import (
     candidate_connector,
     default_rules,
     reconstruct_type,

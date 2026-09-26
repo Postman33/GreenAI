@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 from shapely.geometry import LineString, MultiLineString, Point, box, shape
 
 from tests import ROOT  # noqa: F401 - initializes script-module import paths
-from src import plant_allow_zone
+from src.rules import plant_allow_zone
 from tests.helpers import feature, write_jsonl
 
 

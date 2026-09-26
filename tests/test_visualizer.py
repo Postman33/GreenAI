@@ -7,7 +7,7 @@ from pathlib import Path
 
 from shapely.geometry import Point, Polygon, mapping
 
-from visualizer.prepare_scene import build_manifest, camera_records, scatter_points
+from src.visualization.prepare_scene import build_manifest, camera_records, scatter_points
 
 
 def write_features(path: Path, features: list[dict]) -> None:

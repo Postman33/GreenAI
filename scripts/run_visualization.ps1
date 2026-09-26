@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$PipelineOutput = ".\output\latest",
     [string]$VisualizationOutput = ".\output\visualization",
     [double]$FocusRadius = 60,
@@ -9,8 +9,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $python = Join-Path $PSScriptRoot "..\.venv\Scripts\python.exe"
-$prepare = Join-Path $PSScriptRoot "..\visualizer\prepare_scene.py"
-$render = Join-Path $PSScriptRoot "..\visualizer\render.py"
+$prepare = Join-Path $PSScriptRoot "..\src\visualization\prepare_scene.py"
+$render = Join-Path $PSScriptRoot "..\src\visualization\render.py"
 $scene = Join-Path $VisualizationOutput "scene.json"
 $preview = Join-Path $VisualizationOutput "scene_preview.png"
 $renders = Join-Path $VisualizationOutput "renders"
@@ -28,3 +28,4 @@ $arguments = @($render, $scene, "--output", $renders, "--quality", $Quality)
 if ($Blender) { $arguments += @("--blender", $Blender) }
 & $python @arguments
 exit $LASTEXITCODE
+

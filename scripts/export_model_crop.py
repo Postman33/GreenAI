@@ -16,14 +16,14 @@ WORKSPACE = Path(__file__).resolve().parents[1]
 if str(WORKSPACE) not in sys.path:
     sys.path.insert(0, str(WORKSPACE))
 
-from utility_detector.detector import (  # noqa: E402
+from src.detection.utilities.detector import (  # noqa: E402
     classify_onnx,
     line_parts,
     load_jsonl,
     write_debug_dxf,
     write_debug_png,
 )
-from utility_detector.onnx_model import load_bundle  # noqa: E402
+from src.detection.utilities.onnx_model import load_bundle  # noqa: E402
 
 
 def main() -> None:

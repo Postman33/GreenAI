@@ -15,14 +15,14 @@ WORKSPACE = Path(__file__).resolve().parents[1]
 if str(WORKSPACE) not in sys.path:
     sys.path.insert(0, str(WORKSPACE))
 
-from utility_detector.detector import (  # noqa: E402
+from src.detection.utilities.detector import (  # noqa: E402
     Primitive,
     classify_onnx,
     evaluate_classification,
     load_labeled_dxf,
     write_validation_debug_dxf,
 )
-from utility_detector.onnx_model import load_bundle as load_onnx_bundle  # noqa: E402
+from src.detection.utilities.onnx_model import load_bundle as load_onnx_bundle  # noqa: E402
 
 
 NETWORK_DIRECTORIES = {
