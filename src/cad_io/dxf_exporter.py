@@ -15,6 +15,7 @@ from shapely.ops import unary_union
 from shapely.validation import make_valid
 
 from ..geometry.parts import polygon_parts
+from .dxf_document import read_dxf_document, save_dxf_atomic
 
 
 Polygonal = Polygon | MultiPolygon
@@ -367,7 +368,7 @@ def export_zones(
         if insunits is not None:
             document.header["$INSUNITS"] = int(insunits)
     else:
-        document = ezdxf.readfile(input_dxf)
+        document = read_dxf_document(input_dxf, temporary_directory=output_dxf.parent)
     modelspace = document.modelspace()
     original_entity_count = len(modelspace)
     if show_analysis_layers is None:
@@ -506,29 +507,11 @@ def export_zones(
     if auditor.fixes:
         print(f"WARNING: DXF export repaired {len(auditor.fixes)} invalid source records")
 
-    candidates = [output_dxf]
-    if allow_version_fallback:
-        candidates.extend(
-            output_dxf.with_name(f"{output_dxf.stem}_v{version}{output_dxf.suffix}")
-            for version in range(2, 100)
-        )
-    actual_output = output_dxf
-    last_error: PermissionError | None = None
-    for candidate in candidates:
-        try:
-            document.saveas(candidate)
-            actual_output = candidate
-            if candidate != output_dxf:
-                print(
-                    f"WARNING: {output_dxf} is locked; "
-                    f"result DXF written to {candidate}"
-                )
-            break
-        except PermissionError as error:
-            last_error = error
-    else:
-        assert last_error is not None
-        raise last_error
+    actual_output = save_dxf_atomic(
+        document, output_dxf, allow_version_fallback=allow_version_fallback,
+    )
+    if actual_output != output_dxf:
+        print(f"WARNING: {output_dxf} is locked; result DXF written to {actual_output}")
     print(f"Original DXF: {input_dxf}")
     if overlay_only:
         print("Export mode: planting and road coordinate overlay")

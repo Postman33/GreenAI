@@ -207,6 +207,7 @@ def set_proposed_visible(target, visible):
 
 def render_scene(manifest_path: Path, output_dir: Path, quality: str,
                  camera_names: set[str] | None = None) -> None:
+    print("GreenAI: loading scene manifest", flush=True)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
@@ -228,6 +229,7 @@ def render_scene(manifest_path: Path, output_dir: Path, quality: str,
         "proposed_leaf": material("Proposed leaves", (0.10, 0.46, 0.055), 0.88),
         "shrub": material("Shrub leaves", (0.10, 0.33, 0.035), 0.93),
     }
+    print("GreenAI: building surfaces and vegetation", flush=True)
     radius = float(manifest["focus_radius_m"])
     ground = mesh_from_triangles("Ground", [[[-radius, -radius, 0], [radius, -radius, 0], [radius, radius, 0]],
                                                [[-radius, -radius, 0], [radius, radius, 0], [-radius, radius, 0]]],
@@ -271,6 +273,7 @@ def render_scene(manifest_path: Path, output_dir: Path, quality: str,
             set_proposed_visible(proposed, visible)
             suffix = "after" if visible else "before"
             scene.render.filepath = str(output_dir / f"{camera_data['name']}_{suffix}.png")
+            print(f"GreenAI: rendering {camera_data['name']}_{suffix}.png", flush=True)
             bpy.ops.render.render(write_still=True)
     set_proposed_visible(proposed, True)
     bpy.ops.wm.save_as_mainfile(filepath=str(output_dir / "greenai_scene.blend"))

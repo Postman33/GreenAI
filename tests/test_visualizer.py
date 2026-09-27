@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from PIL import Image
 
 from shapely.geometry import LineString, Point, Polygon, box, mapping
 
 from src.visualization.prepare_scene import (
     build_manifest, camera_records, choose_focuses, place_pedestrian_camera,
-    scatter_points, triangle_records,
+    context_buildings, frame_overview_camera, polygon_records, scatter_points, triangle_records,
 )
 from src.visualization.plant_prompt import after_prompt, scene_plant_summary
+from scripts import render_photorealistic_gallery as photos
 
 
 def write_features(path: Path, features: list[dict]) -> None:
@@ -19,6 +24,51 @@ def write_features(path: Path, features: list[dict]) -> None:
 
 
 class VisualizerTests(unittest.TestCase):
+    def test_building_context_uses_whole_footprints_across_work_boundary(self) -> None:
+        full = box(5, -20, 20, 20)
+        sliver = box(5, -10, 5.000001, 10)
+        result, audit = context_buildings({"building": full},
+                                         {"buildings_in_work_area": sliver}, box(-10, -10, 10, 10))
+        self.assertTrue(result.equals(full))
+        self.assertEqual(audit["source"], "normalized_building")
+        self.assertEqual(audit["whole_footprints"], 1)
+        self.assertEqual(audit["height_source"], "illustrative_default")
+
+    def test_building_context_does_not_extrude_degenerate_fallback(self) -> None:
+        sliver = box(0, 0, 0.000001, 10)
+        result, audit = context_buildings({}, {"buildings_in_work_area": sliver}, box(-20, -20, 20, 20))
+        self.assertTrue(result.is_empty)
+        self.assertEqual(audit["omitted_degenerate_footprints"], 1)
+
+    def test_small_building_has_explicit_illustrative_height(self) -> None:
+        small = polygon_records(box(0, 0, 5, 6), Point(0, 0), 12)[0]
+        large = polygon_records(box(0, 0, 20, 30), Point(0, 0), 12)[0]
+        self.assertEqual(small["height"], 3.0)
+        self.assertEqual(small["height_source"], "illustrative_small_footprint")
+        self.assertEqual(large["height"], 12)
+
+    def test_pedestrian_camera_separates_new_tree_crowns(self) -> None:
+        cameras = camera_records((1.0, 0.0), 45)
+        trees = [{"position": [x, 0], "crown_radius": 2} for x in (0, 6)]
+        place_pedestrian_camera(cameras, Point(0, 0), box(-40, -20, 40, -3),
+                                Polygon(), 45, proposed_trees=trees)
+        eye = Point(cameras[1]["position"][:2])
+        angles = [math.atan2(-eye.y, x - eye.x) for x in (0, 6)]
+        separation = abs(math.atan2(math.sin(angles[0] - angles[1]), math.cos(angles[0] - angles[1])))
+        widths = sum(math.atan2(2, eye.distance(Point(x, 0))) for x in (0, 6))
+        self.assertGreaterEqual(separation, widths)
+        self.assertEqual(cameras[1]["target"][:2], [3, 0])
+
+    def test_overview_camera_faces_bed_from_the_road_side(self) -> None:
+        cameras = camera_records((0, 1), 45)
+        frame_overview_camera(cameras, Point(0, 0), box(-17, -4, 17, 4),
+                              box(-50, -30, 50, -5), 45, [{"height": 5.5}])
+        camera = cameras[0]
+        self.assertLess(camera["position"][1], 0)
+        self.assertEqual(camera["target"][:2], [0, 0])
+        self.assertGreater(camera["lens_mm"], 0)
+        self.assertLessEqual(camera["lens_mm"], 55)
+
     def test_pedestrian_camera_moves_out_of_building_onto_visible_road(self) -> None:
         focus = Point(0, 0)
         cameras = camera_records((0.0, 1.0), 20)
@@ -142,6 +192,39 @@ class VisualizerTests(unittest.TestCase):
             self.assertIn("Газонная травосмесь", prompt)
             self.assertIn("continuous", prompt)
             self.assertIn(shrub["mask_color"], prompt)
+
+    def test_photo_pair_reuses_before_reference_and_cache_after_gallery_move(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            place = root / "place_01"
+            renders = place / "renders"
+            renders.mkdir(parents=True)
+            for name in ("overview_before", "overview_after", "overview_plant_mask"):
+                Image.new("RGB", (2, 2), "green").save(renders / f"{name}.png")
+            (place / "scene.json").write_text(json.dumps({
+                "plant_mask_legend": [{"plant_type": "tree", "species": "Липа мелколистная", "color": "#00BFFF"}],
+                "proposed_trees": [{"species": "Липа мелколистная"}],
+            }), encoding="utf-8")
+            index = root / "gallery_index.json"
+            index.write_text(json.dumps({"places": [{"id": "place_01", "scene": "old/scene.json", "renders": "old/renders"}]}), encoding="utf-8")
+            requests = []
+
+            def generate(**kwargs):
+                requests.append(kwargs)
+                output = kwargs["output_stem"].with_suffix(".png")
+                Image.new("RGB", (2, 2), "blue").save(output)
+                return output, 0.01
+
+            with patch("sys.argv", ["photos", "--gallery-index", str(index)]), \
+                    patch.object(photos, "load_api_key", return_value="test-placeholder"), \
+                    patch.object(photos, "generate_image", side_effect=generate):
+                photos.main()
+                photos.main()
+            self.assertEqual(len(requests), 2)
+            self.assertEqual(requests[1]["references"][:2],
+                             [renders / "overview_after.png", renders / "overview_plant_mask.png"])
+            self.assertEqual(requests[1]["references"][2], requests[0]["output_stem"].with_suffix(".png"))
+            self.assertIn("Reference 3", requests[1]["prompt"])
 
 
 if __name__ == "__main__":

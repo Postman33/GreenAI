@@ -11,10 +11,13 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from PIL import Image
+
 
 IMAGE_API = "https://openrouter.ai/api/v1/images"
 DEFAULT_MODEL = "openai/gpt-image-2"
 MIME_EXTENSIONS = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
+CONTENT_HASH_VERSION = 2
 
 
 def load_api_key(key_file: Path | None = None) -> str:
@@ -48,6 +51,25 @@ def image_reference(path: Path) -> dict:
 
 
 def content_hash(*paths: Path, prompt: str, model: str) -> str:
+    """Hash displayed pixels, ignoring Blender's Date and RenderTime PNG tags."""
+    digest = hashlib.sha256()
+    digest.update(json.dumps([CONTENT_HASH_VERSION, model, prompt], ensure_ascii=False).encode("utf-8"))
+    for path in paths:
+        with Image.open(path) as source:
+            pixels = source.convert("RGBA")
+            # Color-space and orientation metadata can change appearance;
+            # timestamps, file paths and encoder/compression settings cannot.
+            appearance = [pixels.size, source.getexif().get(274, 1),
+                          source.info.get("gamma"), source.info.get("srgb"),
+                          source.info.get("chromaticity")]
+            digest.update(json.dumps(appearance).encode("utf-8"))
+            digest.update(hashlib.sha256(source.info.get("icc_profile") or b"").digest())
+            digest.update(hashlib.sha256(pixels.tobytes()).digest())
+    return digest.hexdigest()
+
+
+def legacy_content_hash(*paths: Path, prompt: str, model: str) -> str:
+    """Read old cache records only when the original reference bytes still match."""
     digest = hashlib.sha256()
     digest.update(model.encode("utf-8"))
     digest.update(prompt.encode("utf-8"))

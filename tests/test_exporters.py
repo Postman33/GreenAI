@@ -4,9 +4,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import ezdxf
-from shapely.geometry import LineString, Point, Polygon, box, mapping
+from shapely.geometry import GeometryCollection, LineString, MultiLineString, MultiPoint, MultiPolygon, Point, Polygon, box, mapping
 
 from tests import ROOT  # noqa: F401 - initializes script-module import paths
 from src.cad_io import debug_export, dxf_exporter
@@ -15,6 +16,56 @@ from tests.helpers import feature, raw_hatch, write_jsonl
 
 
 class ExporterTests(unittest.TestCase):
+    def test_standalone_diagnostics_keep_context_and_units_without_loading_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "diagnostics.dxf"
+            with patch.object(plant_allow_zone_debug.ezdxf, "readfile",
+                              side_effect=AssertionError("Source DXF must not be loaded")):
+                plant_allow_zone_debug.export_dxf(
+                    output, box(0, 0, 20, 20), box(0, 0, 2, 20),
+                    box(0, 0, 2, 20), box(2, 0, 3, 20), LineString([(2, 0), (2, 20)]),
+                    {"building": box(15, 0, 20, 20),
+                     "clean_heat_pipe": LineString([(10, 0), (10, 20)]),
+                     "existing_tree": Point(5, 5)},
+                    {"shrub": box(3, 0, 9, 20)},
+                    rule_exclusions={"DEBUG_EXCL_SHRUB_HEAT_1": box(9, 0, 11, 20)},
+                    insunits=6,
+                )
+            document = ezdxf.readfile(output)
+            self.assertEqual(document.header["$INSUNITS"], 6)
+            self.assertFalse(document.audit().errors)
+            populated_layers = {entity.dxf.layer for entity in document.modelspace()}
+            self.assertTrue({
+                "DEBUG_WORK_BOUNDARY", "DEBUG_ROAD_AREA", "DEBUG_SIDEWALKS",
+                "DEBUG_BUILDINGS", "DEBUG_CLEAN_HEAT_PIPE", "DEBUG_EXISTING_TREES",
+                "DEBUG_ALLOW_SHRUB", "DEBUG_EXCL_SHRUB_HEAT_1",
+            }.issubset(populated_layers))
+
+    def test_filtered_rule_buffers_match_full_geometry_including_line_ends(self) -> None:
+        base = box(0, 0, 10, 10).difference(box(4, 4, 6, 6))
+        sources = [
+            MultiLineString([[(-100, -1), (100, -1)], [(20, 20), (30, 30)],
+                             [(2, 2), (2, 8)], [(11, -5), (11, 20)]]),
+            MultiPoint([(5, 5), (0, 0), (100, 100)]),
+            MultiPolygon([box(-3, -3, -1, -1), box(2, 2, 3, 3), box(100, 100, 110, 110)]),
+            GeometryCollection([LineString([(-20, 8), (20, 8)]), Point(100, 100)]),
+            LineString([(100, 100), (110, 110)]),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rules.json"
+            for radius in (0.0, 1.0, 2.0):
+                path.write_text(json.dumps({"plant_types": {"shrub": {"rules": [{
+                    "status": "applied", "buffer_distance_in_dxf_units": radius,
+                    "target_object_type": "heat_pipe", "rule_code": "SHRUB_HEAT",
+                }]}}}), encoding="utf-8")
+                for source in sources:
+                    layers = plant_allow_zone_debug.build_rule_exclusion_layers(
+                        path, base, {"heat_pipe": source})
+                    expected = plant_allow_zone_debug.as_polygonal(
+                        base.intersection(source.buffer(radius, quad_segs=8)))
+                    actual = layers.get("DEBUG_EXCL_SHRUB_HEAT", Polygon())
+                    self.assertLess(actual.symmetric_difference(expected).area, 1e-9)
+
     def test_diagnostic_export_accepts_drawing_without_reconstructed_road(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

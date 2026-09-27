@@ -20,6 +20,28 @@ from tests.helpers import feature, write_jsonl
 
 
 class ScriptTests(unittest.TestCase):
+    def test_manifest_section_filter_preserves_all_compared_records(self) -> None:
+        document = ezdxf.new("R2018")
+        document.layers.new("GREEN_AI_TEST", dxfattribs={"color": 3})
+        document.layers.get("GREEN_AI_TEST").off()
+        block = document.blocks.new("REFERENCE")
+        block.add_line((1, 2, 3), (4, 5, 6))
+        block.add_text("SECTION ENDSEC ENTITIES")
+        model = document.modelspace()
+        model.add_blockref("REFERENCE", (50, 70, 9))
+        model.add_polyline3d([(0, 1, 2), (3, 4, 5), (6, 7, 8)])
+        model.add_circle((9, 8, 7), 2, dxfattribs={"layer": "GREEN_AI_TEST"})
+        document.layout().add_text("Paper space")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.dxf"
+            document.saveas(path)
+            filtered = dxf_manifest.build_manifest(path)
+            with patch.object(dxf_manifest, "manifest_section_tags", dxf_manifest.ascii_tags_loader):
+                exhaustive = dxf_manifest.build_manifest(path)
+        self.assertEqual(filtered, exhaustive)
+        self.assertEqual(filtered["modelspace_entity_count"], 3)
+        self.assertTrue(filtered["green_ai_layer_states"]["GREEN_AI_TEST"]["is_off"])
+
     def test_manifest_treats_explicit_default_attribute_width_as_unchanged(self) -> None:
         document = ezdxf.new("R2018")
         block = document.blocks.new("LABEL")

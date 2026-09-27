@@ -41,7 +41,10 @@ param(
     [string]$PipelineMode = "auto",
 
     [Parameter(Mandatory = $false)]
-    [switch]$SkipDatabaseStart
+    [switch]$SkipDatabaseStart,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$ValidateOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -210,13 +213,22 @@ function Write-PipelineTimingReports {
     }
 }
 
+function Get-WorkspaceFullPath {
+    param([string]$Value)
+    # Windows PowerShell Join-Path appends even drive-qualified child paths.
+    $candidate = if ([IO.Path]::IsPathRooted($Value)) { $Value } else {
+        Join-Path $workspace $Value
+    }
+    return [IO.Path]::GetFullPath($candidate)
+}
+
 $workspace = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $python = Join-Path $workspace ".venv\Scripts\python.exe"
 $dockerComposeCommand = Get-Command docker-compose -ErrorAction SilentlyContinue
 $extractorDirectory = Join-Path $workspace ".gotmp"
 $extractor = Join-Path $extractorDirectory "dxf_extract_go.exe"
-$semanticConfigPath = (Resolve-Path -LiteralPath (Join-Path $workspace $SemanticConfig)).Path
-$surfaceConfigPath = (Resolve-Path -LiteralPath (Join-Path $workspace $SurfaceConfig)).Path
+$semanticConfigPath = (Resolve-Path -LiteralPath (Get-WorkspaceFullPath $SemanticConfig)).Path
+$surfaceConfigPath = (Resolve-Path -LiteralPath (Get-WorkspaceFullPath $SurfaceConfig)).Path
 $inputPath = if ([string]::IsNullOrWhiteSpace($InputDxf)) {
     $inputMatches = @(
         Get-ChildItem -LiteralPath $workspace -Filter "input_10001759_bound.dxf" -File -Recurse
@@ -250,20 +262,6 @@ $roadCorrectionsPath = if ([string]::IsNullOrWhiteSpace($RoadCorrections)) {
     (Resolve-Path -LiteralPath $candidate).Path
 }
 
-if (-not (Test-Path -LiteralPath $python)) {
-    throw "Python environment was not found: $python. Run scripts/install.ps1 first."
-}
-if (-not (Test-Path -LiteralPath $extractor)) {
-    $go = Get-Command go -ErrorAction SilentlyContinue
-    if (-not $go) {
-        throw "Go was not found. Install Go to build parser/dxf_extract_go."
-    }
-    New-Item -ItemType Directory -Path $extractorDirectory -Force | Out-Null
-    & $go.Source build -buildvcs=false -o $extractor (Join-Path $workspace "parser\dxf_extract_go")
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to build the Go DXF extractor."
-    }
-}
 if (
     [double]::IsNaN($DxfUnitsPerMeter) -or
     [double]::IsInfinity($DxfUnitsPerMeter) -or
@@ -292,11 +290,10 @@ if (-not [string]::IsNullOrWhiteSpace($PlantingRequest)) {
     }
 }
 
-$outputPath = [IO.Path]::GetFullPath((Join-Path $workspace $OutputDirectory))
+$outputPath = Get-WorkspaceFullPath $OutputDirectory
 if (-not $outputPath.StartsWith($workspace + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw "OutputDirectory must be inside the workspace: $workspace"
 }
-New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
 
 $objects = Join-Path $outputPath "extracted_objects.jsonl"
 $surfaces = Join-Path $outputPath "surface_candidates_raw.jsonl"
@@ -368,6 +365,37 @@ $plantingRequestPath = if ([string]::IsNullOrWhiteSpace($PlantingRequest)) {
     }
     (Resolve-Path -LiteralPath $requestCandidate).Path
 }
+
+if ($ValidateOnly) {
+    # Exercise the actual launcher's path and parameter validation without
+    # starting services, compiling tools, or writing pipeline artifacts.
+    return [pscustomobject][ordered]@{
+        input_dxf = $inputPath
+        output_directory = $outputPath
+        semantic_config = $semanticConfigPath
+        surface_config = $surfaceConfigPath
+        road_corrections = $roadCorrectionsPath
+        utility_detector_model = $detectorModelPath
+        planting_request = $plantingRequestPath
+        pipeline_mode = $PipelineMode
+    }
+}
+
+if (-not (Test-Path -LiteralPath $python)) {
+    throw "Python environment was not found: $python. Run scripts/install.ps1 first."
+}
+if (-not (Test-Path -LiteralPath $extractor)) {
+    $go = Get-Command go -ErrorAction SilentlyContinue
+    if (-not $go) {
+        throw "Go was not found. Install Go to build parser/dxf_extract_go."
+    }
+    New-Item -ItemType Directory -Path $extractorDirectory -Force | Out-Null
+    & $go.Source build -buildvcs=false -o $extractor (Join-Path $workspace "parser\dxf_extract_go")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to build the Go DXF extractor."
+    }
+}
+New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
 
 $unitsArgumentForCache = if ($PSBoundParameters.ContainsKey("DxfUnitsPerMeter")) {
     $DxfUnitsPerMeter.ToString("R", [Globalization.CultureInfo]::InvariantCulture)
@@ -710,7 +738,7 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "Planting plan generation failed" }
         }
 
-    Write-Host "[12b/16] Writing separate CAD diagnostic layers"
+    Write-Host "[12b/16] Writing standalone CAD diagnostics with roads, buildings and utilities"
     $debugArguments = @(
         "-m", "src.rules.plant_allow_zone_debug", $zones, $constraints, $normalized,
         "--dxf-output", $debugDxf,
@@ -727,8 +755,7 @@ try {
     } else {
         $debugArguments += @(
             "--png-output", $debugPng,
-            "--raw-objects", $objects,
-            "--base-dxf", $inputPath
+            "--raw-objects", $objects
         )
         $debugArtifacts += $debugPng
     }

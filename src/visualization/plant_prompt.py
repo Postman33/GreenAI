@@ -52,7 +52,7 @@ def scene_plant_summary(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
-def after_prompt(view: str, manifest: dict[str, Any]) -> str:
+def after_prompt(view: str, manifest: dict[str, Any], *, paired_before: bool = False) -> str:
     plants = scene_plant_summary(manifest)
     entries = []
     for plant in plants:
@@ -65,6 +65,14 @@ def after_prompt(view: str, manifest: dict[str, Any]) -> str:
         entries.append(f"{plant['color']} = {extent}, "
                        f"species {plant['species']}; {description}{climate}.")
     legend = " ".join(entries)
+    continuity = (
+        "Reference 3 is the photorealistic BEFORE image of this same camera. Match its "
+        "exposure, daylight, sky, paving textures and existing foliage. Keep existing buildings "
+        "and street furniture consistent between the pair. Reference 1 remains authoritative "
+        "for geometry: do not copy invented objects or geometry errors from reference 3. "
+        "Only the proposed planting should change between BEFORE and AFTER. "
+        if paired_before else ""
+    )
     return (
         f"Create a photorealistic AFTER photograph from exactly the same {view} camera. "
         "Reference 1 is the Blender AFTER view and is authoritative for every surface boundary, "
@@ -72,6 +80,7 @@ def after_prompt(view: str, manifest: dict[str, Any]) -> str:
         "green planted area in reference 1 into pavement or road. Reference 2 is the semantic "
         "PLANT MASK of that exact AFTER camera: black means no new "
         f"plant; the bright colors identify the specified proposed species. Mask legend: {legend} "
+        + continuity +
         "Every colored shrub area, especially the foreground bed, must remain densely planted. "
         "Use the mask to place only these exact species; convert its bright coding colors to "
         "natural foliage, never show the false colors. The proposed shrubs form a dense, "
@@ -79,5 +88,6 @@ def after_prompt(view: str, manifest: dict[str, Any]) -> str:
         "round balls or patchy mulch. Follow the same species and bed edges; retain gaps around "
         "utility covers and paths. Keep all trees individually located and correctly spaced. "
         "Show attractive but credible Moscow summer planting, natural textures and soft daylight. "
+        "Do not invent buildings, extend facades, add floors, or alter building silhouettes. "
         "Do not invent other plant species, extra plantings, roads, paths, people, cars, text or labels."
     )

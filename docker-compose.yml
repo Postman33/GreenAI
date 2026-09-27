@@ -34,7 +34,7 @@ services:
     profiles: ["pipeline"]
     environment:
       DATABASE_URL: postgresql://admin:admin@postgis:5432/admin
-      DXF_UNITS_PER_METER: ${DXF_UNITS_PER_METER:-1.0}
+      DXF_UNITS_PER_METER: ${DXF_UNITS_PER_METER:-}
     volumes:
       - ${GREENAI_DATA_DIR:-./docker-data}:/data
     depends_on:

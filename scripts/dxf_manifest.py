@@ -6,7 +6,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, TextIO
 
 from ezdxf.entities import factory
 from ezdxf.filemanagement import dxf_file_info
@@ -166,6 +166,31 @@ def entity_record(
     return record
 
 
+def manifest_section_tags(stream: TextIO) -> Iterable[Any]:
+    """Compile geometry only in the sections used by this manifest.
+
+    The existing manifest compares ENTITIES and reads layer/block-record
+    metadata from TABLES. Header metadata is read by dxf_file_info separately.
+    Other sections are still streamed, without compiling unused coordinates.
+    """
+    selected = False
+    section_name_next = False
+    for tag in ascii_tags_loader(stream):
+        if tag.code == 0 and tag.value == "SECTION":
+            section_name_next = True
+            selected = False
+            yield tag
+        elif section_name_next:
+            section_name_next = False
+            selected = tag.code == 2 and tag.value in {"ENTITIES", "TABLES"}
+            yield tag
+        elif tag.code == 0 and tag.value == "ENDSEC":
+            selected = False
+            yield tag
+        elif selected:
+            yield tag
+
+
 def build_manifest(path: Path) -> dict[str, Any]:
     info = dxf_file_info(path)
     entities: list[dict[str, Any]] = []
@@ -200,7 +225,7 @@ def build_manifest(path: Path) -> dict[str, Any]:
         current_tags = []
 
     with path.open("rt", encoding=info.encoding, errors="surrogateescape") as stream:
-        for tag in tag_compiler(ascii_tags_loader(stream)):
+        for tag in tag_compiler(manifest_section_tags(stream)):
             if pending_section:
                 pending_section = False
                 if tag.code == 2:

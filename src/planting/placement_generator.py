@@ -13,10 +13,11 @@ import argparse
 import json
 import math
 from collections import defaultdict
+from itertools import chain
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-from shapely import from_geojson
+from shapely import from_geojson, intersects_xy
 from shapely.geometry import GeometryCollection, MultiPoint, MultiPolygon, Point, Polygon, mapping, shape
 from shapely.ops import unary_union
 from shapely.prepared import prep
@@ -125,16 +126,31 @@ def grid_candidates(
     max_v = max(value[1] for value in projections) + row_step
     row = 0
     v = min_v + phase_y * row_step
+
+    def covered_points(coordinates: list[tuple[float, float]]) -> Iterator[tuple[float, float]]:
+        if coordinates:
+            inside = intersects_xy(prepared.context,
+                                   [x for x, _y in coordinates],
+                                   [y for _x, y in coordinates])
+            for candidate, covered in zip(coordinates, inside):
+                if covered:
+                    yield candidate
+
     while v <= max_v + 1e-9:
         row_offset = 0.0 if row % 2 == 0 else spacing / 2.0
         u = min_u + phase_x * spacing + row_offset
+        row_points: list[tuple[float, float]] = []
         while u <= max_u + 1e-9:
             x = center_x + u * cos_angle - v * sin_angle
             y = center_y + u * sin_angle + v * cos_angle
-            point = Point(x, y)
-            if prepared.covers(point):
-                yield x, y
+            row_points.append((x, y))
             u += spacing
+            # Bound memory and retain lazy generation for very long rows.
+            if len(row_points) == 256:
+                yield from covered_points(row_points)
+                row_points.clear()
+        # Preserve arithmetic, ordering and inclusion of boundary points.
+        yield from covered_points(row_points)
         v += row_step
         row += 1
 
@@ -146,14 +162,14 @@ def required_spacing(first: PlantingProfile, second: PlantingProfile) -> float:
     return max(first.avoid_other_plantings_m, second.avoid_other_plantings_m, footprint_spacing)
 
 
-def pack_candidates(
-    candidates: Iterable[tuple[float, float]],
+SpacingGrid = tuple[float, dict[tuple[int, int], list[tuple[PlantingProfile, float, float]]]]
+
+
+def _occupied_grid(
     profile: PlantingProfile,
     profiles: dict[str, PlantingProfile],
     occupied: list[tuple[str, float, float]],
-    max_count: int,
-    audit: list[dict[str, Any]] | None = None,
-) -> list[tuple[float, float]]:
+) -> SpacingGrid:
     maximum_spacing = max(
         required_spacing(profile, other)
         for other in profiles.values()
@@ -161,12 +177,26 @@ def pack_candidates(
     cell_size = max(maximum_spacing, 0.001)
     grid: dict[tuple[int, int], list[tuple[PlantingProfile, float, float]]] = defaultdict(list)
 
-    def add(item_profile: PlantingProfile, x: float, y: float) -> None:
-        grid[(math.floor(x / cell_size), math.floor(y / cell_size))].append((item_profile, x, y))
-
     for key, x, y in occupied:
         if key in profiles:
-            add(profiles[key], x, y)
+            grid[(math.floor(x / cell_size), math.floor(y / cell_size))].append((profiles[key], x, y))
+    return cell_size, grid
+
+
+def pack_candidates(
+    candidates: Iterable[tuple[float, float]],
+    profile: PlantingProfile,
+    profiles: dict[str, PlantingProfile],
+    occupied: list[tuple[str, float, float]],
+    max_count: int,
+    audit: list[dict[str, Any]] | None = None,
+    *,
+    occupied_grid: SpacingGrid | None = None,
+) -> list[tuple[float, float]]:
+    cell_size, existing = occupied_grid if occupied_grid is not None else _occupied_grid(profile, profiles, occupied)
+    # Existing neighbours are shared by all variants. New placements remain
+    # local to this variant; preserve existing-before-new conflict ordering.
+    added: dict[tuple[int, int], list[tuple[PlantingProfile, float, float]]] = defaultdict(list)
     accepted: list[tuple[float, float]] = []
     for x, y in candidates:
         if len(accepted) >= max_count:
@@ -178,7 +208,8 @@ def pack_candidates(
         conflict: tuple[PlantingProfile, float, float, float] | None = None
         for offset_x in (-1, 0, 1):
             for offset_y in (-1, 0, 1):
-                for other_profile, other_x, other_y in grid.get((cell_x + offset_x, cell_y + offset_y), []):
+                cell = (cell_x + offset_x, cell_y + offset_y)
+                for other_profile, other_x, other_y in chain(existing.get(cell, ()), added.get(cell, ())):
                     distance = required_spacing(profile, other_profile)
                     if (x - other_x) ** 2 + (y - other_y) ** 2 + 1e-9 < distance ** 2:
                         conflict = (other_profile, other_x, other_y, distance)
@@ -197,7 +228,7 @@ def pack_candidates(
                               "required_distance": required})
             continue
         accepted.append((x, y))
-        add(profile, x, y)
+        added[(cell_x, cell_y)].append((profile, x, y))
     return accepted
 
 
@@ -213,6 +244,7 @@ def best_component_layout(
     winner: dict[str, Any] | None = None
     winner_angle: float | None = None
     variants: list[dict[str, Any]] = []
+    occupied_grid = _occupied_grid(profile, profiles, occupied)
     phases = (0.0, 0.25, 0.5, 0.75)
     for angle_index in range(6):
         angle = angle_index * math.pi / 18.0
@@ -224,6 +256,7 @@ def best_component_layout(
                     profiles,
                     occupied,
                     max_count,
+                    occupied_grid=occupied_grid,
                 )
                 variant = {"angle_deg": round(math.degrees(angle), 3),
                            "phase_x": phase_x, "phase_y": phase_y,
@@ -242,6 +275,7 @@ def best_component_layout(
                                 winner_angle,
                                 winner["phase_x"], winner["phase_y"]),
                 profile, profiles, occupied, max_count, rejected,
+                occupied_grid=occupied_grid,
             )
             if replay != best:
                 raise ValueError("Layout audit replay differs from selected hex-grid layout")
@@ -322,6 +356,7 @@ def best_linear_layout(
     cos_angle, sin_angle = math.cos(angle), math.sin(angle)
     variants: list[tuple[list[tuple[float, float]], int, int, float, float, float]] = []
     empty_phases: list[tuple[float, float]] = []
+    occupied_grid = _occupied_grid(profile, profiles, occupied)
     for phase_u in (0.0, 0.25, 0.5, 0.75):
         for phase_v in (0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875):
             packed = pack_candidates(
@@ -330,6 +365,7 @@ def best_linear_layout(
                 profiles,
                 occupied,
                 max_count,
+                occupied_grid=occupied_grid,
             )
             if not packed:
                 empty_phases.append((phase_u, phase_v))
@@ -370,6 +406,7 @@ def best_linear_layout(
         replay = pack_candidates(
             linear_grid_candidates(scope, frame, profile.spacing_m, winner[4], winner[5]),
             profile, profiles, occupied, max_count, rejected,
+            occupied_grid=occupied_grid,
         )
         if replay != winner[0]:
             raise ValueError("Layout audit replay differs from selected linear layout")

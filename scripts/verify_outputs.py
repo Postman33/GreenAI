@@ -13,6 +13,8 @@ from itertools import combinations
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+from shapely import distance
 from shapely.geometry import GeometryCollection, shape
 from shapely.ops import unary_union
 from shapely.strtree import STRtree
@@ -105,6 +107,39 @@ def one(
     if len(matches) != 1:
         raise ValueError(f"Expected one {object_type!r} feature, got {len(matches)}")
     return matches[0]
+
+
+def count_same_type_spacing_failures(items: list[tuple[dict[str, Any], Any]]) -> int:
+    """Count each violating pair once, including coincident and unequal-size plants."""
+    if len(items) < 2:
+        return 0
+    points = np.asarray([point for _properties, point in items], dtype=object)
+    units = np.asarray([float(p.get("dxf_units_per_meter", 1.0)) for p, _ in items])
+    spacing = np.asarray([float(p.get("spacing_m", 0.0)) for p, _ in items]) * units
+    radii = np.asarray([float(p.get("footprint_radius_m", 0.0)) for p, _ in items]) * units
+    if not np.isfinite(spacing).all() or not np.isfinite(radii).all():
+        # Retain the exhaustive check's behaviour for malformed metadata;
+        # non-finite thresholds cannot be used to prune spatial candidates.
+        return int(sum(points[i].distance(points[j]) + 1e-7 < max(
+            spacing[i], spacing[j], radii[i] + radii[j]
+        ) for i in range(len(points)) for j in range(i + 1, len(points))))
+    tree = STRtree(points)
+    max_spacing, max_radius = float(spacing.max()), float(radii.max())
+    failures = 0
+    for index, point in enumerate(points):
+        # Any violating neighbour must be within this upper bound, even when
+        # its spacing or crown is larger than the current plant's parameters.
+        search_radius = max(float(spacing[index]), max_spacing, float(radii[index]) + max_radius)
+        if search_radius <= 0:
+            continue
+        neighbours = tree.query(point, predicate="dwithin", distance=search_radius)
+        neighbours = neighbours[neighbours > index]
+        if not len(neighbours):
+            continue
+        required = np.maximum(np.maximum(spacing[index], spacing[neighbours]),
+                              radii[index] + radii[neighbours])
+        failures += int(np.count_nonzero(distance(point, points[neighbours]) + 1e-7 < required))
+    return failures
 
 
 def main() -> None:
@@ -450,21 +485,8 @@ def main() -> None:
             elif plant_type != "herbaceous":
                 area_failures += 1
             areas_by_type.setdefault(plant_type, []).append(geometry)
-        for plant_type, items in points_by_type.items():
-            for index, (properties, point) in enumerate(items):
-                required = float(properties.get("spacing_m", 0.0)) * float(
-                    properties.get("dxf_units_per_meter", 1.0)
-                )
-                for other_properties, other in items[index + 1:]:
-                    other_units = float(other_properties.get("dxf_units_per_meter", 1.0))
-                    pair_required = max(
-                        required,
-                        float(other_properties.get("spacing_m", 0.0)) * other_units,
-                        float(properties.get("footprint_radius_m", 0.0)) * float(properties.get("dxf_units_per_meter", 1.0))
-                        + float(other_properties.get("footprint_radius_m", 0.0)) * other_units,
-                    )
-                    if point.distance(other) + 1e-7 < pair_required:
-                        spacing_failures += 1
+        for items in points_by_type.values():
+            spacing_failures += count_same_type_spacing_failures(items)
         for left_type, right_type in combinations(sorted(points_by_type), 2):
             left_items = points_by_type[left_type]
             right_items = points_by_type[right_type]

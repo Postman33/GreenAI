@@ -28,7 +28,7 @@ from shapely.ops import unary_union
 from shapely.validation import make_valid
 
 
-SCENE_VERSION = 2
+SCENE_VERSION = 3
 
 PLANT_MASK_COLORS = {
     "tree": ("#00BFFF", "#2979FF", "#00E5FF", "#7C4DFF"),
@@ -210,10 +210,39 @@ def polygon_records(geometry: Any, origin: Point, height: float) -> list[dict[st
         records.append(
             {
                 "exterior": [local_xy(x, y, origin) for x, y, *_ in polygon.exterior.coords],
-                "height": height,
+                "height": 3.0 if polygon.area < 100.0 else height,
+                "height_source": "illustrative_small_footprint" if polygon.area < 100.0 else "illustrative_default",
             }
         )
     return records
+
+
+def context_buildings(normalized: dict[str, Any], constraints: dict[str, Any],
+                      clip: Polygon) -> tuple[Any, dict[str, Any]]:
+    """Select whole nearby footprints; a work-boundary intersection is not a building."""
+    source = normalized.get("building")
+    source_name = "normalized_building"
+    if source is None or source.is_empty:
+        source = constraints.get("buildings_in_work_area")
+        source_name = "buildings_in_work_area_fallback"
+    selected = []
+    rejected = 0
+    for polygon in polygon_parts(source):
+        if not polygon.intersects(clip):
+            continue
+        # Avoid extruding numerical slivers into tall facade panels. These
+        # thresholds only affect the illustration, never planting constraints.
+        if polygon.area < 1.0 or 2.0 * polygon.area / max(polygon.length, 1e-9) < 0.10:
+            rejected += 1
+            continue
+        selected.append(polygon)
+    return unary_union(selected), {
+        "source": source_name, "whole_footprints": len(selected),
+        "omitted_degenerate_footprints": rejected,
+        "height_m": 12.0, "small_footprint_height_m": 3.0,
+        "small_footprint_max_area_m2": 100.0,
+        "height_source": "illustrative_default",
+    }
 
 
 def deterministic_fraction(*values: Any) -> float:
@@ -276,7 +305,8 @@ def camera_records(axis: tuple[float, float], radius: float) -> list[dict[str, A
 
 def place_pedestrian_camera(cameras: list[dict[str, Any]], focus: Point,
                             road: Any, buildings: Any, radius: float,
-                            existing_trees: Iterable[Point] = ()) -> None:
+                            existing_trees: Iterable[Point] = (),
+                            proposed_trees: Iterable[dict[str, Any]] = ()) -> None:
     """Move the eye onto a road with an unobstructed view of the planting focus."""
     if road.is_empty:
         next(item for item in cameras if item["name"] == "pedestrian")["placement"] = "unverified_no_road"
@@ -290,6 +320,9 @@ def place_pedestrian_camera(cameras: list[dict[str, Any]], focus: Point,
         safe_road = road
     building_clearance = buildings.buffer(0.5) if not buildings.is_empty else buildings
     tree_points = list(existing_trees)
+    proposed = [(Point(focus.x + tree["position"][0], focus.y + tree["position"][1]),
+                 float(tree["crown_radius"])) for tree in proposed_trees]
+    target = MultiPoint([point for point, _ in proposed]).centroid if proposed else focus
     step = radius / 10.0
     candidates: list[tuple[float, Point]] = []
     for ix in range(-9, 10):
@@ -302,20 +335,71 @@ def place_pedestrian_camera(cameras: list[dict[str, Any]], focus: Point,
                 continue
             if any(point.distance(tree) < 4.0 for tree in tree_points):
                 continue
-            sightline = LineString([point, focus])
+            sightline = LineString([point, target])
             if not building_clearance.is_empty and sightline.intersects(building_clearance):
                 continue
             occluding_trees = sum(sightline.distance(tree) < 2.5
                                   for tree in tree_points if tree.distance(focus) > 3.0)
-            score = (point.distance(desired) + 0.18 * abs(distance - radius * 0.60)
-                     + occluding_trees * radius * 0.8)
+            # A view along the row hides the second new tree behind the first.
+            # Score projected crown overlap, not just the distance to the eye.
+            crowns = [(math.atan2(tree.y - point.y, tree.x - point.x),
+                       math.atan2(crown_radius, max(point.distance(tree), 0.01)))
+                      for tree, crown_radius in proposed]
+            overlap = 0.0
+            for index, (angle, width) in enumerate(crowns):
+                for other_angle, other_width in crowns[index + 1:]:
+                    separation = abs(math.atan2(math.sin(angle - other_angle),
+                                                math.cos(angle - other_angle)))
+                    overlap += max(0.0, 1.0 - separation / (width + other_width))
+            score = (0.25 * point.distance(desired) + 0.35 * abs(distance - radius * 0.60)
+                     + occluding_trees * radius * 0.8 + overlap * radius * 3.0)
             candidates.append((score, point))
     if not candidates:
         return
     point = min(candidates, key=lambda item: item[0])[1]
     camera["position"] = [point.x - focus.x, point.y - focus.y, 1.7]
-    camera["target"] = [0.0, 0.0, 2.4]
+    camera["target"] = [target.x - focus.x, target.y - focus.y, 2.0]
+    camera["lens_mm"] = 40.0
     camera["placement"] = "road_with_clear_view"
+
+
+def frame_overview_camera(cameras: list[dict[str, Any]], focus: Point,
+                          base: Any, road: Any, radius: float,
+                          proposed_trees: list[dict[str, Any]]) -> None:
+    """Frame the planted bed from its road side, with space above the crowns."""
+    parts = list(polygon_parts(base))
+    if not parts:
+        return
+    bed = min(parts, key=lambda polygon: polygon.distance(focus))
+    centre = bed.centroid
+    ux, uy = principal_axis(bed, [])
+    nx, ny = -uy, ux
+    candidates = [Point(centre.x - ux * radius * 0.25 + sign * nx * radius * 0.85,
+                        centre.y - uy * radius * 0.25 + sign * ny * radius * 0.85)
+                  for sign in (-1, 1)]
+    eye = max(candidates, key=lambda point: road.intersection(point.buffer(radius * 0.30)).area)
+    target = np.array([centre.x - focus.x, centre.y - focus.y, 1.8])
+    position = np.array([eye.x - focus.x, eye.y - focus.y, radius * 0.65])
+    forward = target - position
+    forward /= np.linalg.norm(forward)
+    right = np.cross(forward, [0.0, 0.0, 1.0])
+    right /= np.linalg.norm(right)
+    up = np.cross(right, forward)
+    # Fit the full bed and the crowns above it into a 16:9 sensor, including
+    # depth perspective and a margin, rather than using one fixed focal length.
+    height = max([tree["height"] for tree in proposed_trees] + [2.0]) + 1.0
+    corners = [np.array([x - focus.x, y - focus.y, z])
+               for x, y, *_ in bed.minimum_rotated_rectangle.exterior.coords
+               for z in (0.0, height)]
+    widths = [abs(np.dot(corner - position, right)) / max(np.dot(corner - position, forward), 0.1)
+              for corner in corners]
+    heights = [abs(np.dot(corner - position, up)) / max(np.dot(corner - position, forward), 0.1)
+               for corner in corners]
+    lens = min(36.0 / (2 * max(max(widths), 0.01)),
+               20.25 / (2 * max(max(heights), 0.01))) / 1.15
+    camera = next(item for item in cameras if item["name"] == "overview")
+    camera.update(position=position.tolist(), target=target.tolist(),
+                  lens_mm=min(55.0, lens), placement="road_side_bed_frame")
 
 
 def build_manifest(
@@ -344,7 +428,7 @@ def build_manifest(
 
     road = clipped(constraints.get("road_area"))
     sidewalk = clipped(constraints.get("sidewalk_area"))
-    buildings = clipped(constraints.get("buildings_in_work_area"))
+    buildings, building_context = context_buildings(normalized, constraints, clip)
     hard = clipped(constraints.get("hard_surface_area"))
     wells = clipped(constraints.get("utility_well_footprints"))
     base = clipped(constraints.get("base_allowed_area"))
@@ -422,8 +506,9 @@ def build_manifest(
                              "triangles": triangles, "proposed": True})
 
     cameras = camera_records(axis, focus_radius_m)
+    frame_overview_camera(cameras, focus, base, road, focus_radius_m, proposed_trees)
     place_pedestrian_camera(cameras, focus, road, buildings, focus_radius_m,
-                            existing_tree_points)
+                            existing_tree_points, proposed_trees)
     visible_species = {("tree", item["species"]) for item in proposed_trees}
     visible_species.update(("shrub", item["species"]) for item in proposed_shrubs)
     if shrub_points and fallback_shrub:
@@ -444,6 +529,7 @@ def build_manifest(
                               if (item["plant_type"], item["species"]) in visible_species],
         "surfaces": surfaces,
         "buildings": polygon_records(buildings, focus, 12.0),
+        "building_context": building_context,
         "proposed_trees": proposed_trees,
         "existing_trees": [
             {

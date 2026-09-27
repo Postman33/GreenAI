@@ -18,6 +18,13 @@ The preparation stage works without Blender and creates `scene.json` and
 `scene_preview.png`.  Rendering requires Blender. It can be located through
 `PATH`, `BLENDER_EXE`, or the `-Blender` parameter.
 
+Blender starts with factory settings in the background. Its output is written
+to `renders/blender_render.log`; the launcher prints progress every 15 seconds.
+A stalled renderer is stopped after 180 seconds, while the completed DXF and
+PDF remain available. For a large scene the direct renderer accepts
+`--timeout-seconds` to increase this limit. These settings apply to newly
+started renderers.
+
 For the current pipeline output, for example:
 
 ```powershell
@@ -75,6 +82,16 @@ transforms. For a given camera, only the proposed-planting collection is
 switched between the two renders; the camera and existing surroundings stay
 fixed.
 
+The overview camera frames the planted bed from the road side. The pedestrian
+camera favours views where proposed tree crowns do not obscure one another.
+Building context comes from whole normalized footprints, including the parts
+outside the work boundary. Near-zero-area fragments are excluded from the 3D
+illustration. This does not change planting constraints. Building heights remain
+illustrative: footprints smaller than 100 m² use 3 m; larger ones use 12 m.
+`scene.json` records these assumptions under `building_context` and each
+building's `height_source`. Terrain outside extracted surfaces is a schematic
+ground plane; it does not reconstruct the surrounding city or its relief.
+
 Append one comparison sheet per place to the atlas:
 
 ```powershell
@@ -110,12 +127,33 @@ cost in `place_XX/photorealistic/generation_report.json`. Existing successful
 images are reused. The AFTER prompt is generated from `scene.json`: it names the
 actual proposed species, checks hardiness against the project catalog when an
 exact entry exists, and explains the Blender color-mask legend. It asks for a
-continuous mature shrub mass. The AFTER request uses the Blender AFTER view and
-plant mask as references; the BEFORE request uses the Blender BEFORE view. This
-keeps the proposed geometry more influential than an AI interpretation of the
-earlier photograph. The cost limit stops *subsequent* requests based on reported
+continuous mature shrub mass. The AFTER request uses the Blender AFTER view,
+plant mask and matching BEFORE photograph as references. The Blender view
+defines geometry; the BEFORE photograph supplies lighting and material
+continuity. The BEFORE request uses the Blender BEFORE view. The prompt forbids
+inventing buildings or changing their silhouettes, but image generation can
+still introduce inconsistencies: inspect both photographs before presenting
+the pair. A moved gallery uses its local scene and renders even if the index
+still contains paths to its previous location. The cost limit stops *subsequent* requests based on reported
 usage; it cannot guarantee a hard cap on a request already in flight. Use
 `--views both --max-images 4` for both camera angles. These images are
 presentation visuals; their exact boundaries and species appearance remain
 conceptual, so validate placement against the Blender render and DXF. Old
 galleries without `*_plant_mask.png` must be rerendered first.
+
+The photo cache compares decoded pixels, prompts, model and color-space
+metadata. Blender's PNG timestamps and render duration do not invalidate it.
+An actual reference change creates a new file with a hash suffix; previous
+photos and their costs remain in `generation_report.json`. Its `current_images`
+mapping identifies the matching versions used by the latest invocation.
+Legacy records can migrate without another request only when their original
+reference bytes still match. Otherwise one regeneration is required because
+the older report did not store a pixel fingerprint.
+
+The expense ledger includes all previous versions in the selected places.
+At the cost or image-count limit, the script saves `photorealistic_status.json`
+beside `gallery_index.json` and returns code 2. The interactive launcher reports
+this as a paused photo stage; the planting DXF and PDF remain ready. The budget
+does not reset on a cache miss. To explicitly authorize additional spending,
+rerun only `render_photorealistic_gallery.py` with a larger **cumulative**
+`--max-cost-usd`; there is no need to recalculate planting or rerender Blender.

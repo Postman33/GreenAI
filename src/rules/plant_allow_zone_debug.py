@@ -10,12 +10,14 @@ from typing import Any, Iterable
 
 import ezdxf
 import matplotlib
+import numpy as np
 
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+from shapely import STRtree, get_parts
 from shapely.geometry import (
     GeometryCollection,
     LineString,
@@ -33,6 +35,7 @@ from shapely.validation import make_valid
 from ..geometry.parts import polygon_parts
 
 from ..geometry.constraint_builder import as_polygonal, read_object_geometry
+from ..cad_io.dxf_document import read_dxf_document, save_dxf_atomic
 from ..cad_io.dxf_exporter import (
     GREEN_AI_APPID,
     add_zone_polygon,
@@ -208,6 +211,8 @@ def build_rule_exclusion_layers(
     """
     report = json.loads(report_path.read_text(encoding="utf-8"))
     result: dict[str, Polygonal] = {}
+    source_indexes: dict[str, tuple[Any, STRtree]] = {}
+    base_parts = get_parts(base_allowed_area)
     for plant_report in report.get("plant_types", {}).values():
         for rule in plant_report.get("rules", []):
             if rule.get("status") != "applied":
@@ -221,7 +226,25 @@ def build_rule_exclusion_layers(
                 source = available_geometries.get(target)
             if source is None or source.is_empty:
                 continue
-            exclusion = source.buffer(float(distance), quad_segs=8)
+            buffer_source = source
+            # Apply pruning to utility linework only. Rebuilding mixed building
+            # geometry can change tiny holes during GEOS buffer repair.
+            if (float(distance) > 0 and target in RAW_UTILITY_CONTEXT_TYPES
+                    and source.geom_type in {"MultiLineString", "MultiPoint"}):
+                if target not in source_indexes:
+                    parts = get_parts(source)
+                    source_indexes[target] = (parts, STRtree(parts))
+                parts, tree = source_indexes[target]
+                nearby = np.unique(tree.query(
+                    base_parts, predicate="dwithin", distance=float(distance) + 1e-7
+                )[1])
+                if not len(nearby):
+                    continue
+                if len(nearby) < len(parts):
+                    # Keep complete primitives: clipping a line before buffering
+                    # could introduce artificial ends near the planting area.
+                    buffer_source = type(source)(list(parts[nearby]))
+            exclusion = buffer_source.buffer(float(distance), quad_segs=8)
             removed = as_polygonal(make_valid(base_allowed_area.intersection(exclusion)))
             if not removed.is_empty:
                 safe_code = re.sub(r"[^A-Z0-9_]+", "_", str(rule.get("rule_code", target)).upper())
@@ -449,8 +472,10 @@ def export_dxf(
     active_rule_targets: set[str] | None = None,
     insunits: int | None = None,
 ) -> Path:
+    if base_dxf_path is not None and output_path.resolve() == base_dxf_path.resolve():
+        raise ValueError("Diagnostic DXF must differ from the original input DXF")
     document = (
-        ezdxf.readfile(base_dxf_path)
+        read_dxf_document(base_dxf_path, temporary_directory=output_path.parent)
         if base_dxf_path is not None
         else ezdxf.new("R2018")
     )
@@ -746,26 +771,10 @@ def export_dxf(
     for layer in layer_colors:
         if layer not in visible_layers:
             document.layers.get(layer).off()
-    candidates = [output_path, *(
-        output_path.with_name(
-            f"{output_path.stem}_v{version}{output_path.suffix}"
-        )
-        for version in range(2, 100)
-    )]
-    last_error: PermissionError | None = None
-    for candidate in candidates:
-        try:
-            document.saveas(candidate)
-            if candidate != output_path:
-                print(
-                    f"WARNING: {output_path} is locked; "
-                    f"debug DXF written to {candidate}"
-                )
-            return candidate
-        except PermissionError as error:
-            last_error = error
-    assert last_error is not None
-    raise last_error
+    actual_output = save_dxf_atomic(document, output_path, allow_version_fallback=True)
+    if actual_output != output_path:
+        print(f"WARNING: {output_path} is locked; debug DXF written to {actual_output}")
+    return actual_output
 
 
 def draw_context(

@@ -23,6 +23,7 @@ from shapely.validation import make_valid
 
 from ..domain.models import PlantingProfile, PlantingSelection
 from .design import STYLE_CONTRACTS, alley_layout, free_group_layout, hedge_coverage, flowerbed_patches
+from .spatial import PlantingPointIndex
 from .placement_generator import (
     best_component_layout,
     best_linear_layout,
@@ -410,17 +411,23 @@ def _spacing_check(
     profiles: dict[str, PlantingProfile],
     occupied: list[tuple[str, float, float]],
     units: float,
+    occupied_index: PlantingPointIndex | None = None,
 ) -> dict[str, Any]:
     nearest_actual: float | None = None
     nearest_required: float | None = None
     nearest_type: str | None = None
     worst_violation: tuple[float, float, str] | None = None
     passed = True
-    for other_type, x, y in occupied:
+    neighbours = (
+        occupied_index.nearest_by_profile(point)
+        if occupied_index is not None
+        else ((key, point.distance(Point(x, y))) for key, x, y in occupied)
+    )
+    for other_type, distance in neighbours:
         other = profiles.get(other_type)
         if other is None:
             continue
-        actual = point.distance(Point(x, y)) / units
+        actual = distance / units
         required = required_spacing(profile, other)
         if nearest_actual is None or actual < nearest_actual:
             nearest_actual, nearest_required, nearest_type = actual, required, other_type
@@ -460,6 +467,7 @@ def _point_decision(
     profiles: dict[str, PlantingProfile],
     occupied: list[tuple[str, float, float]],
     geometry_cache: dict[str, Any | None] | None = None,
+    occupied_index: PlantingPointIndex | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     checks = build_checks(
         point,
@@ -490,7 +498,7 @@ def _point_decision(
                 ),
             },
         )
-    checks.append(_spacing_check(point, profile, profiles, occupied, units))
+    checks.append(_spacing_check(point, profile, profiles, occupied, units, occupied_index))
     if any(item["status"] == "failed" for item in checks):
         return "rejected", checks
     if any(item["status"] == "manual_review" for item in checks):
@@ -706,17 +714,22 @@ def _diagnostic_candidate_points(
     # Extend locally visible rows in both directions.  This produces the
     # intuitive "why is there no third tree here?" candidates.
     for index, first in enumerate(accepted_points):
+        assert accepted_tree is not None
         neighbours = sorted(
             (
-                (first.distance(second), second)
-                for second in accepted_points[index + 1 :]
-                if 0.75 * spacing_dxf <= first.distance(second) <= 1.25 * spacing_dxf
+                (actual, int(other_index))
+                for other_index in accepted_tree.query(
+                    first, predicate="dwithin", distance=1.25 * spacing_dxf
+                )
+                if other_index > index
+                for actual in [first.distance(accepted_points[int(other_index)])]
+                if 0.75 * spacing_dxf <= actual <= 1.25 * spacing_dxf
             ),
-            key=lambda item: item[0],
         )
         if not neighbours:
             continue
-        distance, second = neighbours[0]
+        distance, second_index = neighbours[0]
+        second = accepted_points[second_index]
         dx = (second.x - first.x) / distance * spacing_dxf
         dy = (second.y - first.y) / distance * spacing_dxf
         add(Point(first.x - dx, first.y - dy))
@@ -935,6 +948,7 @@ def plan(
     if layout_trace_path is None:
         layout_trace_path = output_path.with_name("planting_layout_trace.jsonl")
     occupied: list[tuple[str, float, float]] = []
+    occupied_index = PlantingPointIndex()
     counters: Counter[str] = Counter()
     diagnostic_counters: Counter[str] = Counter()
     summary: dict[str, Any] = {}
@@ -1080,6 +1094,7 @@ def plan(
                 point_profiles,
                 occupied,
                 rule_geometry_cache,
+                occupied_index,
             )
             decisions.append(_decision_feature(candidate_id, point, selection, status, checks,
                                                layout_trace_id=trace_id,
@@ -1092,6 +1107,7 @@ def plan(
                                            units, layout_style, trace_id, species_choice))
             layout_style_counts[layout_style] += 1
             occupied.append((selection.request_id, point.x, point.y))
+            occupied_index.add(selection.request_id, point)
             accepted_selection_points.append(point)
 
         diagnostic_rejected_count = 0
@@ -1116,6 +1132,7 @@ def plan(
                     point_profiles,
                     occupied,
                     rule_geometry_cache,
+                    occupied_index,
                 )
                 scope_checks = _scope_diagnostic_checks(
                     point,
