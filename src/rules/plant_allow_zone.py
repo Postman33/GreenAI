@@ -351,6 +351,10 @@ def apply_rules(
                 target_type, "normalized_raw_geometry"
             ),
         }
+        # Preserve the normative threshold even when the source geometry is
+        # missing or unsuitable for an automatic distance measurement.
+        if check == "min_distance":
+            evaluation["min_distance_m"] = validate_distance_rule(rule)
         source_metadata = (geometry_metadata or {}).get(target_type)
         if source_metadata:
             evaluation["source_geometry_metadata"] = source_metadata

@@ -526,6 +526,7 @@ def _point_feature(
             "species": profile.species,
             "status": status,
             "spacing_m": profile.spacing_m,
+            "avoid_other_plantings_m": profile.avoid_other_plantings_m,
             "footprint_radius_m": profile.footprint_radius_m,
             "symbol_radius_m": profile.symbol_radius_m,
             "coordinate_reference": "local_dxf_coordinates",

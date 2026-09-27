@@ -23,10 +23,8 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
 
 COPY src ./src
 COPY scripts ./scripts
-COPY utility_cleaner ./utility_cleaner
-COPY utility_detector ./utility_detector
+COPY config ./config
 COPY models/utility_detector/latest ./models/utility_detector/latest
-COPY nanocad-plugin/config/greenai.plugin.json ./nanocad-plugin/config/greenai.plugin.json
 COPY --from=go-builder /out/dxf_extract_go /usr/local/bin/dxf_extract_go
 
 RUN chmod +x /app/scripts/run_pipeline.sh /usr/local/bin/dxf_extract_go \

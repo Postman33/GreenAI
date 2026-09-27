@@ -196,6 +196,12 @@ class ScriptTests(unittest.TestCase):
         )
         self.assertEqual(tree_gas_rule.conditions["check"], "min_distance")
         self.assertEqual(tree_gas_rule.conditions["min_distance_m"], 1.5)
+        cable_rules = {
+            rule.code: rule for rule in seed.PLACEMENT_RULES
+            if rule.target_object == "power_cable"
+        }
+        self.assertEqual(cable_rules["TREE_POWER_CABLE_2"].conditions["min_distance_m"], 2.0)
+        self.assertEqual(cable_rules["SHRUB_POWER_CABLE_0_75"].conditions["min_distance_m"], 0.75)
 
     def test_verifier_accepts_zone_inside_all_constraints(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -282,6 +288,35 @@ class ScriptTests(unittest.TestCase):
             data = json.loads(report.read_text(encoding="utf-8"))
             self.assertEqual(data["status"], "passed")
             self.assertEqual(data["checks"][0]["road_overlap_area"], 0)
+
+    def test_verifier_rejects_explicit_road_fallback_when_report_is_supplied(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            constraints, zones = self.write_minimal_verifier_inputs(root)
+            constraint_report = root / "constraint_report.json"
+            verification = root / "verification.json"
+            constraint_report.write_text(
+                json.dumps({
+                    "road_reconstruction": {
+                        "status": "explicit_surface_fallback",
+                        "method": "explicit_surface_only",
+                        "reason": "Road reconstruction produced an implausible area ratio",
+                    }
+                }),
+                encoding="utf-8",
+            )
+            with patch.object(sys, "argv", [
+                "verify_outputs.py", str(constraints), str(zones),
+                "--constraint-report", str(constraint_report),
+                "--output", str(verification),
+            ]):
+                with self.assertRaises(SystemExit):
+                    verify_outputs.main()
+            data = json.loads(verification.read_text(encoding="utf-8"))
+            self.assertEqual(data["status"], "failed")
+            self.assertEqual(data["road_quality"]["status"], "explicit_surface_fallback")
+            self.assertTrue(any("Road reconstruction is not confirmed" in item
+                                for item in data["failures"]))
 
     def test_verifier_rejects_unconfirmed_dxf_scale(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -441,6 +476,43 @@ class ScriptTests(unittest.TestCase):
             self.assertGreater(
                 data["planting_plan_checks"]["same_type_area_overlap"], 0
             )
+
+    def test_verifier_rejects_cross_type_point_spacing_violation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            constraints, zones = self.write_minimal_verifier_inputs(
+                root, box(1, 1, 8, 8)
+            )
+            shrub_zone = json.loads(zones.read_text(encoding="utf-8").strip())
+            tree_zone = json.loads(json.dumps(shrub_zone))
+            tree_zone["properties"]["plant_type"] = "tree"
+            write_jsonl(zones, [shrub_zone, tree_zone])
+            checks = [{
+                "code": "ALLOWED_ZONE",
+                "status": "passed",
+                "norm_reference": "СП 42.13330.2026, таблица 6.3",
+                "explanation": "Inside zone",
+            }]
+            plan = root / "plan.jsonl"
+            write_jsonl(plan, [
+                feature("proposed_planting", Point(4, 4),
+                        planting_id="T-1", plant_type="tree", status="accepted",
+                        footprint_radius_m=0.5, avoid_other_plantings_m=2.0,
+                        dxf_units_per_meter=1.0, spacing_m=1.0, checks=checks),
+                feature("proposed_planting", Point(4.5, 4),
+                        planting_id="S-1", plant_type="shrub", status="accepted",
+                        footprint_radius_m=0.2, avoid_other_plantings_m=0.0,
+                        dxf_units_per_meter=1.0, spacing_m=1.0, checks=checks),
+            ])
+            report = root / "verification.json"
+            with patch.object(sys, "argv", [
+                "verify_outputs.py", str(constraints), str(zones),
+                "--planting-plan", str(plan), "--output", str(report),
+            ]):
+                with self.assertRaises(SystemExit):
+                    verify_outputs.main()
+            data = json.loads(report.read_text(encoding="utf-8"))
+            self.assertEqual(data["planting_plan_checks"]["cross_type_spacing_failure_count"], 1)
 
     def test_verifier_checks_dxf_content_and_planting_ids(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -15,6 +15,11 @@ __pycache__/
 *.original
 *.exe
 output/
+!output/
+output/*
+!output/pdf/
+output/pdf/*
+!output/pdf/GreenAI_documentation.pdf
 output_*/
 config/openai.env
 archive/

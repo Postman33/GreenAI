@@ -30,6 +30,8 @@ review_utilities="$OUTPUT_DIR/review_utility_graphics.geojsonl"
 rejected_utilities="$OUTPUT_DIR/rejected_utility_graphics.geojsonl"
 cleaning_report="$OUTPUT_DIR/utility_cleaning_report.json"
 reconstructed="$OUTPUT_DIR/reconstructed_utilities.geojsonl"
+overhead_review="$OUTPUT_DIR/overhead_power_review.geojsonl"
+overhead_report="$OUTPUT_DIR/overhead_power_reconstruction_report.json"
 inferred_connections="$OUTPUT_DIR/inferred_utility_connections.geojsonl"
 review_connections="$OUTPUT_DIR/review_utility_connections.geojsonl"
 reconstruction_report="$OUTPUT_DIR/network_reconstruction_report.json"
@@ -64,7 +66,7 @@ echo "[3/14] Extracting surface candidates"
 "$EXTRACTOR" --config src/core/surface_inspector_config.yaml --output "$surfaces" "$INPUT_DXF"
 
 echo "[4/14] Normalizing CAD geometry"
-python src/normalizer.py "$objects" --output "$normalized" --report "$normalization_report"
+python -m src.geometry.normalizer "$objects" --output "$normalized" --report "$normalization_report"
 
 echo "[5/14] Cleaning engineering utilities with ONNX models"
 python -m src.detection.utilities.detector predict "$objects" \
@@ -75,20 +77,37 @@ python -m src.detection.utilities.detector predict "$objects" \
   --report "$cleaning_report"
 
 echo "[6/14] Reconstructing utility gaps"
-python src/network_reconstructor.py "$cleaned" \
+python -m src.detection.network_reconstructor "$cleaned" \
   --output "$reconstructed" \
   --inferred-output "$inferred_connections" \
   --review-output "$review_connections" \
   --report "$reconstruction_report" \
   --dxf-units-per-meter "$DXF_UNITS_PER_METER"
 
+echo "[6b/14] Reconstructing overhead power-line hypotheses"
+python -m src.detection.overhead_power_reconstructor "$INPUT_DXF" \
+  --objects "$objects" \
+  --base-utilities "$reconstructed" \
+  --output "$reconstructed" \
+  --review-output "$overhead_review" \
+  --report "$overhead_report" \
+  --dxf-units-per-meter "$DXF_UNITS_PER_METER"
+
 echo "[7/14] Building physical constraints"
-python src/constraint_builder.py "$normalized" "$surfaces" \
-  --output "$constraints" --report "$constraint_report" \
+constraint_args=(
+  -m src.geometry.constraint_builder "$normalized" "$surfaces"
+  --output "$constraints" --report "$constraint_report"
   --unit-metadata "$unit_report"
+  --reconstructed-utilities "$reconstructed"
+)
+road_corrections="$ROOT/src/core/road_corrections/$(basename "${INPUT_DXF%.*}").geojson"
+if [[ -f "$road_corrections" ]]; then
+  constraint_args+=(--road-corrections "$road_corrections")
+fi
+python "${constraint_args[@]}"
 
 echo "[8/14] Applying normative plant rules"
-DATABASE_URL="$DATABASE_URL" python src/plant_allow_zone.py "$constraints" "$normalized" \
+DATABASE_URL="$DATABASE_URL" python -m src.rules.plant_allow_zone "$constraints" "$normalized" \
   --output "$zones" \
   --report "$zone_report" \
   --utility-geometries "$reconstructed" \
@@ -97,14 +116,15 @@ DATABASE_URL="$DATABASE_URL" python src/plant_allow_zone.py "$constraints" "$nor
 
 echo "[9/14] Verifying calculated allow zones"
 python scripts/verify_outputs.py "$constraints" "$zones" \
+  --constraint-report "$constraint_report" \
   --zone-report "$zone_report" \
   --output "$OUTPUT_DIR/zone_verification_report.json"
 
 echo "[10/14] Generating concrete planting plan"
 planting_args=(
-  src/planting_service.py "$zones" "$zone_report" "$normalized" "$constraints"
+  -m src.planting.service "$zones" "$zone_report" "$normalized" "$constraints"
   --utilities "$reconstructed"
-  --config nanocad-plugin/config/greenai.plugin.json
+  --config config/planting.json
   --output "$plan"
   --decisions-output "$decisions"
   --report "$plan_report"
@@ -119,7 +139,7 @@ fi
 python "${planting_args[@]}"
 
 echo "[11/14] Exporting dedicated result layers to DXF"
-python src/dxf_exporter.py "$INPUT_DXF" "$zones" \
+python -m src.cad_io.dxf_exporter "$INPUT_DXF" "$zones" \
   --constraint-map "$constraints" \
   --planting-plan "$plan" \
   --output "$result" \
@@ -128,6 +148,7 @@ python src/dxf_exporter.py "$INPUT_DXF" "$zones" \
 echo "[12/14] Verifying plan and source-DXF preservation"
 python scripts/verify_outputs.py "$constraints" "$zones" \
   --planting-plan "$plan" \
+  --constraint-report "$constraint_report" \
   --zone-report "$zone_report" \
   --plan-report "$plan_report" \
   --input-dxf "$INPUT_DXF" \

@@ -632,6 +632,7 @@ try {
     Invoke-TimedPipelineStage -Id "11" -Name "Calculated-zone verification" `
         -Artifacts @($zoneVerificationReport) -Action {
             & $python .\scripts\verify_outputs.py $constraints $zones `
+                --constraint-report $constraintReport `
                 --zone-report $zoneReport `
                 --output $zoneVerificationReport
             if ($LASTEXITCODE -ne 0) { throw "Spatial verification failed" }
@@ -756,6 +757,7 @@ try {
             -Artifacts @($verificationReport) -Action {
                 & $python .\scripts\verify_outputs.py $constraints $zones `
                     --planting-plan $plantingPlan `
+                    --constraint-report $constraintReport `
                     --zone-report $zoneReport `
                     --plan-report $plantingPlanReport `
                     --output $verificationReport
@@ -778,6 +780,7 @@ try {
             -Artifacts @($verificationReport) -Action {
                 & $python .\scripts\verify_outputs.py $constraints $zones `
                     --planting-plan $plantingPlan `
+                    --constraint-report $constraintReport `
                     --zone-report $zoneReport `
                     --plan-report $plantingPlanReport `
                     --input-dxf $inputPath `

@@ -104,6 +104,31 @@ class PlantAllowZoneTests(unittest.TestCase):
         self.assertAlmostEqual(allowed.area, 100.0)
         self.assertEqual(evaluations[0]["status"], "manual_review")
         self.assertEqual(len(warnings), 1)
+        self.assertEqual(evaluations[0]["min_distance_m"], 2.0)
+
+    def test_power_cable_rule_excludes_cleaned_geometry(self) -> None:
+        allowed, evaluations, warnings = plant_allow_zone.apply_rules(
+            "tree",
+            box(0, 0, 10, 10),
+            {"power_cable": LineString([(5, 0), (5, 10)])},
+            [rule("TREE_POWER_CABLE_2", "power_cable", 2.0)],
+            1.0,
+            {},
+            {"power_cable": "reconstructed_high_confidence_geometry"},
+        )
+        self.assertAlmostEqual(allowed.area, 60.0, places=5)
+        self.assertEqual(evaluations[0]["status"], "applied")
+        self.assertEqual(evaluations[0]["min_distance_m"], 2.0)
+        self.assertEqual(warnings, [])
+
+    def test_missing_geometry_keeps_required_distance_for_explanation(self) -> None:
+        allowed, evaluations, _warnings = plant_allow_zone.apply_rules(
+            "tree", box(0, 0, 10, 10), {},
+            [rule("TREE_GAS_1_5", "gas_pipe", 1.5)], 1.0, {}, {},
+        )
+        self.assertAlmostEqual(allowed.area, 100.0)
+        self.assertEqual(evaluations[0]["status"], "unavailable")
+        self.assertEqual(evaluations[0]["min_distance_m"], 1.5)
 
     def test_reconstructed_gap_is_used_by_distance_rule(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

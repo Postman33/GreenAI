@@ -15,6 +15,7 @@ from typing import Any
 
 from shapely.geometry import GeometryCollection, shape
 from shapely.ops import unary_union
+from shapely.strtree import STRtree
 
 
 AREA_TOLERANCE = 1e-4
@@ -112,11 +113,36 @@ def main() -> None:
     parser.add_argument("plant_zones", type=Path)
     parser.add_argument("--planting-plan", type=Path)
     parser.add_argument("--zone-report", type=Path)
+    parser.add_argument("--constraint-report", type=Path)
     parser.add_argument("--plan-report", type=Path)
     parser.add_argument("--input-dxf", type=Path)
     parser.add_argument("--output-dxf", type=Path)
     parser.add_argument("--output", type=Path, default=Path("verification_report.json"))
     args = parser.parse_args()
+
+    road_quality: dict[str, Any] | None = None
+    road_quality_failure: str | None = None
+    if args.constraint_report is not None:
+        constraint_report = json.loads(
+            args.constraint_report.read_text(encoding="utf-8-sig")
+        )
+        reconstruction = constraint_report.get("road_reconstruction") or {}
+        status = str(reconstruction.get("status") or "unavailable")
+        road_quality = {
+            "constraint_report": str(args.constraint_report),
+            "status": status,
+            "method": reconstruction.get("method"),
+            "reason": reconstruction.get("reason"),
+            "requires_visual_confirmation": bool(
+                reconstruction.get("requires_visual_confirmation", False)
+            ),
+        }
+        if status != "reconstructed":
+            road_quality_failure = (
+                "Road reconstruction is not confirmed: "
+                f"{status}; {reconstruction.get('reason') or 'no reconstructed road geometry'}. "
+                "Only explicit road surfaces may have been excluded."
+            )
 
     constraints = read_by_object_type(args.constraint_map)
     zones = read_by_object_type(args.plant_zones)
@@ -156,6 +182,8 @@ def main() -> None:
 
     checks: list[dict[str, Any]] = []
     failures: list[str] = []
+    if road_quality_failure is not None:
+        failures.append(road_quality_failure)
     for properties, geometry in zones.get("plant_allow_zone", []):
         plant_type = properties.get("plant_type", "unknown")
         outside_base = geometry.difference(base).area
@@ -326,6 +354,7 @@ def main() -> None:
         missing_explanations = 0
         outside_zone_area = 0.0
         spacing_failures = 0
+        cross_type_spacing_failures = 0
         measured_distance_failures = 0
         status_mismatches = 0
         manual_review_count = 0
@@ -436,6 +465,36 @@ def main() -> None:
                     )
                     if point.distance(other) + 1e-7 < pair_required:
                         spacing_failures += 1
+        for left_type, right_type in combinations(sorted(points_by_type), 2):
+            left_items = points_by_type[left_type]
+            right_items = points_by_type[right_type]
+            right_points = [point for _properties, point in right_items]
+            right_tree = STRtree(right_points)
+            right_max = max(
+                (
+                    max(
+                        float(properties.get("avoid_other_plantings_m", 0.0)),
+                        float(properties.get("footprint_radius_m", 0.0)),
+                    ) * float(properties.get("dxf_units_per_meter", 1.0))
+                    for properties, _point in right_items
+                ),
+                default=0.0,
+            )
+            for properties, point in left_items:
+                units = float(properties.get("dxf_units_per_meter", 1.0))
+                left_avoid = float(properties.get("avoid_other_plantings_m", 0.0)) * units
+                left_radius = float(properties.get("footprint_radius_m", 0.0)) * units
+                search_radius = max(left_avoid, left_radius + right_max, right_max)
+                for right_index in right_tree.query(point.buffer(search_radius)):
+                    other_properties, other = right_items[int(right_index)]
+                    other_units = float(other_properties.get("dxf_units_per_meter", 1.0))
+                    pair_required = max(
+                        left_avoid,
+                        float(other_properties.get("avoid_other_plantings_m", 0.0)) * other_units,
+                        left_radius + float(other_properties.get("footprint_radius_m", 0.0)) * other_units,
+                    )
+                    if point.distance(other) + 1e-7 < pair_required:
+                        cross_type_spacing_failures += 1
         area_unions: dict[str, Any] = {}
         for plant_type, geometries in areas_by_type.items():
             merged = unary_union(geometries)
@@ -470,6 +529,7 @@ def main() -> None:
             "missing_explanation_count": missing_explanations,
             "footprint_outside_allow_zone_area": outside_zone_area,
             "same_type_spacing_failure_count": spacing_failures,
+            "cross_type_spacing_failure_count": cross_type_spacing_failures,
             "measured_distance_failure_count": measured_distance_failures,
             "status_mismatch_count": status_mismatches,
             "manual_review_count": manual_review_count,
@@ -503,6 +563,8 @@ def main() -> None:
             failures.append("One or more complete planting footprints leave their allow zone")
         if spacing_failures:
             failures.append(f"Planting plan has {spacing_failures} same-type spacing violations")
+        if cross_type_spacing_failures:
+            failures.append(f"Planting plan has {cross_type_spacing_failures} cross-type spacing violations")
         if measured_distance_failures:
             failures.append(
                 f"Planting plan has {measured_distance_failures} passed checks with an insufficient measured distance"
@@ -858,6 +920,7 @@ def main() -> None:
         "area_tolerance": AREA_TOLERANCE,
         "status": "passed" if not failures else "failed",
         "checks": checks,
+        "road_quality": road_quality,
         "provenance_checks": provenance_checks,
         "planting_plan_checks": plan_checks,
         "dxf_checks": dxf_checks,

@@ -265,10 +265,12 @@ PLACEMENT_RULES = (
     # этапа очистки инженерных сетей. Сырые CAD-слои для buffer не используются.
     distance_rule("TREE_HEAT_2", "tree", "heat_pipe", 2.0),
     distance_rule("TREE_WATER_2", "tree", "water_pipe", 2.0),
+    distance_rule("TREE_POWER_CABLE_2", "tree", "power_cable", 2.0),
     distance_rule("SHRUB_BUILDING_1_5", "shrub", "building", 1.5),
     distance_rule("SHRUB_SIDEWALK_0_5", "shrub", "sidewalk", 0.5),
     distance_rule("SHRUB_ROAD_EDGE_1", "shrub", "road_edge", 1.0),
     distance_rule("SHRUB_HEAT_1", "shrub", "heat_pipe", 1.0),
+    distance_rule("SHRUB_POWER_CABLE_0_75", "shrub", "power_cable", 0.75),
 )
 
 # Legacy rows remain in existing databases until seed.py is run again. The
@@ -277,10 +279,8 @@ PLACEMENT_RULES = (
 RETIRED_MANUAL_RULE_CODES = (
     "TREE_SEWER_1_5",
     "TREE_DRAINAGE_2",
-    "TREE_POWER_CABLE_2",
     "TREE_TELECOM_MANUAL",
     "TREE_OVERHEAD_POWER_MANUAL",
-    "SHRUB_POWER_CABLE_0_75",
     "SHRUB_GAS_MANUAL",
     "SHRUB_SEWER_MANUAL",
     "SHRUB_WATER_MANUAL",
