@@ -24,6 +24,9 @@ param(
     [string]$PlantingRequest = "",
 
     [Parameter(Mandatory = $false)]
+    [string]$ExistingShrubSurvey = "",
+
+    [Parameter(Mandatory = $false)]
     [ValidateSet("balanced_mixed", "dense_mixed", "tree_lawn", "trees_only", "shrub_lawn", "shrubs_only", "lawn_only", "alley", "hedge", "shrub_mass", "free_group", "mixed_flowerbed")]
     [string]$PlantingPreset = "dense_mixed",
 
@@ -365,6 +368,16 @@ $plantingRequestPath = if ([string]::IsNullOrWhiteSpace($PlantingRequest)) {
     }
     (Resolve-Path -LiteralPath $requestCandidate).Path
 }
+$existingShrubSurveyPath = if ([string]::IsNullOrWhiteSpace($ExistingShrubSurvey)) {
+    $null
+} else {
+    $surveyCandidate = if ([IO.Path]::IsPathRooted($ExistingShrubSurvey)) {
+        $ExistingShrubSurvey
+    } else {
+        Join-Path $workspace $ExistingShrubSurvey
+    }
+    (Resolve-Path -LiteralPath $surveyCandidate).Path
+}
 
 if ($ValidateOnly) {
     # Exercise the actual launcher's path and parameter validation without
@@ -377,6 +390,7 @@ if ($ValidateOnly) {
         road_corrections = $roadCorrectionsPath
         utility_detector_model = $detectorModelPath
         planting_request = $plantingRequestPath
+        existing_shrub_survey = $existingShrubSurveyPath
         pipeline_mode = $PipelineMode
     }
 }
@@ -460,6 +474,7 @@ $resultDxf = if ($actualPipelineMode -in @("fast", "lean")) { $overlayDxf } else
     requested_dxf_units_per_meter = $DxfUnitsPerMeter
     utility_detector_model = $detectorModelPath
     planting_request = $plantingRequestPath
+    existing_shrub_survey = $existingShrubSurveyPath
     planting_preset = if ($null -eq $plantingRequestPath) { $PlantingPreset } else { $null }
     tree_spacing_m = if ($TreeSpacingM -gt 0) { $TreeSpacingM } else { $null }
     tree_max_count = if ($TreeMaxCount -gt 0) { $TreeMaxCount } else { $null }
@@ -644,6 +659,12 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "Constraint building failed" }
         }
 
+    Write-Host "[9b/16] Updating the plant catalog and normative rules"
+    Invoke-TimedPipelineStage -Id "09b" -Name "Normative rule seed" -Action {
+        & $python .\scripts\seed.py
+        if ($LASTEXITCODE -ne 0) { throw "Normative rule seed failed" }
+    }
+
     Write-Host "[10/16] Applying plant rules to reconstructed utility geometry"
     Invoke-TimedPipelineStage -Id "10" -Name "Plant allow-zone calculation" `
         -Artifacts @($zones, $zoneReport) -Action {
@@ -727,6 +748,9 @@ try {
             $plantingArguments += @("--tree-max-count", $TreeMaxCount)
         }
     }
+    if ($null -ne $existingShrubSurveyPath) {
+        $plantingArguments += @("--existing-shrub-survey", $existingShrubSurveyPath)
+    }
     if ($DiagnosticRejectedMaxCount -ge 0) {
         $plantingArguments += @(
             "--diagnostic-rejected-max-count", $DiagnosticRejectedMaxCount
@@ -772,6 +796,7 @@ try {
                 & $python -m src.cad_io.dxf_exporter $inputPath $zones `
                     --constraint-map $constraints `
                     --planting-plan $plantingPlan `
+                    --composition-report $plantingPlanReport `
                     --output $resultDxf `
                     --overlay-only `
                     --insunits ([int]$unitMetadata.insert_units_code) `
@@ -797,6 +822,7 @@ try {
                 & $python -m src.cad_io.dxf_exporter $inputPath $zones `
                     --constraint-map $constraints `
                     --planting-plan $plantingPlan `
+                    --composition-report $plantingPlanReport `
                     --output $resultDxf `
                     --strict-output
                 if ($LASTEXITCODE -ne 0) { throw "Final DXF export failed" }

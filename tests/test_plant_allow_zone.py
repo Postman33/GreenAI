@@ -36,6 +36,44 @@ def manual_rule(code: str, target: str) -> dict:
 
 
 class PlantAllowZoneTests(unittest.TestCase):
+    def test_heat_protection_uses_pipe_and_full_chamber_without_consent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            constraints = root / "constraints.jsonl"
+            normalized = root / "normalized.jsonl"
+            utilities = root / "utilities.jsonl"
+            output = root / "zones.jsonl"
+            report = root / "report.json"
+            write_jsonl(constraints, [
+                feature("base_allowed_area", box(0, 0, 20, 20)),
+                feature("heat_chamber_full_footprints", box(2, 2, 4, 4)),
+            ])
+            write_jsonl(normalized, [feature("work_boundary", box(0, 0, 20, 20))])
+            write_jsonl(utilities, [feature(
+                "heat_pipe", LineString([(10, 0), (10, 20)]),
+                decision="accepted", status="cleaned",
+            )])
+            one_metre = rule("SHRUB_HEAT_1", "heat_pipe", 1.0)
+            three_metres = rule("SHRUB_HEAT_PROTECTION_3", "heat_pipe", 3.0)
+            for item in (one_metre, three_metres):
+                item["plant_type"] = "shrub"
+            with patch.object(
+                plant_allow_zone, "load_rules",
+                return_value={"shrub": [one_metre, three_metres]},
+            ), patch.object(plant_allow_zone, "load_plants", return_value={}):
+                plant_allow_zone.build_plant_allow_zones(
+                    constraints, normalized, output, report, "unused",
+                    {"shrub"}, 1.0, utilities,
+                )
+            zone = shape(json.loads(output.read_text(encoding="utf-8"))["geometry"])
+            self.assertFalse(zone.covers(Point(12, 10)))  # 2 m from line: consent needed
+            self.assertFalse(zone.covers(Point(5.5, 3)))  # 1.5 m from chamber
+            self.assertTrue(zone.covers(Point(14, 10)))
+            self.assertTrue(zone.covers(Point(2, 10)))
+            evaluations = json.loads(report.read_text(encoding="utf-8"))["plant_types"]["shrub"]["rules"]
+            self.assertEqual([item["status"] for item in evaluations], ["applied", "applied"])
+            self.assertIn("full_heat_chambers", evaluations[1]["geometry_source"])
+
     def test_load_rules_ignores_legacy_manual_rows(self) -> None:
         connection = MagicMock()
         connection.__enter__.return_value = connection

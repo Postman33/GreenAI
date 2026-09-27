@@ -355,6 +355,53 @@ class ExporterTests(unittest.TestCase):
             )
             self.assertNotIn("GREEN_AI_ZONE_TREE", result.layers)
 
+    def test_composition_removal_proposals_are_separate_review_layers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.dxf"
+            zones = root / "zones.jsonl"
+            plan = root / "plan.geojsonl"
+            report = root / "plan_report.json"
+            output = root / "overlay.dxf"
+            original = ezdxf.new("R2018")
+            original.modelspace().add_circle((10, 10), 1, dxfattribs={"layer": "SOURCE_TREE"})
+            original.saveas(source)
+            write_jsonl(zones, [feature("plant_allow_zone", box(0, 0, 30, 30), plant_type="tree")])
+            write_jsonl(plan, [feature("proposed_planting", Point(20, 20),
+                                       planting_id="T-1", plant_type="tree", species="Tree",
+                                       status="accepted", symbol_radius_m=2,
+                                       dxf_units_per_meter=1)])
+            report.write_text(json.dumps({"dxf_units_per_meter": 1,
+                                          "composition_advisories": [
+                {"plant_type": "tree", "existing_tree_id": "tree-1",
+                 "recommendation": "propose_removal_from_composition",
+                 "coordinates": [10, 10], "reason": "Blocks a grove"},
+                {"plant_type": "shrub", "existing_shrub_id": "shrub-1",
+                 "recommendation": "propose_removal_from_composition",
+                 "coordinates": [15, 15], "reason": "Blocks a shrub mass"},
+            ]}), encoding="utf-8")
+            dxf_exporter.export_zones(source, zones, output, 0.65,
+                                      planting_plan_path=plan,
+                                      composition_report_path=report)
+            result = ezdxf.readfile(output)
+            self.assertEqual(len(result.modelspace().query('CIRCLE[layer=="SOURCE_TREE"]')), 1)
+            self.assertEqual(len(result.modelspace().query('CIRCLE[layer=="GREEN_AI_REMOVE_TREE_REVIEW"]')), 1)
+            self.assertEqual(len(result.modelspace().query('CIRCLE[layer=="GREEN_AI_REMOVE_SHRUB_REVIEW"]')), 1)
+            marker = result.modelspace().query('CIRCLE[layer=="GREEN_AI_REMOVE_TREE_REVIEW"]')[0]
+            self.assertIn("id=tree-1", [value for code, value in marker.get_xdata("GREEN_AI")
+                                        if code == 1000])
+            self.assertFalse(result.audit().errors)
+
+            overlay = root / "overlay_only.dxf"
+            dxf_exporter.export_zones(source, zones, overlay, 0.65,
+                                      planting_plan_path=plan,
+                                      composition_report_path=report,
+                                      overlay_only=True, insunits=6)
+            only = ezdxf.readfile(overlay)
+            self.assertEqual(len(only.modelspace().query('CIRCLE[layer=="SOURCE_TREE"]')), 0)
+            self.assertEqual(len(only.modelspace().query('CIRCLE[layer=="GREEN_AI_REMOVE_TREE_REVIEW"]')), 1)
+            self.assertFalse(only.audit().errors)
+
     def test_planting_area_keeps_hatch_hole_without_visible_inner_outline(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -426,6 +473,14 @@ class ExporterTests(unittest.TestCase):
             result = ezdxf.readfile(actual)
             self.assertTrue(result.layers.get("DEBUG_WATER_PIPE").is_off())
             self.assertFalse(result.layers.get("DEBUG_EXISTING_TREES").is_off())
+            self.assertEqual(result.layers.get("DEBUG_EXISTING_TREES").color, 6)
+            entities = list(result.modelspace())
+            tree_symbols = [entity for entity in entities if entity.dxf.layer == "DEBUG_EXISTING_TREES"]
+            self.assertEqual(len(tree_symbols), 3)
+            redraw_order = dict(result.modelspace().get_redraw_order())
+            self.assertTrue(all(redraw_order[entity.dxf.handle] == "0" for entity in tree_symbols))
+            last_hatch = max(index for index, entity in enumerate(entities) if entity.dxftype() == "HATCH")
+            self.assertTrue(all(entities.index(entity) > last_hatch for entity in tree_symbols))
             self.assertEqual(
                 len(result.modelspace().query('HATCH[layer=="DEBUG_BUILDINGS"]')),
                 1,
@@ -484,6 +539,106 @@ class ExporterTests(unittest.TestCase):
             )
             self.assertTrue(result.layers.get("DEBUG_SHRUB_UNCOVERED").is_off())
             self.assertFalse(result.layers.get("DEBUG_PLANT_SHRUB").is_off())
+
+    def test_diagnostic_export_preserves_all_planned_points_and_shrub_areas(self) -> None:
+        for units_per_meter in (1.0, 1000.0):
+            with self.subTest(units_per_meter=units_per_meter), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                work = box(0, 0, 10 * units_per_meter, 10 * units_per_meter)
+                allowed = box(0, 0, 9 * units_per_meter, 10 * units_per_meter)
+                points = [
+                    ("T-0001", "tree", Point(2 * units_per_meter, 2 * units_per_meter)),
+                    ("S-0001", "shrub", Point(4 * units_per_meter, 4 * units_per_meter)),
+                    ("S-0002", "shrub", Point(6 * units_per_meter, 6 * units_per_meter)),
+                    ("H-0001", "herbaceous", Point(8 * units_per_meter, 8 * units_per_meter)),
+                ]
+                check = {
+                    "code": "SHRUB_HEAT_1", "status": "passed",
+                    "actual_distance_m": 3.5, "required_distance_m": 1.0,
+                    "norm_reference": "test norm, table 6.3",
+                }
+                write_jsonl(root / "plan.jsonl", [
+                    feature(
+                        "proposed_planting", point, planting_id=planting_id,
+                        plant_type=plant_type, species="Test species", status="accepted",
+                        symbol_radius_m=0.5, dxf_units_per_meter=units_per_meter,
+                        checks=[check] if plant_type == "shrub" else [],
+                    )
+                    for planting_id, plant_type, point in points
+                ] + [feature("proposed_planting_area", allowed, plant_type="shrub")])
+                write_jsonl(root / "zones.jsonl", [
+                    feature("plant_allow_zone", allowed, plant_type="shrub"),
+                ])
+                write_jsonl(root / "constraints.jsonl", [
+                    feature("hard_surface_area", work.difference(allowed)),
+                    feature("base_allowed_area", allowed),
+                ])
+                write_jsonl(root / "normalized.jsonl", [feature("work_boundary", work)])
+                write_jsonl(root / "decisions.jsonl", [
+                    feature("planting_decision", Point(0, 0), plant_type="shrub",
+                            candidate_id="R-S-0001", status="rejected"),
+                ])
+                (root / "zone_report.json").write_text(
+                    json.dumps({"plant_types": {}}), encoding="utf-8"
+                )
+
+                plant_allow_zone_debug.build_debug_export(
+                    root / "zones.jsonl", root / "constraints.jsonl",
+                    root / "normalized.jsonl", root / "debug.dxf", None, 180,
+                    planting_plan_path=root / "plan.jsonl",
+                    planting_decisions_path=root / "decisions.jsonl",
+                    zone_report_path=root / "zone_report.json",
+                    legend_output_path=root / "legend.md",
+                    insunits=6 if units_per_meter == 1.0 else 4,
+                )
+
+                document = ezdxf.readfile(root / "debug.dxf")
+                self.assertFalse(document.audit().errors)
+                modelspace = document.modelspace()
+                for plant_type, layer, expected_count, color in (
+                    ("tree", "DEBUG_PLANT_TREE", 1, 3),
+                    ("shrub", "DEBUG_PLANT_SHRUB_POINTS", 2, 2),
+                    ("herbaceous", "DEBUG_PLANT_HERBACEOUS_POINTS", 1, 94),
+                ):
+                    markers = list(modelspace.query(f'CIRCLE[layer=="{layer}"]'))
+                    self.assertEqual(len(markers), expected_count)
+                    expected = {
+                        planting_id: point for planting_id, kind, point in points
+                        if kind == plant_type
+                    }
+                    observed_ids = set()
+                    for marker in markers:
+                        metadata = dict(
+                            str(tag.value).split("=", 1)
+                            for tag in marker.get_xdata("GREEN_AI") if tag.code == 1000
+                        )
+                        observed_ids.add(metadata["id"])
+                        point = expected[metadata["id"]]
+                        self.assertAlmostEqual(marker.dxf.center.x, point.x)
+                        self.assertAlmostEqual(marker.dxf.center.y, point.y)
+                        self.assertAlmostEqual(marker.dxf.radius, 0.5 * units_per_meter)
+                        self.assertEqual(marker.dxf.color, color)
+                        self.assertEqual(metadata["status"], "accepted")
+                        self.assertEqual(metadata["type"], plant_type)
+                    self.assertEqual(observed_ids, set(expected))
+                    self.assertFalse(document.layers.get(layer).is_off())
+                    self.assertFalse(document.layers.get(layer).is_frozen())
+                    self.assertTrue(document.layers.get(f"DEBUG_PLANT_{plant_type.upper()}_IDS").is_off())
+                self.assertEqual(len(modelspace.query('HATCH[layer=="DEBUG_PLANT_SHRUB"]')), 1)
+                self.assertEqual(len(modelspace.query('CIRCLE[layer=="DEBUG_PLANT_SHRUB"]')), 0)
+                self.assertEqual(len(modelspace.query('CIRCLE[layer=="DEBUG_REJECTED_SHRUB"]')), 1)
+                reasons = list(modelspace.query('MTEXT[layer=="DEBUG_PLANT_SHRUB_REASONS"]'))
+                self.assertEqual(len(reasons), 2)
+                self.assertTrue(document.layers.get("DEBUG_PLANT_SHRUB_REASONS").is_off())
+                self.assertNotIn("DEBUG_REASON_S_0001", document.layers)
+                for reason in reasons:
+                    self.assertIn("SHRUB_HEAT_1", reason.text)
+                    self.assertIn("3.50 m >= 1.00 m", reason.text)
+                    self.assertIn("test norm, table 6.3", reason.text)
+                    self.assertAlmostEqual(reason.dxf.rotation, 0.0)
+                legend = (root / "legend.md").read_text(encoding="utf-8")
+                self.assertIn("DEBUG_PLANT_SHRUB_POINTS", legend)
+                self.assertIn("DEBUG_PLANT_*_REASONS", legend)
 
     def test_debug_dxf_draws_rejected_candidates_in_red_with_reason_layer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

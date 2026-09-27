@@ -347,9 +347,10 @@ function Show-SettingsMenu {
             "Модель сетей: $(if ($script:model) { $script:model } else { 'стандартная' })",
             "Правки дорог: $(if ($script:corrections) { $script:corrections } else { 'авто' })",
             "Запрос на посадку: $(if ($script:request) { $script:request } else { 'выбранный стиль' })",
+            "Существующие кустарники: $(if ($script:existingShrubSurvey) { $script:existingShrubSurvey } else { 'нет подтверждённой инвентаризации' })",
             "Назад"
         )
-        switch (Read-MenuChoice "Настройки" @("1", "2", "3", "4", "5", "6", "7", "0") $labels "Пустой ввод сбрасывает значение") {
+        switch (Read-MenuChoice "Настройки" @("1", "2", "3", "4", "5", "6", "7", "8", "0") $labels "Пустой ввод сбрасывает значение") {
             "1" { $script:startDatabase = -not $script:startDatabase }
             "2" { $script:spacing = Ask-PositiveDouble "Шаг между деревьями, м" }
             "3" { $script:maxTrees = Ask-PositiveInt "Максимум деревьев" }
@@ -357,6 +358,7 @@ function Show-SettingsMenu {
             "5" { $script:model = Ask-ExistingPath "Папка модели (Enter — стандартная)" "" "Directory" }
             "6" { $script:corrections = Ask-ExistingPath "Файл правок дорог GeoJSON (Enter — авто)" }
             "7" { $script:request = Ask-ExistingPath "Запрос на посадку JSON (Enter — выбранный стиль)" }
+            "8" { $script:existingShrubSurvey = Ask-ExistingPath "Подтверждённая инвентаризация кустарников GeoJSON (Enter — нет)" }
             "0" { return }
             default {
                 $script:notice = "Нет такого пункта меню."
@@ -378,6 +380,7 @@ $script:units = $null
 $script:model = ""
 $script:corrections = ""
 $script:request = ""
+$script:existingShrubSurvey = ""
 $script:defaultOpenAiKeyFile = Join-Path $workspace "config\openai.env"
 $script:openAiKeyFile = $script:defaultOpenAiKeyFile
 $script:generatePhotorealistic = $true
@@ -513,6 +516,7 @@ while ($true) {
             if ($script:model) { $options.UtilityDetectorModel = $script:model }
             if ($script:corrections) { $options.RoadCorrections = $script:corrections }
             if ($script:request) { $options.PlantingRequest = $script:request }
+            if ($script:existingShrubSurvey) { $options.ExistingShrubSurvey = $script:existingShrubSurvey }
 
             Restore-ConsoleTheme
             Write-Host ""
@@ -520,7 +524,7 @@ while ($true) {
             foreach ($key in @(
                 "InputDxf", "OutputDirectory", "PipelineMode", "PlantingPreset",
                 "SkipDatabaseStart", "TreeSpacingM", "TreeMaxCount", "DxfUnitsPerMeter",
-                "UtilityDetectorModel", "RoadCorrections", "PlantingRequest"
+                "UtilityDetectorModel", "RoadCorrections", "PlantingRequest", "ExistingShrubSurvey"
             )) {
                 if ($options.ContainsKey($key)) { Write-Host "  $key = $($options[$key])" }
             }

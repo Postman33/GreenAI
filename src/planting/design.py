@@ -12,7 +12,8 @@ from typing import Any
 
 from shapely import affinity
 from shapely.geometry import GeometryCollection, LineString, Point, box
-from shapely.ops import unary_union
+from shapely.ops import polylabel, unary_union
+from shapely.prepared import prep
 from shapely.validation import make_valid
 
 from .placement_generator import grid_candidates, pack_candidates, polygon_parts
@@ -117,6 +118,113 @@ def free_group_layout(scope, profile, profiles, occupied, maximum, seed=0, profi
             if len(generated) >= maximum:
                 return generated
     return generated
+
+
+def tree_grove_layout(
+    scope, profile, profiles, occupied, maximum, *, profile_key=None, trace=None,
+):
+    """Place complete, aligned tree groups in a broad plot, or one focal tree.
+
+    The scheme has a shared local axis and grid phase. A group is kept only
+    when all of its trees fit the safe scope and pass the ordinary spacing
+    check. This avoids the broken, scattered tails of maximum-density grids.
+    """
+    if maximum <= 0 or scope.is_empty:
+        return []
+    polygon = max(polygon_parts(scope), key=lambda item: item.area)
+    rectangle = polygon.minimum_rotated_rectangle
+    corners = list(rectangle.exterior.coords)
+    longest = max(range(4), key=lambda i: math.dist(corners[i], corners[i + 1]))
+    start, end = corners[longest], corners[longest + 1]
+    angle = math.atan2(end[1] - start[1], end[0] - start[0])
+    c, s = math.cos(angle), math.sin(angle)
+    projected = [(x * c + y * s, -x * s + y * c) for x, y in corners[:-1]]
+    min_u, max_u = min(x for x, _ in projected), max(x for x, _ in projected)
+    min_v, max_v = min(y for _, y in projected), max(y for _, y in projected)
+    spacing = profile.spacing_m
+    prepared = prep(scope)
+    variants = []
+    # Keep visible lawn between groups; a dense lattice of touching crowns
+    # reads as an accidental grid rather than a sequence of planting masses.
+    for group_size, cell_size in ((5, 3.75 * spacing), (3, 3.25 * spacing)):
+        if maximum < group_size:
+            continue
+        if group_size == 5:
+            offsets = ((0, 0), (-spacing, 0), (spacing, 0),
+                       (0, -spacing), (0, spacing))
+        else:
+            height = spacing / math.sqrt(3)
+            offsets = ((-spacing / 2, -height / 2),
+                       (spacing / 2, -height / 2), (0, height))
+        for phase_u in (0.0, 0.5):
+            for phase_v in (0.0, 0.5):
+                clusters = []
+                first_u = math.ceil(min_u / cell_size - phase_u)
+                last_u = math.floor(max_u / cell_size - phase_u)
+                first_v = math.ceil(min_v / cell_size - phase_v)
+                last_v = math.floor(max_v / cell_size - phase_v)
+                for row in range(first_v, last_v + 1):
+                    v = (row + phase_v) * cell_size
+                    for column in range(first_u, last_u + 1):
+                        u = (column + phase_u) * cell_size
+                        cluster = tuple(
+                            ((u + du) * c - (v + dv) * s,
+                             (u + du) * s + (v + dv) * c)
+                            for du, dv in offsets
+                        )
+                        if all(prepared.covers(Point(x, y)) for x, y in cluster):
+                            clusters.append(cluster)
+                if not clusters:
+                    continue
+                candidates = [point for cluster in clusters for point in cluster]
+                packed = pack_candidates(
+                    candidates, profile, profiles, occupied,
+                    (maximum // group_size) * group_size,
+                )
+                accepted = set(packed)
+                complete = [cluster for cluster in clusters if all(p in accepted for p in cluster)]
+                points = [point for cluster in complete for point in cluster]
+                variants.append({
+                    "points": points,
+                    "group_size": group_size,
+                    "group_count": len(complete),
+                    "phase_u": phase_u,
+                    "phase_v": phase_v,
+                })
+    if variants and any(item["points"] for item in variants):
+        best_count = max(len(item["points"]) for item in variants)
+        eligible = [item for item in variants if len(item["points"]) >= math.ceil(best_count * 0.85)]
+        winner = max(eligible, key=lambda item: (item["group_size"], len(item["points"])))
+        if trace is not None:
+            trace.update({
+                "method": "tree_grove", "angle_deg": round(math.degrees(angle), 3),
+                "objective": "complete aligned 3- or 5-tree groups; preserve open space",
+                "variants": [{key: item[key] for key in ("group_size", "group_count", "phase_u", "phase_v")}
+                             for item in variants],
+                "winner": {key: winner[key] for key in ("group_size", "group_count", "phase_u", "phase_v")},
+                "winning_grid_rejections": [],
+                "audit_scope": "complete groups inside the safe planting scope",
+            })
+        return winner["points"]
+
+    # A narrow residual pocket is still a valid location for one deliberate
+    # specimen: the safe scope already includes mandatory clearance and crown
+    # checks. Rejecting it by bounding-box width loses real planting sites.
+    center = polylabel(polygon, tolerance=max(spacing / 20, 1e-4))
+    focal = pack_candidates([(center.x, center.y)], profile, profiles,
+                            occupied, 1)
+    if focal:
+        if trace is not None:
+            trace.update({"method": "focal_tree", "variants": [],
+                          "winner": {"accepted_count": 1},
+                          "winning_grid_rejections": [],
+                          "audit_scope": "largest inscribed point in a residual safe pocket"})
+        return focal
+    if trace is not None:
+        trace.update({"method": "tree_grove", "variants": [], "winner": None,
+                      "winning_grid_rejections": [],
+                      "audit_scope": "no complete group or focal location fits"})
+    return []
 
 
 def flowerbed_patches(coverage: Any, composition: tuple[dict, ...]):

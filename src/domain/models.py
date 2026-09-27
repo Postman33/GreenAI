@@ -23,6 +23,11 @@ class PlantingProfile:
     max_count: int
     catalog_reference: str
     selection_reasons: tuple[str, ...]
+    # A species-specific design choice, separate from utility setback rules.
+    understory_trunk_clearance_m: float | None = None
+    allow_under_tree_canopy: bool = False
+    existing_tree_clearance_m: float | None = None
+    footprint_boundary: str = "allow_zone"
 
 
 @dataclass(frozen=True)

@@ -40,6 +40,8 @@ UTILITY_OBJECT_TYPES = {
 ACCEPTED_UTILITY_GEOMETRY_SOURCES = {
     "cleaned_high_confidence_geometry",
     "reconstructed_high_confidence_geometry",
+    "cleaned_high_confidence_geometry_plus_full_heat_chambers",
+    "reconstructed_high_confidence_geometry_plus_full_heat_chambers",
 }
 
 
@@ -345,6 +347,8 @@ def apply_rules(
             "rule_code": rule["rule_code"],
             "target_object_type": target_type,
             "check": check,
+            "rule_kind": conditions.get("rule_kind", "minimum_distance"),
+            "measurement_limit": conditions.get("measurement_limit"),
             "norm_reference": rule["norm_reference"],
             "norm_document": rule["norm_document"],
             "geometry_source": geometry_sources.get(
@@ -576,6 +580,22 @@ def build_plant_allow_zones(
             )
             for object_type in utility_geometries
         })
+    # A heat chamber is part of the protected heat network. Use its complete
+    # footprint alongside the accepted pipe geometry, including the portion
+    # outside the work boundary that can still constrain an adjacent planting.
+    if "heat_pipe" in utility_geometries:
+        try:
+            heat_chambers = read_object_geometry(
+                constraint_map_path, "heat_chamber_full_footprints"
+            )
+        except ValueError:
+            heat_chambers = None
+        if heat_chambers is not None and not heat_chambers.is_empty:
+            normalized_objects["heat_pipe"] = unary_union(
+                [utility_geometries["heat_pipe"], heat_chambers]
+            )
+            geometry_sources["heat_pipe"] += "_plus_full_heat_chambers"
+            utility_geometry_metadata["heat_pipe"]["full_heat_chambers_included"] = True
     # Keep the complete catalog in the report so the downstream planting
     # service can offer species for area types (for example herbaceous cover)
     # even when that type has no distance rule of its own.

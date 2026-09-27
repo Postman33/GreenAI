@@ -22,11 +22,13 @@ from shapely.geometry import GeometryCollection, Point, mapping, shape
 from shapely.validation import make_valid
 
 from ..domain.models import PlantingProfile, PlantingSelection
-from .design import STYLE_CONTRACTS, alley_layout, free_group_layout, hedge_coverage, flowerbed_patches
+from .composition_review import load_shrub_survey, review_shrub_composition, review_tree_composition
+from .design import STYLE_CONTRACTS, alley_layout, free_group_layout, hedge_coverage, flowerbed_patches, tree_grove_layout
 from .spatial import PlantingPointIndex
 from .placement_generator import (
     best_component_layout,
     best_linear_layout,
+    best_shrub_bed_layout,
     build_checks,
     configured_existing_tree_clearance_m,
     grid_candidates,
@@ -36,6 +38,8 @@ from .placement_generator import (
     polygon_parts,
     prepare_sidewalk_for_checks,
     required_spacing,
+    mixed_canopy_pair,
+    physical_planting_area,
     safe_scope,
 )
 
@@ -383,12 +387,20 @@ def resolve_profile(
         max_count=selection.max_count or base.max_count,
         catalog_reference=catalog_reference,
         selection_reasons=reasons,
+        # Do not transfer species-specific permission to a different catalog plant.
+        understory_trunk_clearance_m=(base.understory_trunk_clearance_m
+                                     if selection.species == base.species else None),
+        allow_under_tree_canopy=(base.allow_under_tree_canopy
+                                if selection.species == base.species else False),
+        existing_tree_clearance_m=(base.existing_tree_clearance_m
+                                   if selection.species == base.species else None),
     )
 
 
 def _scope_check(point: Point, scope: Any, profile: PlantingProfile, units: float) -> dict[str, Any]:
     passed = not scope.is_empty and scope.covers(point)
-    clearance = profile.footprint_radius_m
+    physical_boundary = profile.footprint_boundary == "physical_area"
+    clearance = 0.0 if physical_boundary else profile.footprint_radius_m
     return {
         "code": "ALLOWED_ZONE",
         "target": "plant allow zone",
@@ -397,10 +409,13 @@ def _scope_check(point: Point, scope: Any, profile: PlantingProfile, units: floa
         "required_distance_m": clearance,
         "norm_reference": "Расчётное пересечение всех применимых ограничений",
         "explanation": (
+            "Центр проходит отступы от объектов; крона помещается на территории озеленения, "
+            "сохранены интервалы до существующей растительности."
+            if passed and physical_boundary else
             f"Центр находится в безопасной области; полный габарит радиусом {clearance:g} м "
             "остаётся внутри выбранной допустимой зоны."
             if passed
-            else "Точка или полный габарит посадки выходит за выбранную допустимую зону."
+            else "Не пройдена проверка положения центра, размещения кроны или существующей растительности."
         ),
     }
 
@@ -417,6 +432,7 @@ def _spacing_check(
     nearest_required: float | None = None
     nearest_type: str | None = None
     worst_violation: tuple[float, float, str] | None = None
+    mixed_checks: list[dict[str, Any]] = []
     passed = True
     neighbours = (
         occupied_index.nearest_by_profile(point)
@@ -429,6 +445,9 @@ def _spacing_check(
             continue
         actual = distance / units
         required = required_spacing(profile, other)
+        if mixed_canopy_pair(profile, other):
+            mixed_checks.append({"profile": other_type, "actual_distance_m": actual,
+                                 "required_distance_m": required})
         if nearest_actual is None or actual < nearest_actual:
             nearest_actual, nearest_required, nearest_type = actual, required, other_type
         if actual + 1e-7 < required:
@@ -445,12 +464,18 @@ def _spacing_check(
         "actual_distance_m": nearest_actual,
         "required_distance_m": nearest_required or profile.spacing_m,
         "norm_reference": profile.catalog_reference,
+        "tree_shrub_spacing": mixed_checks,
         "explanation": (
             "Других предложенных посадок ближе установленного шага нет."
             if passed
             else f"Нарушающая шаг посадка находится на расстоянии {nearest_actual:.3f} м; "
             f"требуется не менее {nearest_required:g} м."
-        ),
+        ) + (" Смешанная посадка: проекции крон дерева и кустарника могут пересекаться; "
+             "проверяются свободная область у ствола и проектный интервал между центрами. "
+             f"Проверено пар: {len(mixed_checks)}; минимальное требование "
+             f"{min(item['required_distance_m'] for item in mixed_checks):g} м. "
+             "Это параметр композиции из профилей растений."
+             if mixed_checks else ""),
     }
 
 
@@ -468,6 +493,8 @@ def _point_decision(
     occupied: list[tuple[str, float, float]],
     geometry_cache: dict[str, Any | None] | None = None,
     occupied_index: PlantingPointIndex | None = None,
+    selected_zone: Any | None = None,
+    physical_area: Any | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     checks = build_checks(
         point,
@@ -480,6 +507,11 @@ def _point_decision(
         geometry_cache,
     )
     checks[0] = _scope_check(point, scope, profile, units)
+    if selected_zone is not None:
+        checks.extend(_scope_diagnostic_checks(
+            point, selected_zone, profile, normalized,
+            profile.existing_tree_clearance_m, units, physical_area,
+        ))
     if selection.area is not None:
         inside_selection = selection.area.covers(point)
         checks.insert(
@@ -537,6 +569,10 @@ def _point_feature(
             "avoid_other_plantings_m": profile.avoid_other_plantings_m,
             "footprint_radius_m": profile.footprint_radius_m,
             "symbol_radius_m": profile.symbol_radius_m,
+            "understory_trunk_clearance_m": profile.understory_trunk_clearance_m,
+            "allow_under_tree_canopy": profile.allow_under_tree_canopy,
+            "existing_tree_clearance_m": profile.existing_tree_clearance_m,
+            "footprint_boundary": profile.footprint_boundary,
             "coordinate_reference": "local_dxf_coordinates",
             "dxf_units_per_meter": units,
             "checks": checks,
@@ -592,29 +628,44 @@ def _scope_diagnostic_checks(
     normalized: dict[str, Any],
     existing_tree_clearance_m: float,
     units: float,
+    physical_area: Any | None = None,
 ) -> list[dict[str, Any]]:
     """Explain which physical operation removed a point from ``safe_scope``."""
     checks: list[dict[str, Any]] = []
     footprint = profile.footprint_radius_m
+    physical_boundary = profile.footprint_boundary == "physical_area"
+    footprint_area = physical_area if physical_boundary else selected_zone
+    if footprint_area is None:
+        raise ValueError("Physical planting area missing from scope checks")
+    if physical_boundary:
+        checks.append({
+            "code": "PLANT_CENTER_INSIDE_ZONE", "target": "plant allow-zone centre",
+            "status": "passed" if selected_zone.covers(point) else "failed",
+            "actual_distance_m": None, "required_distance_m": None,
+            "norm_reference": "Расчётное пересечение применённых правил отступа",
+            "explanation": "Центр находится в допустимой зоне отступов." if selected_zone.covers(point)
+                           else "Центр находится вне допустимой зоны отступов.",
+        })
     boundary_distance = (
-        point.distance(selected_zone.boundary) / units
-        if selected_zone is not None and not selected_zone.is_empty
+        point.distance(footprint_area.boundary) / units
+        if not footprint_area.is_empty
         else 0.0
     )
-    footprint_passed = selected_zone.covers(point) and boundary_distance + 1e-7 >= footprint
+    footprint_passed = footprint_area.covers(point) and boundary_distance + 1e-7 >= footprint
+    boundary_name = "физической территории озеленения" if physical_boundary else "допустимой зоны"
     checks.append(
         {
-            "code": "PLANT_FOOTPRINT_INSIDE_ZONE",
-            "target": "plant allow-zone boundary",
+            "code": "PLANT_FOOTPRINT_INSIDE_SITE" if physical_boundary else "PLANT_FOOTPRINT_INSIDE_ZONE",
+            "target": "physical plantable-area boundary" if physical_boundary else "plant allow-zone boundary",
             "status": "passed" if footprint_passed else "failed",
             "actual_distance_m": boundary_distance,
             "required_distance_m": footprint,
             "norm_reference": "project parameter: footprintRadiusM",
             "explanation": (
-                "Полный габарит посадки остаётся внутри допустимой зоны."
+                f"Полный габарит посадки остаётся внутри {boundary_name}."
                 if footprint_passed
                 else (
-                    f"До границы допустимой зоны {boundary_distance:.3f} м, "
+                    f"До границы {boundary_name} {boundary_distance:.3f} м, "
                     f"а текущий расчёт требует разместить внутри неё весь условный "
                     f"радиус посадки {footprint:g} м."
                 )
@@ -788,7 +839,8 @@ def _species_selection(selection: PlantingSelection, profile: PlantingProfile | 
 
 
 def write_explanations_markdown(
-    path: Path, features: list[dict[str, Any]], units_per_meter: float
+    path: Path, features: list[dict[str, Any]], units_per_meter: float,
+    composition_advisories: list[dict[str, Any]] | None = None,
 ) -> None:
     """Write a reviewer-friendly passport for every accepted plan feature."""
     counts = Counter(item["properties"].get("status", "unknown") for item in features)
@@ -863,6 +915,27 @@ def write_explanations_markdown(
                 + " |"
             )
         lines.append("")
+    if composition_advisories:
+        lines.extend(["## Композиция и существующие растения", "",
+                      "Это рекомендации для проверки проектировщиком. Существующие растения "
+                      "не удаляются из чертежа автоматически.", ""])
+        for advisory in composition_advisories:
+            x, y = advisory["coordinates"]
+            if advisory.get("plant_type") == "tree":
+                lines.append(
+                    f"- `{_markdown_cell(advisory['existing_tree_id'])}` (X={x:.3f}; Y={y:.3f}): "
+                    f"{_markdown_cell(advisory['reason'])}"
+                )
+            else:
+                lines.append(
+                    f"- `{_markdown_cell(advisory['existing_shrub_id'])}` (X={x:.3f}; Y={y:.3f}), "
+                    f"посадка `{_markdown_cell(advisory['planting_id'])}`: "
+                    + ("предложено убрать одиночный куст другого вида из композиции; "
+                       "проверить на месте и выбрать пересадку либо удаление."
+                       if advisory["recommendation"] == "propose_removal_from_composition"
+                       else "определить вид куста до решения о пересадке.")
+                )
+        lines.append("")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -884,6 +957,7 @@ def plan(
     tree_max_count: int | None = None,
     diagnostic_rejected_max_count: int | None = None,
     layout_trace_path: Path | None = None,
+    existing_shrub_survey_path: Path | None = None,
 ) -> dict[str, Any]:
     zones = load_zones(zones_path)
     zone_report = json.loads(zone_report_path.read_text(encoding="utf-8-sig"))
@@ -906,6 +980,10 @@ def plan(
     units = float(zone_report.get("dxf_units_per_meter", config.get("dxfUnitsPerMeter", 1.0)))
     if not math.isfinite(units) or units <= 0:
         raise ValueError("dxf_units_per_meter must be finite and positive")
+    surveyed_shrubs, surveyed_masses = (
+        load_shrub_survey(existing_shrub_survey_path)
+        if existing_shrub_survey_path is not None else ([], GeometryCollection())
+    )
     prepare_sidewalk_for_checks(normalized, constraints, zone_report, units)
     diagnostic_rejected_max = int(
         diagnostic_rejected_max_count
@@ -915,8 +993,8 @@ def plan(
     if diagnostic_rejected_max < 0:
         raise ValueError("diagnosticRejectedMaxCount must be non-negative")
     tree_layout_mode = str(config.get("treeLayoutMode", "linear_preferred"))
-    if tree_layout_mode not in {"linear_preferred", "area_fill"}:
-        raise ValueError("treeLayoutMode must be linear_preferred or area_fill")
+    if tree_layout_mode not in {"composition", "linear_preferred", "area_fill"}:
+        raise ValueError("treeLayoutMode must be composition, linear_preferred or area_fill")
 
     resolved = {
         selection.request_id: resolve_profile(selection, base_profiles, config, zone_report)
@@ -929,16 +1007,20 @@ def plan(
         for selection in selections for part in selection.composition
     }
     point_profiles = {
-        plant_type: profile
+        plant_type: replace(profile, existing_tree_clearance_m=configured_existing_tree_clearance_m(config, profile))
         for plant_type, profile in resolved.items()
         if isinstance(profile, PlantingProfile)
     }
+    physical_ground = (physical_planting_area(constraints)
+                       if any(p.footprint_boundary == "physical_area" for p in point_profiles.values()) else None)
     layout_profiles = {
         plant_type: replace(
             profile,
             spacing_m=profile.spacing_m * units,
             footprint_radius_m=profile.footprint_radius_m * units,
             avoid_other_plantings_m=profile.avoid_other_plantings_m * units,
+            understory_trunk_clearance_m=(profile.understory_trunk_clearance_m * units
+                                         if profile.understory_trunk_clearance_m is not None else None),
         )
         for plant_type, profile in point_profiles.items()
     }
@@ -949,6 +1031,7 @@ def plan(
         layout_trace_path = output_path.with_name("planting_layout_trace.jsonl")
     occupied: list[tuple[str, float, float]] = []
     occupied_index = PlantingPointIndex()
+    tree_composition_advisories: list[dict[str, Any]] = []
     counters: Counter[str] = Counter()
     diagnostic_counters: Counter[str] = Counter()
     summary: dict[str, Any] = {}
@@ -970,8 +1053,11 @@ def plan(
         existing_tree_clearance = configured_existing_tree_clearance_m(config, profile)
         source_zone = zones[selection.plant_type]
         selected_zone = source_zone["geometry"]
+        selected_physical = physical_ground
         if selection.area is not None:
             selected_zone = selected_zone.intersection(selection.area)
+            if selected_physical is not None:
+                selected_physical = selected_physical.intersection(selection.area)
         scope = safe_scope(
             selected_zone,
             profile,
@@ -979,7 +1065,14 @@ def plan(
             normalized.get("existing_tree_belt"),
             existing_tree_clearance,
             units,
+            selected_physical,
         )
+        if not surveyed_masses.is_empty:
+            # Retain mapped existing shrub masses instead of proposing new
+            # plants or full crowns on top of them.
+            scope = scope.difference(
+                surveyed_masses.buffer(profile.footprint_radius_m * units)
+            )
         candidates: list[tuple[Point, str, str | None]]
         if selection.mode == "points":
             candidates = [(point, "manual", None) for point in selection.points]
@@ -1000,16 +1093,19 @@ def plan(
             candidates = [(Point(x, y), selection.design_style, None) for x, y in designed]
         else:
             generated: list[tuple[float, float, str, str]] = []
-            use_linear = selection.plant_type == "tree" and tree_layout_mode == "linear_preferred"
+            use_linear = selection.plant_type == "tree" and tree_layout_mode in {
+                "composition", "linear_preferred",
+            }
+            use_shrub_beds = selection.plant_type == "shrub" and selection.design_style == "auto"
             parents = (
                 sorted(polygon_parts(selected_zone), key=lambda item: item.area, reverse=True)
-                if use_linear else [scope]
+                if use_linear or use_shrub_beds else [scope]
             )
             for parent in parents:
                 remaining = profile.max_count - len(generated)
                 if remaining <= 0:
                     break
-                parent_scope = scope.intersection(parent) if use_linear else scope
+                parent_scope = scope.intersection(parent) if use_linear or use_shrub_beds else scope
                 if parent_scope.is_empty:
                     continue
                 inset = parent_scope.buffer(-max(0.02 * units, 1e-5))
@@ -1018,6 +1114,20 @@ def plan(
                 occupied_now = occupied + [
                     (selection.request_id, x, y) for x, y, _style, _trace_id in generated
                 ]
+                if use_shrub_beds:
+                    bed_trace: dict[str, Any] = {}
+                    bed_points = best_shrub_bed_layout(
+                        inset, parent, layout_profile, current_layout_profiles,
+                        occupied_now, remaining, trace=bed_trace,
+                    )
+                    trace_id = f"{selection.request_id}:layout_{len(layout_traces) + 1:04d}"
+                    bed_trace.update({"trace_id": trace_id, "request_id": selection.request_id,
+                                      "plant_type": selection.plant_type,
+                                      "spacing_m": profile.spacing_m,
+                                      "max_count_for_component": remaining})
+                    layout_traces.append(bed_trace)
+                    generated.extend((x, y, bed_trace["method"], trace_id) for x, y in bed_points)
+                    continue
                 linear_trace: dict[str, Any] = {}
                 linear = (
                     best_linear_layout(
@@ -1039,7 +1149,12 @@ def plan(
                     if remaining <= 0:
                         break
                     area_trace: dict[str, Any] = {}
-                    area_points = best_component_layout(
+                    layout_fn = (
+                        tree_grove_layout
+                        if selection.plant_type == "tree" and tree_layout_mode == "composition"
+                        else best_component_layout
+                    )
+                    area_points = layout_fn(
                         component, layout_profile, current_layout_profiles,
                         occupied + [(selection.request_id, x, y) for x, y, _style, _trace_id in generated],
                         remaining, trace=area_trace,
@@ -1050,7 +1165,7 @@ def plan(
                                        "spacing_m": profile.spacing_m,
                                        "max_count_for_component": remaining})
                     layout_traces.append(area_trace)
-                    generated.extend((x, y, "area_fill", trace_id) for x, y in area_points)
+                    generated.extend((x, y, area_trace["method"], trace_id) for x, y in area_points)
             candidates = [(Point(x, y), style, trace_id) for x, y, style, trace_id in generated]
 
         if selection.mode == "points" or selection.design_style in {"alley", "free_group"}:
@@ -1095,6 +1210,8 @@ def plan(
                 occupied,
                 rule_geometry_cache,
                 occupied_index,
+                selected_zone,
+                selected_physical,
             )
             decisions.append(_decision_feature(candidate_id, point, selection, status, checks,
                                                layout_trace_id=trace_id,
@@ -1133,20 +1250,11 @@ def plan(
                     occupied,
                     rule_geometry_cache,
                     occupied_index,
-                )
-                scope_checks = _scope_diagnostic_checks(
-                    point,
                     selected_zone,
-                    profile,
-                    normalized,
-                    existing_tree_clearance,
-                    units,
+                    selected_physical,
                 )
-                if status != "rejected" and not any(
-                    check.get("status") == "failed" for check in scope_checks
-                ):
+                if status != "rejected":
                     continue
-                checks.extend(scope_checks)
                 diagnostic_counters[selection.plant_type] += 1
                 diagnostic_id = (
                     f"R-{prefixes.get(selection.plant_type, 'P')}-"
@@ -1176,7 +1284,26 @@ def plan(
             "diagnostic_rejected_count": diagnostic_rejected_count,
             "layout_style_counts": dict(layout_style_counts),
             "safe_scope_area_in_dxf_square_units": scope.area,
+            "existing_tree_clearance_m": existing_tree_clearance,
+            "footprint_boundary": profile.footprint_boundary,
         }
+        if (selection.plant_type == "tree" and selection.mode == "fill_area"
+                and selection.design_style == "auto" and tree_layout_mode == "composition"):
+            alternative_scope = safe_scope(
+                selected_zone, profile, None,
+                normalized.get("existing_tree_belt"), existing_tree_clearance,
+                units, selected_physical,
+            )
+            if not surveyed_masses.is_empty:
+                alternative_scope = alternative_scope.difference(
+                    surveyed_masses.buffer(profile.footprint_radius_m * units)
+                )
+            tree_composition_advisories.extend(review_tree_composition(
+                alternative_scope, scope, normalized.get("existing_tree"),
+                normalized.get("work_boundary"), layout_profile,
+                current_layout_profiles, accepted_selection_points,
+                existing_tree_clearance * units,
+            ))
 
     base = constraints.get("base_allowed_area")
     area_occupied: Any = GeometryCollection()
@@ -1205,6 +1332,8 @@ def plan(
         # excluded so the proposal does not replace an existing planting mass.
         if belts is not None and not belts.is_empty:
             coverage = coverage.difference(belts)
+        if not surveyed_masses.is_empty:
+            coverage = coverage.difference(surveyed_masses)
         coverage = make_valid(coverage)
         plant_report = zone_report.get("plant_types", {}).get("shrub", {})
         rule_checks: list[dict[str, Any]] = []
@@ -1329,6 +1458,8 @@ def plan(
         # holes in an otherwise continuous lawn.
         if belts is not None and not belts.is_empty:
             coverage = coverage.difference(belts)
+        if not surveyed_masses.is_empty:
+            coverage = coverage.difference(surveyed_masses)
         coverage = make_valid(coverage)
         count = 0
         area = 0.0
@@ -1446,17 +1577,27 @@ def plan(
         trace["distance_unit"] = "local_dxf_unit"
         trace["dxf_units_per_meter"] = units
     _write_jsonl(layout_trace_path, layout_traces)
-    if explanations_path is not None:
-        write_explanations_markdown(explanations_path, features, units)
     point_features = [
         item for item in features if item["properties"]["object_type"] == "proposed_planting"
     ]
     area_features = [
         item for item in features if item["properties"]["object_type"] == "proposed_planting_area"
     ]
+    if existing_shrub_survey_path is not None:
+        composition_advisories = review_shrub_composition(
+            features, surveyed_shrubs, surveyed_masses, units,
+        )
+        composition_review_status = "surveyed"
+    else:
+        composition_advisories = []
+        composition_review_status = "not_evaluated_no_confirmed_shrub_survey"
+    composition_advisories.extend(tree_composition_advisories)
+    if explanations_path is not None:
+        write_explanations_markdown(explanations_path, features, units, composition_advisories)
     rejected = sum(item["properties"]["status"] == "rejected" for item in decisions)
     report = {
         "status": "passed",
+        "normalized_input": str(normalized_path),
         "request": str(request_path) if request_path is not None else f"preset:{preset}",
         "output": str(output_path),
         "decisions_output": str(decisions_path),
@@ -1473,6 +1614,12 @@ def plan(
         "coordinate_reference": "local_dxf_coordinates",
         "dxf_units_per_meter": units,
         "summary": summary,
+        "composition_review_status": composition_review_status,
+        "tree_composition_review_status": (
+            "evaluated" if tree_layout_mode == "composition" else "not_evaluated"
+        ),
+        "existing_shrub_survey": str(existing_shrub_survey_path) if existing_shrub_survey_path else None,
+        "composition_advisories": composition_advisories,
         "point_placement_count": len(point_features),
         "area_placement_count": len(area_features),
         "manual_review_count": sum(
@@ -1501,6 +1648,8 @@ def main() -> None:
     parser.add_argument("--utilities", type=Path, default=Path("reconstructed_utilities.geojsonl"))
     parser.add_argument("--config", type=Path, default=Path("config/planting.json"))
     parser.add_argument("--request", type=Path, help="Optional planting request JSON")
+    parser.add_argument("--existing-shrub-survey", type=Path,
+                        help="Optional confirmed GeoJSON survey of individual shrubs and shrub masses")
     parser.add_argument(
         "--preset",
         choices=sorted(PLANTING_PRESETS),
@@ -1549,6 +1698,7 @@ def main() -> None:
             args.tree_max_count,
             args.diagnostic_rejected_max_count,
             args.layout_trace_output,
+            args.existing_shrub_survey,
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
         raise SystemExit(f"Planting service error: {error}") from error

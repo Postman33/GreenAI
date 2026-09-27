@@ -473,6 +473,48 @@ def build_pdf(
     ]))
     story.append(status_box)
 
+    composition_advisories = plan_report.get("composition_advisories") or []
+    if composition_advisories:
+        story.append(Spacer(1, 4 * mm))
+        story.append(paragraph("Композиция: существующие растения", heading))
+        story.append(paragraph(
+            "Это рекомендации для проверки на месте. Существующие растения не удаляются автоматически.",
+            body,
+        ))
+        composition_rows = [[
+            paragraph("Растение", table_header), paragraph("Координаты DXF", table_header),
+            paragraph("Рекомендация", table_header),
+        ]]
+        for advisory in composition_advisories:
+            x, y = advisory["coordinates"]
+            is_tree = advisory.get("plant_type") == "tree"
+            action = (
+                f"Предложено удалить дерево: мешает {advisory.get('blocked_group_stations', '?')} "
+                f"из {advisory.get('group_size', '?')} мест новой группы. "
+                "Проверить дерево и согласовать решение"
+                if is_tree else
+                "Убрать одиночный куст из композиции: пересадка или удаление после проверки"
+                if advisory["recommendation"] == "propose_removal_from_composition"
+                else "Определить вид куста до решения о пересадке"
+            )
+            identifier = advisory.get("existing_tree_id") if is_tree else advisory.get("existing_shrub_id")
+            suffix = "" if is_tree else f"; посадка {html.escape(str(advisory['planting_id']))}"
+            composition_rows.append([
+                paragraph(html.escape(str(identifier)), body),
+                paragraph(f"{x:.2f}; {y:.2f}", body),
+                paragraph(f"{action}{suffix}", body),
+            ])
+        composition_table = Table(composition_rows, colWidths=[40 * mm, 62 * mm, 138 * mm],
+                                  repeatRows=1)
+        composition_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#143B5D")),
+            ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#B8C8D8")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F7F8")]),
+            ("PADDING", (0, 0), (-1, -1), 4),
+        ]))
+        story.append(composition_table)
+
     unchecked_lines = []
     for plant_type, item in zone_report.get("plant_types", {}).items():
         plant_label = PLANT_TYPE_LABELS.get(plant_type, plant_type)

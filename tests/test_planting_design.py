@@ -19,6 +19,8 @@ from tests import ROOT  # noqa: F401
 from src.cad_io import dxf_exporter
 from src.planting import service as planting_service
 from src.planting.design import flowerbed_patches
+from src.planting.design import tree_grove_layout
+from src.domain.models import PlantingProfile
 
 
 def write_jsonl(path, features):
@@ -79,6 +81,37 @@ class DesignModeTests(unittest.TestCase):
             root / "explanations.md", preset=preset,
         )
         return [json.loads(line) for line in (root / "plan.jsonl").read_text(encoding="utf-8").splitlines()], report
+
+    def test_composition_mode_groups_trees_in_broad_plot_and_keeps_clearings(self):
+        profile = PlantingProfile("tree", "Tree", 6, 3, 2, 2, 100, "catalog", ())
+        trace = {}
+        scope = box(0, 0, 50, 40).buffer(-3).difference(box(30, 15, 36, 25).buffer(3))
+        points = tree_grove_layout(scope, profile, {"tree": profile}, [], 100, trace=trace)
+        self.assertEqual(trace["method"], "tree_grove")
+        self.assertGreaterEqual(len(points), 5)
+        self.assertEqual(len(points) % trace["winner"]["group_size"], 0)
+        self.assertTrue(all(scope.covers(Point(x, y)) for x, y in points))
+        self.assertTrue(all(math.dist(left, right) >= 6 - 1e-7
+                            for left, right in combinations(points, 2)))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.prepare(root, box(0, 0, 50, 40))
+            config_path = root / "config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["treeLayoutMode"] = "composition"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            features, report = self.run_plan(root, [{
+                "id": "tree_groups", "plant_type": "tree", "species": "Tree",
+                "mode": "fill_area", "design_style": "auto",
+            }])
+            self.assertGreaterEqual(len(features), 3)
+            self.assertTrue(all(f["properties"]["layout_style"] == "tree_grove"
+                                for f in features))
+            traces = [json.loads(line) for line in
+                      (root / "planting_layout_trace.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertTrue(any(t["method"] == "tree_grove" for t in traces))
+            self.assertEqual(report["rejected_candidate_count"], 0)
 
     def test_alley_keeps_two_rows_and_phase_across_exclusion(self):
         with tempfile.TemporaryDirectory() as tmp:

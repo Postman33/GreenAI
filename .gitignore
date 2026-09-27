@@ -34,6 +34,10 @@ prelabel_*
 XREF_*_train.dxf
 dxf_layer_inventory*.json
 source_file_inventory.json
+# Local CAD inputs and the supplied presentation template.
+/*.dxf
+/*.dwg
+/ЛЦТ2026 Шаблон презентации.pptx
 Пилотный проект 20 улиц/
 ml/review/
 ml/train/**/*.dxf

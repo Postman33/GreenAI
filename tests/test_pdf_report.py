@@ -113,6 +113,16 @@ class PdfReportTests(unittest.TestCase):
                 "point_placement_count": 1,
                 "area_placement_count": 1,
                 "manual_review_count": 1,
+                "composition_advisories": [{
+                    "existing_shrub_id": "SH-17", "coordinates": [5.0, 6.0],
+                    "planting_id": "SA-0001",
+                    "recommendation": "propose_removal_from_composition",
+                }, {
+                    "plant_type": "tree", "existing_tree_id": "tree-21",
+                    "coordinates": [10.0, 12.0], "group_size": 5,
+                    "blocked_group_stations": 3,
+                    "recommendation": "propose_removal_from_composition",
+                }],
             }), encoding="utf-8")
             zone_report.write_text(json.dumps({
                 "dxf_units_per_meter": 1,
@@ -146,6 +156,9 @@ class PdfReportTests(unittest.TestCase):
             self.assertIn("EXISTING_TREE_CLEARANCE", text)
             self.assertIn("T-0001", text)
             self.assertIn("H-0001", text)
+            self.assertIn("SH-17", text)
+            self.assertIn("tree-21", text)
+            self.assertIn("Композиция: существующие растения", text)
             self.assertIn("таблица 6.3", text)
             self.assertIn("п. 2.1.13", " ".join(text.split()))
             self.assertIn("6.20 / 5.00", text)

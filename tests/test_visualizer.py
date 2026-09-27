@@ -133,7 +133,8 @@ class VisualizerTests(unittest.TestCase):
             write_features(plan, [{
                 "type": "Feature",
                 "properties": {"object_type": "proposed_planting", "plant_type": "tree",
-                               "planting_id": "T-1", "symbol_radius_m": 2.0},
+                               "planting_id": "T-1", "symbol_radius_m": 2.0,
+                               "footprint_radius_m": 3.0},
                 "geometry": mapping(Point(100, 100)),
             }, {
                 "type": "Feature",
@@ -144,6 +145,7 @@ class VisualizerTests(unittest.TestCase):
             manifest = build_manifest(normalized, constraints, plan, scene, None, 20.0)
             self.assertEqual(manifest["source_origin"], {"x": 100.0, "y": 100.0})
             self.assertEqual(manifest["proposed_trees"][0]["position"], [0.0, 0.0])
+            self.assertEqual(manifest["proposed_trees"][0]["crown_radius"], 3.0)
             self.assertEqual(manifest["shrubs"][0]["position"], [1.0, 2.0])
             self.assertEqual(manifest["counts"]["proposed_shrub_instances"], 1)
             self.assertTrue(scene.exists())

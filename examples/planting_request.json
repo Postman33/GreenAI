@@ -1,0 +1,48 @@
+{
+  "selections": [
+    {
+      "id": "trees_in_selected_square",
+      "plant_type": "tree",
+      "species": "Липа мелколистная 'Winter Orange'",
+      "mode": "fill_area",
+      "spacing_m": 6.0,
+      "max_count": 5,
+      "area": {
+        "type": "Polygon",
+        "coordinates": [[
+          [17820.0, 13895.0],
+          [17855.0, 13895.0],
+          [17855.0, 13925.0],
+          [17820.0, 13925.0],
+          [17820.0, 13895.0]
+        ]]
+      }
+    },
+    {
+      "id": "designer_shrub_points",
+      "plant_type": "shrub",
+      "species": "Спирея серая",
+      "mode": "points",
+      "points": [
+        [17831.938923224625, 14565.41519799986],
+        [17832.2, 14565.5]
+      ]
+    },
+    {
+      "id": "grass_in_selected_square",
+      "plant_type": "herbaceous",
+      "species": "Газонная травосмесь для городских территорий",
+      "mode": "cover_area",
+      "area": {
+        "type": "Polygon",
+        "coordinates": [[
+          [17820.0, 14545.0],
+          [17855.0, 14545.0],
+          [17855.0, 14580.0],
+          [17820.0, 14580.0],
+          [17820.0, 14545.0]
+        ]]
+      }
+    }
+  ]
+}

@@ -93,9 +93,31 @@ def load_profiles(path: Path, default_max_count: int = 5000) -> dict[str, Planti
             max_count=int(item.get("maxCount") or data.get("maxPlacementsPerType") or default_max_count),
             catalog_reference=str(item.get("catalogReference", "plant catalog")),
             selection_reasons=tuple(str(value) for value in item.get("selectionReasons", [])),
+            understory_trunk_clearance_m=(float(item["understoryTrunkClearanceM"])
+                                         if item.get("understoryTrunkClearanceM") is not None else None),
+            allow_under_tree_canopy=item.get("allowUnderTreeCanopy") is True,
+            existing_tree_clearance_m=(float(item["existingTreeClearanceM"])
+                                      if item.get("existingTreeClearanceM") is not None else None),
+            footprint_boundary=str(item.get("footprintBoundary", "allow_zone")),
         )
         if profile.spacing_m <= 0 or profile.footprint_radius_m < 0:
             raise ValueError(f"Invalid planting profile: {profile.plant_type}")
+        if profile.understory_trunk_clearance_m is not None and (
+            profile.plant_type != "tree"
+            or not math.isfinite(profile.understory_trunk_clearance_m)
+            or profile.understory_trunk_clearance_m <= 0
+        ):
+            raise ValueError("understoryTrunkClearanceM must be a positive finite tree clearance")
+        if profile.allow_under_tree_canopy and profile.plant_type != "shrub":
+            raise ValueError("allowUnderTreeCanopy applies only to shrubs")
+        if profile.footprint_boundary not in {"allow_zone", "physical_area"}:
+            raise ValueError("footprintBoundary must be allow_zone or physical_area")
+        if profile.existing_tree_clearance_m is not None and (
+            not math.isfinite(profile.existing_tree_clearance_m)
+            or profile.existing_tree_clearance_m <= 0
+            or profile.existing_tree_clearance_m < profile.footprint_radius_m
+        ):
+            raise ValueError("existingTreeClearanceM must be finite, positive and at least the plant radius")
         profiles[profile.plant_type] = profile
     if not profiles:
         raise ValueError(f"No point planting profiles found in {path}")
@@ -103,7 +125,7 @@ def load_profiles(path: Path, default_max_count: int = 5000) -> dict[str, Planti
 
 
 def grid_candidates(
-    polygon: Polygon,
+    polygon: Polygon | MultiPolygon,
     spacing: float,
     angle: float,
     phase_x: float,
@@ -155,10 +177,23 @@ def grid_candidates(
         row += 1
 
 
+def mixed_canopy_pair(first: PlantingProfile, second: PlantingProfile) -> bool:
+    """Both species must explicitly permit a tree canopy above a shrub mass."""
+    tree, shrub = (first, second) if first.plant_type == "tree" else (second, first)
+    return (tree.plant_type == "tree" and shrub.plant_type == "shrub"
+            and tree.understory_trunk_clearance_m is not None
+            and tree.understory_trunk_clearance_m > 0
+            and shrub.allow_under_tree_canopy)
+
+
 def required_spacing(first: PlantingProfile, second: PlantingProfile) -> float:
     footprint_spacing = first.footprint_radius_m + second.footprint_radius_m
     if first.plant_type == second.plant_type:
         return max(first.spacing_m, second.spacing_m, footprint_spacing)
+    if mixed_canopy_pair(first, second):
+        tree, shrub = (first, second) if first.plant_type == "tree" else (second, first)
+        # Keep the entire shrub crown outside the reserved trunk area.
+        footprint_spacing = tree.understory_trunk_clearance_m + shrub.footprint_radius_m
     return max(first.avoid_other_plantings_m, second.avoid_other_plantings_m, footprint_spacing)
 
 
@@ -233,7 +268,7 @@ def pack_candidates(
 
 
 def best_component_layout(
-    component: Polygon,
+    component: Polygon | MultiPolygon,
     profile: PlantingProfile,
     profiles: dict[str, PlantingProfile],
     occupied: list[tuple[str, float, float]],
@@ -432,6 +467,56 @@ def best_linear_layout(
     return winner[0]
 
 
+def best_shrub_bed_layout(
+    scope: Any,
+    bed: Polygon,
+    profile: PlantingProfile,
+    profiles: dict[str, PlantingProfile],
+    occupied: list[tuple[str, float, float]],
+    max_count: int,
+    trace: dict[str, Any] | None = None,
+) -> list[tuple[float, float]]:
+    """Keep one grid across a bed even when trees split its safe scope."""
+    row_trace: dict[str, Any] = {}
+    rows = best_linear_layout(
+        scope, bed, profile, profiles, occupied, max_count, trace=row_trace,
+    )
+    if rows:
+        if trace is not None:
+            trace.update(row_trace)
+            trace["method"] = "shrub_bed_rows"
+            trace["reference"] = "whole planting bed"
+        return rows
+    grid_trace: dict[str, Any] = {}
+    points = best_component_layout(
+        scope, profile, profiles, occupied, max_count, trace=grid_trace,
+    )
+    if trace is not None:
+        trace.update(grid_trace)
+        trace["method"] = "shrub_bed_grid"
+        trace["reference"] = "whole planting bed"
+        trace["audit_scope"] = "grid points across all safe pieces of one bed"
+    return points
+
+
+def physical_planting_area(constraints: dict[str, Any]) -> Any:
+    """Ground that can contain a whole crown, before centre-to-object setbacks."""
+    base = constraints.get("base_allowed_area")
+    if base is None:
+        raise ValueError("base_allowed_area is required for physical footprint placement")
+    ground = make_valid(base)
+    confirmed = constraints.get("confirmed_plantable_surface")
+    if confirmed is not None:
+        ground = ground.intersection(confirmed)
+    obstacles = [constraints[name] for name in (
+        "hard_surface_area", "road_area", "sidewalk_area", "buildings_in_work_area",
+        "utility_well_footprints", "heat_chamber_footprints",
+    ) if constraints.get(name) is not None and not constraints[name].is_empty]
+    if obstacles:
+        ground = ground.difference(unary_union(obstacles))
+    return make_valid(ground)
+
+
 def safe_scope(
     zone: Any,
     profile: PlantingProfile,
@@ -439,9 +524,19 @@ def safe_scope(
     existing_tree_belts: Any | None,
     existing_tree_clearance_m: float,
     units_per_meter: float,
+    physical_area: Any | None = None,
 ) -> Any:
     footprint = profile.footprint_radius_m * units_per_meter
-    scope = make_valid(zone).buffer(-footprint) if footprint > 0 else make_valid(zone)
+    if profile.footprint_boundary == "physical_area":
+        if physical_area is None:
+            raise ValueError("physical_area is required for physical footprint placement")
+        # Rule buffers constrain the centre. Only the physical ground boundary
+        # constrains the complete crown; do not add its radius to every setback.
+        ground = make_valid(physical_area)
+        inset = ground.buffer(-footprint) if footprint > 0 else ground
+        scope = make_valid(zone).intersection(inset)
+    else:
+        scope = make_valid(zone).buffer(-footprint) if footprint > 0 else make_valid(zone)
     if scope.is_empty:
         return scope
     if existing_trees is not None and not existing_trees.is_empty:
@@ -463,7 +558,8 @@ def configured_existing_tree_clearance_m(
     ``existingTreeClearanceM`` is the current explicit project parameter.  The
     legacy canopy-radius setting remains supported for older config files.
     """
-    explicit = config.get("existingTreeClearanceM")
+    explicit = (profile.existing_tree_clearance_m if profile.existing_tree_clearance_m is not None
+                else config.get("existingTreeClearanceM"))
     clearance = (
         float(explicit)
         if explicit is not None
@@ -488,6 +584,12 @@ def rule_geometry(
                 return item
         return None
 
+    if target_type == "heat_pipe" and target_type in utilities:
+        chamber = first_available(
+            constraints.get("heat_chamber_full_footprints"),
+            constraints.get("heat_chamber_footprints"),
+        )
+        return unary_union([utilities[target_type], chamber]) if chamber is not None else utilities[target_type]
     if target_type in utilities:
         return utilities[target_type]
     if target_type == "building":
@@ -575,11 +677,26 @@ def build_checks(
             actual = point.distance(geometry) / units_per_meter
         if status == "applied" and required is not None:
             check_status = "passed" if actual is not None and actual + 1e-7 >= float(required) else "failed"
-            explanation = (
-                f"Измерено {actual:.3f} м; требуется не менее {float(required):g} м."
-                if actual is not None
-                else "Исходная геометрия для измерения расстояния недоступна."
-            )
+            if evaluation.get("rule_code", "").endswith("HEAT_PROTECTION_3") and actual is not None:
+                if check_status == "passed":
+                    explanation = (
+                        f"До принятой геометрии теплосети/камеры {actual:.3f} м: "
+                        "точка вне расчётной охранной зоны 3 м. "
+                        "Наружную границу канала по DXF требуется подтвердить."
+                    )
+                else:
+                    explanation = (
+                        f"До принятой геометрии теплосети/камеры {actual:.3f} м: "
+                        "точка в расчётной охранной зоне 3 м. "
+                        "Для посадки нужно письменное согласие владельца сети; "
+                        "без него точка не включается в автоматический план."
+                    )
+            else:
+                explanation = (
+                    f"Измерено {actual:.3f} м; требуется не менее {float(required):g} м."
+                    if actual is not None
+                    else "Исходная геометрия для измерения расстояния недоступна."
+                )
         else:
             check_status = "manual_review"
             explanation = str(evaluation.get("reason", "Требуется ручная проверка."))
@@ -591,6 +708,8 @@ def build_checks(
                 "actual_distance_m": actual,
                 "required_distance_m": required,
                 "norm_reference": evaluation.get("norm_reference"),
+                "rule_kind": evaluation.get("rule_kind"),
+                "measurement_limit": evaluation.get("measurement_limit"),
                 "explanation": explanation,
                 "geometry_source": evaluation.get("geometry_source"),
             }
@@ -615,6 +734,8 @@ def generate_plan(
     utilities = load_geojsonl_by_object_type(utilities_path) if utilities_path.exists() else {}
     config = json.loads(config_path.read_text(encoding="utf-8-sig"))
     profiles = load_profiles(config_path)
+    physical_ground = (physical_planting_area(constraints)
+                       if any(p.footprint_boundary == "physical_area" for p in profiles.values()) else None)
     units_per_meter = float(zone_report.get("dxf_units_per_meter", config.get("dxfUnitsPerMeter", 1.0)))
     if not math.isfinite(units_per_meter) or units_per_meter <= 0:
         raise ValueError("dxf_units_per_meter must be finite and positive")
@@ -638,6 +759,7 @@ def generate_plan(
             normalized.get("existing_tree_belt"),
             existing_tree_clearance,
             units_per_meter,
+            physical_ground,
         )
         generated: list[tuple[float, float]] = []
         for component in sorted(polygon_parts(scope), key=lambda item: item.area, reverse=True):
@@ -687,6 +809,11 @@ def generate_plan(
                         "spacing_m": profile.spacing_m,
                         "footprint_radius_m": profile.footprint_radius_m,
                         "symbol_radius_m": profile.symbol_radius_m,
+                        "avoid_other_plantings_m": profile.avoid_other_plantings_m,
+                        "understory_trunk_clearance_m": profile.understory_trunk_clearance_m,
+                        "allow_under_tree_canopy": profile.allow_under_tree_canopy,
+                        "existing_tree_clearance_m": existing_tree_clearance,
+                        "footprint_boundary": profile.footprint_boundary,
                         "coordinate_reference": "local_dxf_coordinates",
                         "dxf_units_per_meter": units_per_meter,
                         "checks": checks,

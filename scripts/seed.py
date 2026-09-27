@@ -72,6 +72,17 @@ NORM_DOCUMENTS = (
         note="Основные минимальные расстояния до деревьев и кустарников.",
     ),
     NormDocument(
+        code="HEAT_NETWORK_PROTECTION_197",
+        title="Типовые правила охраны коммунальных тепловых сетей, приказ Минстроя России № 197",
+        edition="1992",
+        effective_from=date(1993, 1, 1),
+        source_url="https://rulaws.ru/acts/Prikaz-Minstroya-RF-ot-17.08.1992-N-197/",
+        note=(
+            "Пункты 4, 6–7: охранная зона не менее 3 м от наружной конструкции; "
+            "посадка внутри неё требует письменного согласия владельца сети."
+        ),
+    ),
+    NormDocument(
         code="PP743_MOSCOW",
         title=(
             "Постановление Правительства Москвы от 10.09.2002 № 743-ПП"
@@ -254,6 +265,24 @@ def distance_rule(
     )
 
 
+def heat_protection_rule(plant_type: str) -> PlacementRule:
+    """Exclude proposals needing owner consent until that consent is provided."""
+    return PlacementRule(
+        code=f"{plant_type.upper()}_HEAT_PROTECTION_3",
+        norm_code="HEAT_NETWORK_PROTECTION_197",
+        plant_type=plant_type,
+        target_object="heat_pipe",
+        conditions={
+            "check": "min_distance",
+            "min_distance_m": 3.0,
+            "measure_to": "plant_axis",
+            "rule_kind": "owner_consent_required_within_protection_zone",
+            "measurement_limit": "cleaned_cad_geometry_may_not_be_outer_wall",
+        },
+        norm_reference="Типовые правила охраны коммунальных тепловых сетей, пп. 4, 6–7",
+    )
+
+
 PLACEMENT_RULES = (
     distance_rule("TREE_BUILDING_5", "tree", "building", 5.0),
     distance_rule("TREE_SIDEWALK_0_7", "tree", "sidewalk", 0.7),
@@ -264,12 +293,14 @@ PLACEMENT_RULES = (
     # Эти расстояния применяются только к геометрии CLEAN_* после отдельного
     # этапа очистки инженерных сетей. Сырые CAD-слои для buffer не используются.
     distance_rule("TREE_HEAT_2", "tree", "heat_pipe", 2.0),
+    heat_protection_rule("tree"),
     distance_rule("TREE_WATER_2", "tree", "water_pipe", 2.0),
     distance_rule("TREE_POWER_CABLE_2", "tree", "power_cable", 2.0),
     distance_rule("SHRUB_BUILDING_1_5", "shrub", "building", 1.5),
     distance_rule("SHRUB_SIDEWALK_0_5", "shrub", "sidewalk", 0.5),
     distance_rule("SHRUB_ROAD_EDGE_1", "shrub", "road_edge", 1.0),
     distance_rule("SHRUB_HEAT_1", "shrub", "heat_pipe", 1.0),
+    heat_protection_rule("shrub"),
     distance_rule("SHRUB_POWER_CABLE_0_75", "shrub", "power_cable", 0.75),
 )
 

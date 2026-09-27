@@ -453,7 +453,8 @@ def build_manifest(
                     "mask_color": mask_colors[("tree", species)],
                     "position": local_xy(geometry.x, geometry.y, focus),
                     "height": 5.5,
-                    "crown_radius": max(1.2, float(properties.get("symbol_radius_m", 2.5))),
+                    "crown_radius": float(properties.get("footprint_radius_m")
+                                          or properties.get("symbol_radius_m", 2.5)),
                 }
             )
         elif item["plant_type"] == "shrub" and isinstance(geometry, Point):

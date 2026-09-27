@@ -3,7 +3,7 @@
   "maxPlacementsPerType": 5000,
   "dxfUnitsPerMeter": 1.0,
   "diagnosticRejectedMaxCount": 1000,
-  "treeLayoutMode": "linear_preferred",
+  "treeLayoutMode": "composition",
   "plantingProfiles": [
     {
       "plantType": "tree",
@@ -13,6 +13,7 @@
       "footprintRadiusM": 3.0,
       "symbolRadiusM": 2.0,
       "avoidOtherPlantingsM": 2.0,
+      "understoryTrunkClearanceM": 1.0,
       "catalogReference": "project planting catalog",
       "selectionReasons": ["Подходит для линейных городских посадок"]
     },
@@ -24,6 +25,9 @@
       "footprintRadiusM": 0.75,
       "symbolRadiusM": 0.5,
       "avoidOtherPlantingsM": 0.5,
+      "allowUnderTreeCanopy": true,
+      "existingTreeClearanceM": 1.5,
+      "footprintBoundary": "physical_area",
       "catalogReference": "project planting catalog",
       "selectionReasons": ["Подходит для групповых и линейных посадок"]
     },

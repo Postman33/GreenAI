@@ -19,6 +19,26 @@ from shapely.geometry import GeometryCollection, shape
 from shapely.ops import unary_union
 from shapely.strtree import STRtree
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src.domain.models import PlantingProfile
+from src.planting.placement_generator import required_spacing, physical_planting_area
+
+
+def spacing_profile(properties: dict[str, Any]) -> PlantingProfile:
+    """Reconstruct the saved design policy in drawing units for verification."""
+    units = float(properties.get("dxf_units_per_meter", 1.0))
+    clearance = properties.get("understory_trunk_clearance_m")
+    return PlantingProfile(
+        plant_type=str(properties.get("plant_type", "")), species=str(properties.get("species", "")),
+        spacing_m=float(properties.get("spacing_m", 0.0)) * units,
+        footprint_radius_m=float(properties.get("footprint_radius_m", 0.0)) * units,
+        symbol_radius_m=0.0,
+        avoid_other_plantings_m=float(properties.get("avoid_other_plantings_m", 0.0)) * units,
+        max_count=0, catalog_reference="", selection_reasons=(),
+        understory_trunk_clearance_m=float(clearance) * units if clearance is not None else None,
+        allow_under_tree_canopy=properties.get("allow_under_tree_canopy") is True,
+    )
+
 
 AREA_TOLERANCE = 1e-4
 NPA_REFERENCE_MARKERS = (
@@ -150,6 +170,8 @@ def main() -> None:
     parser.add_argument("--zone-report", type=Path)
     parser.add_argument("--constraint-report", type=Path)
     parser.add_argument("--plan-report", type=Path)
+    parser.add_argument("--normalized-objects", type=Path,
+                        help="Existing vegetation; defaults to the zone/plan report source")
     parser.add_argument("--input-dxf", type=Path)
     parser.add_argument("--output-dxf", type=Path)
     parser.add_argument("--output", type=Path, default=Path("verification_report.json"))
@@ -380,6 +402,27 @@ def main() -> None:
         plan = read_by_object_type(args.planting_plan)
         point_records = plan.get("proposed_planting", [])
         area_records = plan.get("proposed_planting_area", [])
+        vegetation_path = args.normalized_objects
+        if vegetation_path is None and args.zone_report is not None:
+            vegetation_path = resolve_report_reference(args.zone_report, zone_report.get("normalized_input"))
+        if vegetation_path is None and args.plan_report is not None:
+            source_report = json.loads(args.plan_report.read_text(encoding="utf-8-sig"))
+            vegetation_path = resolve_report_reference(args.plan_report, source_report.get("normalized_input"))
+        vegetation_parts: dict[str, list[Any]] = {"existing_tree": [], "existing_tree_belt": []}
+        vegetation_available = vegetation_path is not None and vegetation_path.is_file()
+        if vegetation_available:
+            with vegetation_path.open(encoding="utf-8-sig") as source:
+                for line in source:
+                    if not line.strip():
+                        continue
+                    feature = json.loads(line)
+                    kind = feature.get("properties", {}).get("object_type")
+                    if kind in vegetation_parts and feature.get("geometry"):
+                        vegetation_parts[kind].append(shape(feature["geometry"]))
+        vegetation = {kind: unary_union(parts) for kind, parts in vegetation_parts.items()}
+        physical_ground = physical_planting_area({
+            kind: unary_union([g for _p, g in records]) for kind, records in constraints.items()
+        })
         ids: list[str] = []
         point_ids: list[str] = []
         point_failures = 0
@@ -388,6 +431,12 @@ def main() -> None:
         missing_npa_references = 0
         missing_explanations = 0
         outside_zone_area = 0.0
+        outside_physical_area = 0.0
+        centre_outside_zone_count = 0
+        existing_tree_failures = 0
+        existing_belt_failures = 0
+        missing_vegetation_source_count = 0
+        canopy_rule_buffer_overlap_area = 0.0
         spacing_failures = 0
         cross_type_spacing_failures = 0
         measured_distance_failures = 0
@@ -411,7 +460,26 @@ def main() -> None:
                 point_failures += 1
                 continue
             footprint = geometry.buffer(footprint_radius, quad_segs=8)
-            outside_zone_area += footprint.difference(zone).area
+            centre_outside_zone_count += not zone.covers(geometry)
+            boundary_mode = properties.get("footprint_boundary", "allow_zone")
+            if boundary_mode == "physical_area":
+                outside_physical_area += footprint.difference(physical_ground).area
+                canopy_rule_buffer_overlap_area += footprint.difference(zone).area
+            elif boundary_mode == "allow_zone":
+                outside_zone_area += footprint.difference(zone).area
+            else:
+                point_failures += 1
+            if properties.get("existing_tree_clearance_m") is not None:
+                if not vegetation_available:
+                    missing_vegetation_source_count += 1
+                else:
+                    clearance = float(properties["existing_tree_clearance_m"]) * float(properties.get("dxf_units_per_meter", 1))
+                    if not math.isfinite(clearance) or clearance < 0:
+                        point_failures += 1
+                    elif not vegetation["existing_tree"].is_empty and geometry.distance(vegetation["existing_tree"]) + 1e-7 < clearance:
+                        existing_tree_failures += 1
+                    if not vegetation["existing_tree_belt"].is_empty and geometry.distance(vegetation["existing_tree_belt"]) + 1e-7 < footprint_radius:
+                        existing_belt_failures += 1
             point_checks = properties.get("checks") or []
             if not point_checks or any(item.get("status") == "failed" for item in point_checks):
                 point_failures += 1
@@ -491,12 +559,14 @@ def main() -> None:
             left_items = points_by_type[left_type]
             right_items = points_by_type[right_type]
             right_points = [point for _properties, point in right_items]
+            right_profiles = [spacing_profile(properties) for properties, _point in right_items]
             right_tree = STRtree(right_points)
             right_max = max(
                 (
                     max(
                         float(properties.get("avoid_other_plantings_m", 0.0)),
                         float(properties.get("footprint_radius_m", 0.0)),
+                        float(properties.get("understory_trunk_clearance_m") or 0.0),
                     ) * float(properties.get("dxf_units_per_meter", 1.0))
                     for properties, _point in right_items
                 ),
@@ -506,15 +576,12 @@ def main() -> None:
                 units = float(properties.get("dxf_units_per_meter", 1.0))
                 left_avoid = float(properties.get("avoid_other_plantings_m", 0.0)) * units
                 left_radius = float(properties.get("footprint_radius_m", 0.0)) * units
-                search_radius = max(left_avoid, left_radius + right_max, right_max)
-                for right_index in right_tree.query(point.buffer(search_radius)):
+                left_extent = max(left_radius, float(properties.get("understory_trunk_clearance_m") or 0.0) * units)
+                search_radius = max(left_avoid, left_extent + right_max, right_max)
+                left_profile = spacing_profile(properties)
+                for right_index in right_tree.query(point, predicate="dwithin", distance=search_radius):
                     other_properties, other = right_items[int(right_index)]
-                    other_units = float(other_properties.get("dxf_units_per_meter", 1.0))
-                    pair_required = max(
-                        left_avoid,
-                        float(other_properties.get("avoid_other_plantings_m", 0.0)) * other_units,
-                        left_radius + float(other_properties.get("footprint_radius_m", 0.0)) * other_units,
-                    )
+                    pair_required = required_spacing(left_profile, right_profiles[int(right_index)])
                     if point.distance(other) + 1e-7 < pair_required:
                         cross_type_spacing_failures += 1
         area_unions: dict[str, Any] = {}
@@ -550,6 +617,13 @@ def main() -> None:
             "missing_npa_reference_count": missing_npa_references,
             "missing_explanation_count": missing_explanations,
             "footprint_outside_allow_zone_area": outside_zone_area,
+            "footprint_outside_physical_area": outside_physical_area,
+            "centre_outside_allow_zone_count": centre_outside_zone_count,
+            "canopy_overlap_with_rule_buffers_area": canopy_rule_buffer_overlap_area,
+            "existing_tree_clearance_failure_count": existing_tree_failures,
+            "existing_tree_belt_clearance_failure_count": existing_belt_failures,
+            "missing_vegetation_source_count": missing_vegetation_source_count,
+            "vegetation_source": str(vegetation_path) if vegetation_path is not None else None,
             "same_type_spacing_failure_count": spacing_failures,
             "cross_type_spacing_failure_count": cross_type_spacing_failures,
             "measured_distance_failure_count": measured_distance_failures,
@@ -583,6 +657,14 @@ def main() -> None:
             )
         if outside_zone_area > AREA_TOLERANCE:
             failures.append("One or more complete planting footprints leave their allow zone")
+        if outside_physical_area > AREA_TOLERANCE:
+            failures.append("One or more complete planting footprints leave physical plantable ground")
+        if centre_outside_zone_count:
+            failures.append(f"{centre_outside_zone_count} planting centres leave their allow zone")
+        if existing_tree_failures or existing_belt_failures:
+            failures.append(f"Existing vegetation clearances violated: {existing_tree_failures} trees, {existing_belt_failures} belts")
+        if missing_vegetation_source_count:
+            failures.append("Normalized objects are required to verify existing vegetation clearances")
         if spacing_failures:
             failures.append(f"Planting plan has {spacing_failures} same-type spacing violations")
         if cross_type_spacing_failures:

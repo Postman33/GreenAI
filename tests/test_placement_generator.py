@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from shapely.geometry import MultiPoint, Point, box, mapping, shape
+from shapely.geometry import LineString, MultiPoint, Point, box, mapping, shape
 
 from src.planting import placement_generator
 
@@ -18,6 +18,33 @@ def write_jsonl(path: Path, features: list[dict]) -> None:
 
 
 class PlacementGeneratorTests(unittest.TestCase):
+    def test_heat_protection_check_explains_consent_and_includes_chamber(self) -> None:
+        profile = placement_generator.PlantingProfile(
+            plant_type="shrub", species="Test shrub", spacing_m=1.5,
+            footprint_radius_m=0.75, symbol_radius_m=0.75,
+            avoid_other_plantings_m=0.0, max_count=10,
+            catalog_reference="test", selection_reasons=(),
+        )
+        report = {"rules": [{
+            "rule_code": "SHRUB_HEAT_PROTECTION_3",
+            "target_object_type": "heat_pipe",
+            "status": "applied", "min_distance_m": 3.0,
+            "norm_reference": "Приказ № 197, пп. 4, 6–7",
+        }]}
+        constraints = {"heat_chamber_full_footprints": box(2, 2, 4, 4)}
+        utilities = {"heat_pipe": LineString([(10, 0), (10, 20)])}
+        near = placement_generator.build_checks(
+            Point(5, 3), profile, report, constraints, {}, utilities, 1.0,
+        )[-1]
+        far = placement_generator.build_checks(
+            Point(14, 10), profile, report, constraints, {}, utilities, 1.0,
+        )[-1]
+        self.assertEqual(near["status"], "failed")
+        self.assertAlmostEqual(near["actual_distance_m"], 1.0)
+        self.assertIn("письменное согласие", near["explanation"])
+        self.assertEqual(far["status"], "passed")
+        self.assertIn("вне расчётной охранной зоны", far["explanation"])
+
     def test_sidewalk_check_uses_site_geometry_instead_of_distant_sheet_hatch(self) -> None:
         normalized = {
             "work_boundary": box(0, 0, 10, 10),
@@ -83,6 +110,39 @@ class PlacementGeneratorTests(unittest.TestCase):
         )
         bent = box(0, 0, 5, 35).union(box(0, 0, 30, 5))
         self.assertIsNone(placement_generator.linear_reference(bent, 5.0))
+
+    def test_shrub_bed_keeps_aligned_rows_across_tree_exclusions(self) -> None:
+        profile = placement_generator.PlantingProfile(
+            plant_type="shrub", species="Test shrub", spacing_m=1.5,
+            footprint_radius_m=0.75, symbol_radius_m=0.5,
+            avoid_other_plantings_m=0.5, max_count=100,
+            catalog_reference="test", selection_reasons=(),
+        )
+        bed = box(0, 0, 24, 6)
+        scope = bed.difference(Point(12, 3).buffer(2.5))
+        trace: dict = {}
+        points = placement_generator.best_shrub_bed_layout(
+            scope, bed, profile, {"shrub": profile}, [], 100, trace=trace,
+        )
+        self.assertEqual(trace["method"], "shrub_bed_rows")
+        self.assertTrue(any(x < 9 for x, _y in points))
+        self.assertTrue(any(x > 15 for x, _y in points))
+        left_rows = {round(y, 6) for x, y in points if x < 9}
+        right_rows = {round(y, 6) for x, y in points if x > 15}
+        self.assertEqual(left_rows, right_rows)
+        self.assertTrue(all(scope.covers(Point(x, y)) for x, y in points))
+        self.assertEqual(trace["winner"]["accepted_count"], len(points))
+
+    def test_project_shrub_clearance_allows_understory_outside_trunk_space(self) -> None:
+        config = placement_generator.load_profiles(Path("config/planting.json"))
+        shrub = config["shrub"]
+        self.assertEqual(shrub.existing_tree_clearance_m, 1.5)
+        scope = placement_generator.safe_scope(
+            box(0, 0, 10, 10), shrub, Point(5, 5), None,
+            shrub.existing_tree_clearance_m, 1.0, box(0, 0, 10, 10),
+        )
+        self.assertTrue(scope.covers(Point(6.7, 5)))
+        self.assertFalse(scope.covers(Point(6.4, 5)))
 
     def test_generates_spaced_points_and_protects_existing_tree(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

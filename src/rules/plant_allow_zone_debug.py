@@ -53,7 +53,7 @@ Lineal = LineString | MultiLineString
 DEBUG_CONTEXT_LAYERS = {
     "building": ("DEBUG_BUILDINGS", 30),
     "building_source": ("DEBUG_BUILDING_SOURCE", 1),
-    "existing_tree": ("DEBUG_EXISTING_TREES", 94),
+    "existing_tree": ("DEBUG_EXISTING_TREES", 6),
     "existing_tree_belt": ("DEBUG_EXISTING_TREE_BELTS", 92),
     "vegetation_boundary": ("DEBUG_VEGETATION", 82),
     "water_pipe": ("DEBUG_WATER_PIPE", 5),
@@ -279,6 +279,13 @@ def export_diagnostic_legend(
         "| DEBUG_REVIEW_HEAT_CHAMBERS | Похожие на камеры контуры без колодца: требуется визуальная проверка, посадка автоматически не исключена. |",
         "| DEBUG_BASE_ALLOWED | Базовая область после абсолютных исключений. |",
         "| DEBUG_ALLOW_TREE / DEBUG_ALLOW_SHRUB | Область после применённых правил отступа. |",
+        "| DEBUG_EXISTING_TREES | Существующие деревья: пурпурные кольца с крестом поверх заливок; центр символа соответствует стволу. |",
+        "| DEBUG_PLANT_TREE | Принятые деревья: зелёные круги в координатах плана. |",
+        "| DEBUG_PLANT_SHRUB_POINTS | Принятые кустарники: жёлтые круги; слой включён по умолчанию. |",
+        "| DEBUG_PLANT_SHRUB / DEBUG_PLANT_HERBACEOUS | Площадные посадки кустарников / травянистых растений, если они есть в плане. |",
+        "| DEBUG_PLANT_*_IDS | Идентификаторы принятых точек; слои выключены по умолчанию. |",
+        "| DEBUG_PLANT_*_REASONS | Проверки принятых точек и ссылки на нормы; общий слой на тип растения, выключен по умолчанию. |",
+        "| DEBUG_REASON_T_* | Проверки принятого дерева; включите слой с его ID. |",
         "| DEBUG_REJECTED_* | Отклонённые точки; полная причина хранится в метаданных GREEN_AI объекта. |",
         "| DEBUG_REJECT_REASONS | Общий отключённый слой с выносками причин; отдельных слоёв на каждую точку нет. |",
         "",
@@ -550,6 +557,9 @@ def export_dxf(
     add_lines(modelspace, road_edges, "DEBUG_ROAD_EDGES")
     for object_type, geometry in context_geometries.items():
         layer, _ = DEBUG_CONTEXT_LAYERS[object_type]
+        if object_type == "existing_tree":
+            # Tree symbols are drawn after every area hatch below.
+            continue
         if object_type == "building":
             for polygon in polygon_parts(as_polygonal(geometry)):
                 add_zone_polygon(modelspace, polygon, layer, 30, 0.15)
@@ -624,53 +634,77 @@ def export_dxf(
                 draw_interior_outlines=False,
             )
 
-    for point, properties in planting_points.get("tree", []):
-        radius = max(
-            0.05,
-            float(properties.get("symbol_radius_m", 0.75))
-            * float(properties.get("dxf_units_per_meter", 1.0)),
+    for plant_type, items in sorted(planting_points.items()):
+        if not items:
+            continue
+        suffix = re.sub(r"[^A-Z0-9_]+", "_", plant_type.upper()) or "PLANT"
+        # Keep point markers separate from area hatches, so dense shrub
+        # plantings can be inspected without adding circles to the area layer.
+        marker_layer = (
+            "DEBUG_PLANT_TREE" if plant_type == "tree"
+            else f"DEBUG_PLANT_{suffix}_POINTS"
         )
-        modelspace.add_circle(
-            (point.x, point.y),
-            radius,
-            dxfattribs={
-                "layer": "DEBUG_PLANT_TREE",
-                "color": 3,
-                "lineweight": 70,
-            },
+        id_layer = f"DEBUG_PLANT_{suffix}_IDS"
+        color = {"tree": 3, "shrub": 2, "herbaceous": 94, "groundcover": 6}.get(
+            plant_type, 3
         )
-        planting_id = str(properties.get("planting_id", "TREE"))
-        modelspace.add_text(
-            planting_id,
-            height=max(0.35, radius * 0.35),
-            dxfattribs={"layer": "DEBUG_PLANT_TREE_IDS", "color": 7},
-        ).set_placement((point.x + radius, point.y + radius))
-        reason_layer = "DEBUG_REASON_" + re.sub(
-            r"[^A-Z0-9_]+", "_", planting_id.upper()
-        )
-        if reason_layer not in document.layers:
-            reason_definition = document.layers.add(reason_layer, color=7)
-        else:
-            reason_definition = document.layers.get(reason_layer)
-        reason_definition.off()
-        label_x = point.x + radius + 1.0
-        label_y = point.y + radius + 1.0
-        modelspace.add_line(
-            (point.x, point.y),
-            (label_x, label_y),
-            dxfattribs={"layer": reason_layer, "color": 7},
-        )
-        reason_text = "\\P".join(point_reason_lines(properties))
-        modelspace.add_mtext(
-            reason_text,
-            dxfattribs={
-                "layer": reason_layer,
-                "color": 7,
-                "char_height": 0.55,
-                "width": 65.0,
-                "insert": (label_x, label_y),
-            },
-        )
+        for layer, layer_color in ((marker_layer, color), (id_layer, 7)):
+            if layer not in document.layers:
+                document.layers.add(layer, color=layer_color)
+            definition = document.layers.get(layer)
+            definition.color = layer_color
+            definition.thaw()
+            definition.on()
+        document.layers.get(id_layer).off()
+        for point, properties in items:
+            radius = max(
+                0.05,
+                float(properties.get("symbol_radius_m", 0.75))
+                * float(properties.get("dxf_units_per_meter", 1.0)),
+            )
+            circle = modelspace.add_circle(
+                (point.x, point.y),
+                radius,
+                dxfattribs={
+                    "layer": marker_layer,
+                    "color": color,
+                    "lineweight": 70,
+                },
+            )
+            attach_planting_metadata(circle, properties)
+            planting_id = str(properties.get("planting_id", suffix))
+            modelspace.add_text(
+                planting_id,
+                height=max(0.35, radius * 0.35),
+                dxfattribs={"layer": id_layer, "color": 7},
+            ).set_placement((point.x + radius, point.y + radius))
+            # Preserve existing tree explanation layers. Other point types
+            # share one layer each, avoiding thousands of per-shrub layers.
+            reason_layer = (
+                "DEBUG_REASON_" + re.sub(r"[^A-Z0-9_]+", "_", planting_id.upper())
+                if plant_type == "tree" else f"DEBUG_PLANT_{suffix}_REASONS"
+            )
+            if reason_layer not in document.layers:
+                document.layers.add(reason_layer, color=7)
+            document.layers.get(reason_layer).off()
+            label_x = point.x + radius + 1.0
+            label_y = point.y + radius + 1.0
+            modelspace.add_line(
+                (point.x, point.y),
+                (label_x, label_y),
+                dxfattribs={"layer": reason_layer, "color": 7},
+            )
+            modelspace.add_mtext(
+                "\\P".join(point_reason_lines(properties)),
+                dxfattribs={
+                    "layer": reason_layer,
+                    "color": 7,
+                    "char_height": 0.55,
+                    "width": 65.0,
+                    "insert": (label_x, label_y),
+                    "rotation": 0.0,
+                },
+            )
 
     rejected_reason_layer = "DEBUG_REJECT_REASONS"
     if rejected_points:
@@ -750,6 +784,30 @@ def export_dxf(
         color = (1, 30, 6, 4, 5, 2)[index % 6]
         for polygon in polygon_parts(geometry):
             add_zone_polygon(modelspace, polygon, layer, color, 0.58)
+
+    tree_geometry = context_geometries.get("existing_tree")
+    if tree_geometry is not None:
+        tree_markers = []
+        for point in point_parts(tree_geometry):
+            ring = modelspace.add_circle(
+                (point.x, point.y), 0.55,
+                dxfattribs={"layer": "DEBUG_EXISTING_TREES", "color": 6, "lineweight": 70},
+            )
+            tree_markers.append(ring)
+            for start, end in (
+                ((point.x - 0.18, point.y), (point.x + 0.18, point.y)),
+                ((point.x, point.y - 0.18), (point.x, point.y + 0.18)),
+            ):
+                tree_markers.append(modelspace.add_line(
+                    start, end,
+                    dxfattribs={"layer": "DEBUG_EXISTING_TREES", "color": 6, "lineweight": 70},
+                ))
+        # Also record the draw order explicitly for CAD viewers that honour
+        # SORTENTS instead of relying on DXF entity order alone.
+        if tree_markers:
+            modelspace.set_redraw_order(
+                (entity.dxf.handle, "0") for entity in tree_markers
+            )
 
     # Open the diagnostic drawing with the actual proposal visible.  The
     # explanation layers remain available in the layer manager and can be
@@ -944,6 +1002,10 @@ def build_debug_export(
             geometry = cleaned.get(object_type)
             if geometry is not None and not geometry.is_empty:
                 normalized_objects[f"clean_{object_type}"] = geometry
+        clean_heat = normalized_objects.get("clean_heat_pipe")
+        full_chambers = normalized_objects.get("heat_chamber_full_footprints")
+        if clean_heat is not None and full_chambers is not None and not full_chambers.is_empty:
+            normalized_objects["clean_heat_pipe"] = unary_union([clean_heat, full_chambers])
     work_boundary_geometry = normalized_objects.get("work_boundary")
     if work_boundary_geometry is None or work_boundary_geometry.is_empty:
         raise ValueError("No work_boundary geometry found in normalized input")
@@ -1031,6 +1093,10 @@ def build_debug_export(
             if rule.get("status") == "applied"
         }
         rule_geometries = {**normalized_objects, **context_geometries}
+        # The 3 m protection layer must include complete nearby chambers,
+        # even when their footprint extends beyond the context display clip.
+        if "clean_heat_pipe" in normalized_objects:
+            rule_geometries["clean_heat_pipe"] = normalized_objects["clean_heat_pipe"]
         building_linework = normalized_objects.get("building_linework")
         if building_linework is not None and not building_linework.is_empty:
             building_sources = [building_linework]
@@ -1093,6 +1159,8 @@ def build_debug_export(
         print(f"  {object_type}: {layer} | {part_count} part(s)")
     for plant_type, geometry in sorted(zones.items()):
         print(f"  {plant_type}: {geometry.area:.3f} square DXF units")
+    for plant_type, items in sorted(planting_points.items()):
+        print(f"  planned {plant_type}: {len(items)} diagnostic point(s)")
     for plant_type, items in sorted(rejected_points.items()):
         print(f"  rejected {plant_type}: {len(items)} diagnostic point(s)")
     for layer, geometry in rule_exclusions.items():

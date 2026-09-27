@@ -31,12 +31,18 @@ PLANTING_LAYERS = {
     "shrub": ("GREEN_AI_PLANT_SHRUB", 2),
     "herbaceous": ("GREEN_AI_HERBACEOUS", 94),
 }
+REMOVAL_REVIEW_LAYERS = {
+    "tree": ("GREEN_AI_REMOVE_TREE_REVIEW", 1),
+    "shrub": ("GREEN_AI_REMOVE_SHRUB_REVIEW", 1),
+}
 GREEN_AI_APPID = "GREEN_AI"
 
 
 CHECK_TITLES = {
     "ALLOWED_ZONE": "Точка находится вне итоговой допустимой зоны",
     "PLANT_FOOTPRINT_INSIDE_ZONE": "Крона растения не помещается в допустимой зоне",
+    "PLANT_FOOTPRINT_INSIDE_SITE": "Крона выходит за территорию озеленения или пересекает препятствие",
+    "PLANT_CENTER_INSIDE_ZONE": "Центр посадки находится в зоне ограничений",
     "NEW_PLANT_SPACING": "Недостаточное расстояние до новой посадки",
     "EXISTING_TREE_CLEARANCE": "Недостаточное расстояние до существующего дерева",
     "EXISTING_TREE_BELT_CLEARANCE": "Недостаточное расстояние до существующей древесной полосы",
@@ -84,6 +90,10 @@ def _check_advice(check: dict[str, Any], deficit: float | None) -> str:
     amount = f" минимум на {deficit:.2f} м" if deficit is not None and deficit > 0 else ""
     if code == "ALLOWED_ZONE":
         return "Выберите точку внутри зелёной допустимой зоны; конкретное ограничение указано ниже."
+    if code == "PLANT_FOOTPRINT_INSIDE_SITE":
+        return f"Сдвиньте крону внутрь территории озеленения, в сторону от покрытий и препятствий{amount}."
+    if code == "PLANT_CENTER_INSIDE_ZONE":
+        return "Переместите центр за границу зоны ограничений; конкретный отступ указан в проверках."
     if code == "PLANT_FOOTPRINT_INSIDE_ZONE":
         return (
             f"Сдвиньте центр растения внутрь допустимой зоны{amount} либо выберите "
@@ -357,6 +367,7 @@ def export_zones(
     show_analysis_layers: bool | None = None,
     overlay_only: bool = False,
     insunits: int | None = None,
+    composition_report_path: Path | None = None,
 ) -> None:
     if input_dxf.resolve() == output_dxf.resolve():
         raise ValueError("Output DXF must differ from the original input DXF")
@@ -491,6 +502,43 @@ def export_zones(
                 "previous_entities_removed": removed,
             }
 
+    if composition_report_path is not None:
+        composition_report = json.loads(composition_report_path.read_text(encoding="utf-8-sig"))
+        units = float(composition_report.get("dxf_units_per_meter", 1.0))
+        if not math.isfinite(units) or units <= 0:
+            raise ValueError("Composition report has invalid DXF units")
+        for plant_type, (layer_name, color) in REMOVAL_REVIEW_LAYERS.items():
+            review_items = [
+                item for item in composition_report.get("composition_advisories", [])
+                if item.get("recommendation") == "propose_removal_from_composition"
+                and item.get("plant_type", "shrub") == plant_type
+            ]
+            if not review_items:
+                continue
+            ensure_layer(document, layer_name, color)
+            removed = remove_previous_entities(modelspace, layer_name)
+            size = (1.0 if plant_type == "tree" else 0.6) * units
+            for item in review_items:
+                x, y = map(float, item["coordinates"])
+                if not math.isfinite(x) or not math.isfinite(y):
+                    raise ValueError("Composition removal has invalid coordinates")
+                marker = modelspace.add_circle((x, y), size, dxfattribs={"layer": layer_name})
+                marker.set_xdata(GREEN_AI_APPID, [
+                    (1000, f"id={item.get('existing_tree_id') or item.get('existing_shrub_id', '')}"[:250]),
+                    (1000, f"type={plant_type}"),
+                    (1000, "status=review_removal_proposal"),
+                    (1000, f"reason={item.get('reason', '')}"[:250]),
+                ])
+                modelspace.add_line((x - size, y - size), (x + size, y + size),
+                                    dxfattribs={"layer": layer_name})
+                modelspace.add_line((x - size, y + size), (x + size, y - size),
+                                    dxfattribs={"layer": layer_name})
+            exported[f"existing_{plant_type}_removal_reviews"] = {
+                "layer": layer_name, "points": len(review_items), "polygons": 0,
+                "area_in_dxf_square_units": 0.0,
+                "previous_entities_removed": removed,
+            }
+
     if planting_plan_path is not None and not show_analysis_layers:
         analysis_layer_names = set() if overlay_only else {ROAD_LAYER[0]}
         analysis_layer_names.update(layer_name for layer_name, _color in ZONE_LAYERS.values())
@@ -553,6 +601,8 @@ def main() -> None:
         type=Path,
         help="Optional concrete planting-plan GeoJSONL; writes tree/shrub/coverage layers.",
     )
+    parser.add_argument("--composition-report", type=Path,
+                        help="Optional planting report with proposed existing-plant removals")
     parser.add_argument(
         "--strict-output",
         action="store_true",
@@ -600,6 +650,7 @@ def main() -> None:
             True if args.show_analysis_layers else None,
             args.overlay_only,
             args.insunits,
+            args.composition_report,
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
         raise SystemExit(f"DXF export error: {error}") from error

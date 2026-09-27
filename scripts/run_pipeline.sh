@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INPUT_DXF="${1:-/data/input.dxf}"
 OUTPUT_DIR="${2:-/data/output}"
 REQUEST_FILE="${3:-}"
+EXISTING_SHRUB_SURVEY="${4:-}"
 DXF_UNITS_PER_METER="${DXF_UNITS_PER_METER:-}"
 DATABASE_URL="${DATABASE_URL:-postgresql://admin:admin@postgis:5432/admin}"
 EXTRACTOR="${DXF_EXTRACTOR:-/usr/local/bin/dxf_extract_go}"
@@ -16,6 +17,10 @@ if [[ ! -f "$INPUT_DXF" ]]; then
 fi
 if [[ -n "$REQUEST_FILE" && ! -f "$REQUEST_FILE" ]]; then
   echo "Planting request does not exist: $REQUEST_FILE" >&2
+  exit 2
+fi
+if [[ -n "$EXISTING_SHRUB_SURVEY" && ! -f "$EXISTING_SHRUB_SURVEY" ]]; then
+  echo "Existing shrub survey does not exist: $EXISTING_SHRUB_SURVEY" >&2
   exit 2
 fi
 mkdir -p "$OUTPUT_DIR"
@@ -136,12 +141,16 @@ if [[ -n "$REQUEST_FILE" ]]; then
 else
   planting_args+=(--preset "${PLANTING_PRESET:-dense_mixed}")
 fi
+if [[ -n "$EXISTING_SHRUB_SURVEY" ]]; then
+  planting_args+=(--existing-shrub-survey "$EXISTING_SHRUB_SURVEY")
+fi
 python "${planting_args[@]}"
 
 echo "[11/14] Exporting dedicated result layers to DXF"
 python -m src.cad_io.dxf_exporter "$INPUT_DXF" "$zones" \
   --constraint-map "$constraints" \
   --planting-plan "$plan" \
+  --composition-report "$plan_report" \
   --output "$result" \
   --strict-output
 
