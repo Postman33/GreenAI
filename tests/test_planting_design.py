@@ -19,7 +19,7 @@ from tests import ROOT  # noqa: F401
 from src.cad_io import dxf_exporter
 from src.planting import service as planting_service
 from src.planting.design import flowerbed_patches
-from src.planting.design import tree_grove_layout
+from src.planting.design import choose_shrub_composition, choose_tree_composition, prune_shrub_fragments, score_tree_composition, tree_grove_layout
 from src.domain.models import PlantingProfile
 
 
@@ -106,12 +106,75 @@ class DesignModeTests(unittest.TestCase):
                 "mode": "fill_area", "design_style": "auto",
             }])
             self.assertGreaterEqual(len(features), 3)
-            self.assertTrue(all(f["properties"]["layout_style"] == "tree_grove"
+            self.assertTrue(all(f["properties"]["layout_style"] in
+                                {"tree_grove", "free_group", "focal_tree"}
                                 for f in features))
             traces = [json.loads(line) for line in
                       (root / "planting_layout_trace.jsonl").read_text(encoding="utf-8").splitlines()]
-            self.assertTrue(any(t["method"] == "tree_grove" for t in traces))
+            self.assertTrue(any(t["method"] == "composition" and t["winner"]
+                                for t in traces))
             self.assertEqual(report["rejected_candidate_count"], 0)
+
+    def test_tree_composition_compares_whole_schemes_by_site_form(self):
+        profile = PlantingProfile("tree", "Tree", 6, 3, 2, 2, 100, "catalog", ())
+        broad = box(0, 0, 50, 40).buffer(-3)
+        trace = {}
+        points, style = choose_tree_composition(
+            broad, box(0, 0, 50, 40), profile, {"tree": profile},
+            [], 100, trace=trace,
+        )
+        self.assertIn(style, {"tree_grove", "free_group"})
+        self.assertGreaterEqual(len(points), 3)
+        self.assertGreaterEqual(len(trace["variants"]), 2)
+        self.assertEqual(trace["winner"]["score"],
+                         max(item["score"] for item in trace["variants"]))
+        self.assertTrue(all(len(item["coordinates"]) == item["count"]
+                            for item in trace["variants"]))
+        self.assertTrue(all(broad.covers(Point(x, y)) for x, y in points))
+
+        strip = box(0, 0, 65, 9).buffer(-2)
+        trace = {}
+        points, style = choose_tree_composition(
+            strip, box(0, 0, 65, 9), profile, {"tree": profile},
+            [], 100, trace=trace,
+        )
+        self.assertEqual(style, "linear")
+        self.assertGreaterEqual(len(points), 2)
+        self.assertTrue(all(strip.covers(Point(x, y)) for x, y in points))
+
+    def test_tree_score_uses_canopy_overlap_only_with_a_shade_target(self):
+        profile = PlantingProfile("tree", "Tree", 6, 3, 2, 2, 10, "catalog", ())
+        bed = box(0, 0, 30, 20)
+        near = score_tree_composition([(5, 5)], bed, profile, "focal_tree",
+                                      shade_target=box(5, 6, 10, 10))
+        far = score_tree_composition([(25, 5)], bed, profile, "focal_tree",
+                                     shade_target=box(5, 6, 10, 10))
+        self.assertGreater(near["pedestrian_canopy_overlap"], 0)
+        self.assertGreater(near["score"], far["score"])
+        self.assertEqual(far["shade_proxy_score"], 0)
+
+    def test_shrub_composition_compares_connected_bed_layouts(self):
+        profile = PlantingProfile("shrub", "Shrub", 1.5, .75, .5, .5, 500, "catalog", ())
+        for bed, expected in ((box(0, 0, 65, 9), "shrub_bed_rows"),
+                              (box(0, 0, 20, 20), "shrub_bed_grid")):
+            scope = bed.buffer(-.75)
+            trace = {}
+            points, style = choose_shrub_composition(
+                scope, bed, profile, {"shrub": profile}, [], 500, trace=trace,
+            )
+            self.assertEqual(style, expected)
+            self.assertGreater(len(points), 10)
+            self.assertEqual(trace["method"], "shrub_composition")
+            self.assertEqual(trace["winner"]["isolated"], 0)
+            self.assertTrue(all(scope.covers(Point(x, y)) for x, y in points))
+
+    def test_shrub_fragments_keep_main_mass_but_omit_stray_tail(self):
+        main = [(float(x), float(y)) for x in range(4) for y in range(3)]
+        stray = [(20.0, 0.0), (21.0, 0.0), (22.0, 0.0)]
+        kept, omitted = prune_shrub_fragments(main + stray, 1.0)
+        self.assertEqual(kept, main)
+        self.assertEqual(omitted, [[x, y] for x, y in stray])
+        self.assertEqual(prune_shrub_fragments(stray, 1.0), (stray, []))
 
     def test_alley_keeps_two_rows_and_phase_across_exclusion(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -23,12 +23,11 @@ from shapely.validation import make_valid
 
 from ..domain.models import PlantingProfile, PlantingSelection
 from .composition_review import load_shrub_survey, review_shrub_composition, review_tree_composition
-from .design import STYLE_CONTRACTS, alley_layout, free_group_layout, hedge_coverage, flowerbed_patches, tree_grove_layout
+from .design import STYLE_CONTRACTS, alley_layout, choose_shrub_composition, choose_tree_composition, free_group_layout, hedge_coverage, flowerbed_patches
 from .spatial import PlantingPointIndex
 from .placement_generator import (
     best_component_layout,
     best_linear_layout,
-    best_shrub_bed_layout,
     build_checks,
     configured_existing_tree_clearance_m,
     grid_candidates,
@@ -1097,6 +1096,7 @@ def plan(
                 "composition", "linear_preferred",
             }
             use_shrub_beds = selection.plant_type == "shrub" and selection.design_style == "auto"
+            use_composition = selection.plant_type == "tree" and tree_layout_mode == "composition"
             parents = (
                 sorted(polygon_parts(selected_zone), key=lambda item: item.area, reverse=True)
                 if use_linear or use_shrub_beds else [scope]
@@ -1114,9 +1114,25 @@ def plan(
                 occupied_now = occupied + [
                     (selection.request_id, x, y) for x, y, _style, _trace_id in generated
                 ]
+                if use_composition:
+                    design_trace: dict[str, Any] = {}
+                    designed, style = choose_tree_composition(
+                        inset, parent, layout_profile, current_layout_profiles,
+                        occupied_now, remaining, normalized.get("existing_tree"),
+                        profile_key=selection.request_id,
+                        shade_target=constraints.get("sidewalk_area"), trace=design_trace,
+                    )
+                    trace_id = f"{selection.request_id}:layout_{len(layout_traces) + 1:04d}"
+                    design_trace.update({"trace_id": trace_id, "request_id": selection.request_id,
+                                         "plant_type": selection.plant_type,
+                                         "spacing_m": profile.spacing_m,
+                                         "max_count_for_component": remaining})
+                    layout_traces.append(design_trace)
+                    generated.extend((x, y, style, trace_id) for x, y in designed)
+                    continue
                 if use_shrub_beds:
                     bed_trace: dict[str, Any] = {}
-                    bed_points = best_shrub_bed_layout(
+                    bed_points, bed_style = choose_shrub_composition(
                         inset, parent, layout_profile, current_layout_profiles,
                         occupied_now, remaining, trace=bed_trace,
                     )
@@ -1126,7 +1142,7 @@ def plan(
                                       "spacing_m": profile.spacing_m,
                                       "max_count_for_component": remaining})
                     layout_traces.append(bed_trace)
-                    generated.extend((x, y, bed_trace["method"], trace_id) for x, y in bed_points)
+                    generated.extend((x, y, bed_style, trace_id) for x, y in bed_points)
                     continue
                 linear_trace: dict[str, Any] = {}
                 linear = (
@@ -1149,12 +1165,7 @@ def plan(
                     if remaining <= 0:
                         break
                     area_trace: dict[str, Any] = {}
-                    layout_fn = (
-                        tree_grove_layout
-                        if selection.plant_type == "tree" and tree_layout_mode == "composition"
-                        else best_component_layout
-                    )
-                    area_points = layout_fn(
+                    area_points = best_component_layout(
                         component, layout_profile, current_layout_profiles,
                         occupied + [(selection.request_id, x, y) for x, y, _style, _trace_id in generated],
                         remaining, trace=area_trace,

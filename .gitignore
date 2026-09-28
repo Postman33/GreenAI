@@ -3,6 +3,7 @@ __pycache__/
 .gocache/
 .gotmp/
 *.md
+!docs/planting_requirements_matrix.md
 .test-cache/
 .validation/
 .tools/

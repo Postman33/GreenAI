@@ -12,6 +12,7 @@
       "spacingM": 6.0,
       "footprintRadiusM": 3.0,
       "symbolRadiusM": 2.0,
+      "footprintBoundary": "physical_area",
       "avoidOtherPlantingsM": 2.0,
       "understoryTrunkClearanceM": 1.0,
       "catalogReference": "project planting catalog",

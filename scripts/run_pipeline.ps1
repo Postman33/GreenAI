@@ -324,6 +324,8 @@ $constraints = Join-Path $outputPath "constraint_map.geojsonl"
 $constraintReport = Join-Path $outputPath "constraint_report.json"
 $zones = Join-Path $outputPath "plant_allow_zones.geojsonl"
 $zoneReport = Join-Path $outputPath "plant_allow_zones_report.json"
+$existingTreeAudit = Join-Path $outputPath "existing_tree_audit.geojsonl"
+$existingTreeAuditReport = Join-Path $outputPath "existing_tree_audit_report.json"
 $plantingPlan = Join-Path $outputPath "planting_plan.geojsonl"
 $plantingDecisions = Join-Path $outputPath "planting_decisions.geojsonl"
 $plantingPlanReport = Join-Path $outputPath "planting_plan_report.json"
@@ -725,6 +727,15 @@ try {
         Add-SkippedPipelineStage -Id "11b" -Name "Preprocessing cache write" -Status "cached"
     }
 
+    Write-Host "[11c/16] Screening existing trees against active setbacks"
+    Invoke-TimedPipelineStage -Id "11c" -Name "Existing tree conflict screening" `
+        -Artifacts @($existingTreeAudit, $existingTreeAuditReport) -Action {
+            & $python -m src.rules.existing_tree_audit $normalized $constraints `
+                $reconstructedUtilities $zoneReport `
+                --output $existingTreeAudit --report $existingTreeAuditReport
+            if ($LASTEXITCODE -ne 0) { throw "Existing tree screening failed" }
+        }
+
     Write-Host "[12/16] Generating concrete planting points and explanations"
     $plantingArguments = @(
         "-m", "src.planting.service", $zones, $zoneReport, $normalized, $constraints,
@@ -771,6 +782,7 @@ try {
         "--planting-plan", $plantingPlan,
         "--planting-decisions", $plantingDecisions,
         "--zone-report", $zoneReport,
+        "--existing-tree-audit", $existingTreeAudit,
         "--insunits", ([int]$unitMetadata.insert_units_code)
     )
     $debugArtifacts = @($debugDxf, $debugLegend)
@@ -797,6 +809,7 @@ try {
                     --constraint-map $constraints `
                     --planting-plan $plantingPlan `
                     --composition-report $plantingPlanReport `
+                    --existing-tree-audit $existingTreeAudit `
                     --output $resultDxf `
                     --overlay-only `
                     --insunits ([int]$unitMetadata.insert_units_code) `
@@ -823,6 +836,7 @@ try {
                     --constraint-map $constraints `
                     --planting-plan $plantingPlan `
                     --composition-report $plantingPlanReport `
+                    --existing-tree-audit $existingTreeAudit `
                     --output $resultDxf `
                     --strict-output
                 if ($LASTEXITCODE -ne 0) { throw "Final DXF export failed" }
@@ -850,6 +864,7 @@ try {
         "--plan-report", $plantingPlanReport,
         "--zone-report", $zoneReport,
         "--verification-report", $verificationReport,
+        "--existing-tree-audit", $existingTreeAudit,
         "--input-dxf", $inputPath,
         "--output", $pdfReport
     )
@@ -870,6 +885,7 @@ try {
                 --constraints $constraints `
                 --zones $zones `
                 --planting-plan $plantingPlan `
+                --existing-tree-audit $existingTreeAudit `
                 --input-dxf $inputPath `
                 --output $plantingAtlas `
                 --schedule $areaSchedule
@@ -890,6 +906,8 @@ try {
         Write-Host "Preview PNG: $debugPng"
     }
     Write-Host "Rule report: $zoneReport"
+    Write-Host "Existing tree conflicts: $existingTreeAudit"
+    Write-Host "Existing tree audit summary: $existingTreeAuditReport"
     Write-Host "Per-plant report: $plantingPlanReport"
     Write-Host "Planting explanations: $plantingExplanations"
     Write-Host "Placement audit: $plantingLayoutTrace"

@@ -39,6 +39,7 @@ PALETTE = {
     "tree": "#2D7849", "shrub": "#DA9638", "lawn": "#A9DDA7",
     "water": "#2183B5", "heat": "#BC5D44", "power": "#8464AC",
     "boundary": "#243E55", "existing_tree": "#648266",
+    "existing_tree_conflict": "#C56B17",
 }
 
 
@@ -70,6 +71,22 @@ def read_plan(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
             elif props.get("object_type") == "proposed_planting_area":
                 areas.append(item)
     return points, areas
+
+
+def read_existing_tree_conflicts(path: Path) -> list[Any]:
+    points: list[Any] = []
+    with path.open(encoding="utf-8-sig") as stream:
+        for line_number, line in enumerate(stream, start=1):
+            if not line.strip():
+                continue
+            feature = json.loads(line)
+            if feature.get("properties", {}).get("status") != "conflict":
+                continue
+            point = shape(feature["geometry"])
+            if point.geom_type != "Point":
+                raise ValueError(f"{path}:{line_number}: expected tree conflict Point")
+            points.append(point)
+    return points
 
 
 def polygons(geometry: Any):
@@ -135,7 +152,9 @@ def clipped(geometry: Any, viewport: Any) -> Any:
 
 def render_view(path: Path, viewport: Any, kind: str, source: dict[str, Any],
                 constraints: dict[str, Any], zones: dict[str, Any],
-                points: list[dict[str, Any]], lawn: Any, *, label: str = "") -> None:
+                points: list[dict[str, Any]], lawn: Any, *, label: str = "",
+                existing_tree_conflicts: list[Any] | None = None,
+                dxf_units_per_meter: float = 1.0) -> None:
     fig, ax = plt.subplots(figsize=(4.3, 4.3), dpi=150)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("#FAFCFC")
@@ -150,6 +169,12 @@ def render_view(path: Path, viewport: Any, kind: str, source: dict[str, Any],
         for tree in points_in(clipped(source.get("existing_tree"), viewport)):
             ax.add_patch(PlotCircle((tree.x, tree.y), 1.0, fill=False,
                                     edgecolor=PALETTE["existing_tree"], linewidth=0.6, zorder=5))
+        for tree in existing_tree_conflicts or []:
+            if viewport.covers(tree):
+                ax.add_patch(PlotCircle(
+                    (tree.x, tree.y), 1.35 * dxf_units_per_meter, fill=False,
+                    edgecolor=PALETTE["existing_tree_conflict"], linewidth=1.3, zorder=9,
+                ))
     elif kind == "constraints":
         paint_geometry(ax, clipped(constraints.get("hard_surface_area"), viewport), face=PALETTE["hard"], alpha=0.65)
         paint_geometry(ax, clipped(zones.get("shrub"), viewport), face=PALETTE["shrub_zone"], alpha=0.7)
@@ -280,7 +305,8 @@ def draw_page(canvas: Any, doc: Any) -> None:
 def build_atlas(normalized_path: Path, constraints_path: Path, zones_path: Path,
                 plan_path: Path, output_path: Path, schedule_path: Path,
                 *, input_dxf: Path | None = None, tile_size_m: float = 100.0,
-                preview_directory: Path | None = None) -> Path:
+                preview_directory: Path | None = None,
+                existing_tree_audit_path: Path | None = None) -> Path:
     if tile_size_m <= 0:
         raise ValueError("tile_size_m must be positive")
     font, bold = register_fonts()
@@ -288,6 +314,10 @@ def build_atlas(normalized_path: Path, constraints_path: Path, zones_path: Path,
     constraints = read_geometries(constraints_path)
     zones = read_geometries(zones_path)
     points, areas = read_plan(plan_path)
+    existing_tree_conflicts = (
+        read_existing_tree_conflicts(existing_tree_audit_path)
+        if existing_tree_audit_path is not None else []
+    )
     work = source.get("work_boundary")
     if work is None or work.is_empty:
         raise ValueError("A work_boundary is required for the planting atlas")
@@ -316,6 +346,7 @@ def build_atlas(normalized_path: Path, constraints_path: Path, zones_path: Path,
             "tree_crown_projection_m2": round(sum(row["tree_crown_projection_m2"] for row in rows), 2),
             "shrub_projection_m2": round(sum(row["shrub_projection_m2"] for row in rows), 2),
             "herbaceous_area_m2": round(lawn_area, 2),
+            "existing_tree_conflict_count": len(existing_tree_conflicts),
         },
         "area_method": "Herbaceous area is exact GeoJSON polygon area; tree/shrub projection is union of configured circular footprints. Projections may overlap herbaceous area and must not be added together.",
         "view_method": "Context is redrawn from normalized geometries extracted from the source DXF; original CAD annotations and unsupported block graphics are not shown.",
@@ -369,6 +400,12 @@ def build_atlas(normalized_path: Path, constraints_path: Path, zones_path: Path,
     story.append(Paragraph(
         f"Проекция крон деревьев: <b>{totals['tree_crown_projection_m2']:,.1f} м²</b>; "
         f"проекция кустов: <b>{totals['shrub_projection_m2']:,.1f} м²</b>.", body))
+    if existing_tree_audit_path is not None:
+        story.append(Paragraph(
+            f"Потенциальные конфликты существующих деревьев с проектными отступами: "
+            f"<b>{len(existing_tree_conflicts)}</b>. Оранжевые кольца на схемах топоосновы "
+            "показывают эти деревья; подробности по ID приведены в основном отчёте и диагностическом DXF. "
+            "Требуется натурная проверка, это не решение об удалении.", body))
     story.append(Paragraph(
         "Площадь травянистых посадок вычислена по полигонам. Для деревьев и кустарников "
         "ниже дана площадь проекции заданного габарита. Эти площади могут перекрываться "
@@ -424,7 +461,9 @@ def build_atlas(normalized_path: Path, constraints_path: Path, zones_path: Path,
                             ("planting", "3. План посадок")):
             path = image_dir / f'{row["id"]}_{kind}.png'
             render_view(path, viewport, kind, source, constraints, zones,
-                        tile["points"], lawn, label=label)
+                        tile["points"], lawn, label=label,
+                        existing_tree_conflicts=existing_tree_conflicts,
+                        dxf_units_per_meter=units)
             img = Image(str(path), width=83 * mm, height=83 * mm)
             image_cells.append(img)
         image_table = Table([image_cells], colWidths=[89 * mm] * 3)
@@ -436,6 +475,7 @@ def build_atlas(normalized_path: Path, constraints_path: Path, zones_path: Path,
         story.append(Paragraph(
             "Обозначения: серая заливка — дорога; серые контуры — здания; "
             "зелёные круги — деревья; охристые пятна — кустарники; светло-зелёная площадь — травянистые посадки. "
+            "Оранжевые кольца на топооснове — существующие деревья с потенциальными конфликтами. "
             "На среднем виде светло-зелёным показана зона деревьев, жёлтым — зона кустарников.", small))
         story.append(Spacer(1, 3 * mm))
         story.append(Paragraph("Что сажаем на этом участке", heading))
@@ -491,10 +531,12 @@ def main() -> None:
     parser.add_argument("--input-dxf", type=Path)
     parser.add_argument("--tile-size-m", type=float, default=100.0)
     parser.add_argument("--preview-directory", type=Path)
+    parser.add_argument("--existing-tree-audit", type=Path)
     args = parser.parse_args()
     path = build_atlas(args.normalized, args.constraints, args.zones, args.planting_plan,
                        args.output, args.schedule, input_dxf=args.input_dxf,
-                       tile_size_m=args.tile_size_m, preview_directory=args.preview_directory)
+                       tile_size_m=args.tile_size_m, preview_directory=args.preview_directory,
+                       existing_tree_audit_path=args.existing_tree_audit)
     print(f"Planting atlas: {path}")
     print(f"Area schedule: {args.schedule}")
 

@@ -98,7 +98,10 @@ def load_profiles(path: Path, default_max_count: int = 5000) -> dict[str, Planti
             allow_under_tree_canopy=item.get("allowUnderTreeCanopy") is True,
             existing_tree_clearance_m=(float(item["existingTreeClearanceM"])
                                       if item.get("existingTreeClearanceM") is not None else None),
-            footprint_boundary=str(item.get("footprintBoundary", "allow_zone")),
+            footprint_boundary=str(item.get(
+                "footprintBoundary",
+                "physical_area" if item["plantType"] == "tree" else "allow_zone",
+            )),
         )
         if profile.spacing_m <= 0 or profile.footprint_radius_m < 0:
             raise ValueError(f"Invalid planting profile: {profile.plant_type}")

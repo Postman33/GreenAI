@@ -35,6 +35,7 @@ REMOVAL_REVIEW_LAYERS = {
     "tree": ("GREEN_AI_REMOVE_TREE_REVIEW", 1),
     "shrub": ("GREEN_AI_REMOVE_SHRUB_REVIEW", 1),
 }
+EXISTING_TREE_CONFLICT_LAYER = ("GREEN_AI_EXISTING_TREE_CONFLICT", 30)
 GREEN_AI_APPID = "GREEN_AI"
 
 
@@ -368,6 +369,7 @@ def export_zones(
     overlay_only: bool = False,
     insunits: int | None = None,
     composition_report_path: Path | None = None,
+    existing_tree_audit_path: Path | None = None,
 ) -> None:
     if input_dxf.resolve() == output_dxf.resolve():
         raise ValueError("Output DXF must differ from the original input DXF")
@@ -502,6 +504,7 @@ def export_zones(
                 "previous_entities_removed": removed,
             }
 
+    units = 1.0
     if composition_report_path is not None:
         composition_report = json.loads(composition_report_path.read_text(encoding="utf-8-sig"))
         units = float(composition_report.get("dxf_units_per_meter", 1.0))
@@ -538,6 +541,56 @@ def export_zones(
                 "area_in_dxf_square_units": 0.0,
                 "previous_entities_removed": removed,
             }
+
+    if existing_tree_audit_path is not None:
+        audit_report_path = existing_tree_audit_path.with_name("existing_tree_audit_report.json")
+        if audit_report_path.is_file():
+            audit_report = json.loads(audit_report_path.read_text(encoding="utf-8-sig"))
+            audit_units = float(audit_report.get("dxf_units_per_meter", units))
+            if not math.isfinite(audit_units) or audit_units <= 0:
+                raise ValueError("Existing tree audit has invalid DXF units")
+            if composition_report_path is not None and not math.isclose(units, audit_units):
+                raise ValueError("Existing tree audit and planting report use different DXF units")
+            units = audit_units
+        layer_name, color = EXISTING_TREE_CONFLICT_LAYER
+        ensure_layer(document, layer_name, color)
+        removed = remove_previous_entities(modelspace, layer_name)
+        count = 0
+        with existing_tree_audit_path.open(encoding="utf-8-sig") as source:
+            for line_number, line in enumerate(source, start=1):
+                if not line.strip():
+                    continue
+                feature = json.loads(line)
+                properties = feature.get("properties", {})
+                if properties.get("status") != "conflict":
+                    continue
+                coordinates = feature.get("geometry", {}).get("coordinates", [])
+                if len(coordinates) < 2:
+                    raise ValueError(f"{existing_tree_audit_path}:{line_number}: missing tree point")
+                x, y = float(coordinates[0]), float(coordinates[1])
+                if not math.isfinite(x) or not math.isfinite(y):
+                    raise ValueError(f"{existing_tree_audit_path}:{line_number}: invalid tree point")
+                ring = modelspace.add_circle(
+                    (x, y), 1.1 * units,
+                    dxfattribs={"layer": layer_name, "color": color, "lineweight": 70},
+                )
+                tree_id = str(properties.get("existing_tree_id") or feature.get("id") or "ET-?")
+                codes = ",".join(
+                    str(check.get("code", ""))
+                    for check in properties.get("checks", [])
+                    if check.get("status") == "conflict"
+                )
+                ring.set_xdata(GREEN_AI_APPID, [
+                    (1000, f"id={tree_id}"[:250]),
+                    (1000, "status=potential_existing_tree_conflict"),
+                    (1000, f"rules={codes}"[:250]),
+                ])
+                count += 1
+        exported["existing_tree_conflicts"] = {
+            "layer": layer_name, "points": count, "polygons": 0,
+            "area_in_dxf_square_units": 0.0,
+            "previous_entities_removed": removed,
+        }
 
     if planting_plan_path is not None and not show_analysis_layers:
         analysis_layer_names = set() if overlay_only else {ROAD_LAYER[0]}
@@ -603,6 +656,8 @@ def main() -> None:
     )
     parser.add_argument("--composition-report", type=Path,
                         help="Optional planting report with proposed existing-plant removals")
+    parser.add_argument("--existing-tree-audit", type=Path,
+                        help="Existing-tree screening GeoJSONL; adds review markers to the result DXF")
     parser.add_argument(
         "--strict-output",
         action="store_true",
@@ -651,6 +706,7 @@ def main() -> None:
             args.overlay_only,
             args.insunits,
             args.composition_report,
+            args.existing_tree_audit,
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
         raise SystemExit(f"DXF export error: {error}") from error

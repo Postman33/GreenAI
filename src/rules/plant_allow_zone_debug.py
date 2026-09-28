@@ -279,10 +279,14 @@ def export_diagnostic_legend(
         "| DEBUG_REVIEW_HEAT_CHAMBERS | Похожие на камеры контуры без колодца: требуется визуальная проверка, посадка автоматически не исключена. |",
         "| DEBUG_BASE_ALLOWED | Базовая область после абсолютных исключений. |",
         "| DEBUG_ALLOW_TREE / DEBUG_ALLOW_SHRUB | Область после применённых правил отступа. |",
-        "| DEBUG_EXISTING_TREES | Существующие деревья: пурпурные кольца с крестом поверх заливок; центр символа соответствует стволу. |",
+        "| DEBUG_EXISTING_TREES | Существующие деревья: крупные пурпурные кольца с крестом; центр символа соответствует стволу. |",
+        "| DEBUG_EXISTING_TREE_CONFLICTS | Оранжевые кольца вокруг существующих деревьев с потенциальным конфликтом по действующим отступам для новых деревьев; ID и расстояния сохранены в GREEN_AI объекта. Это сигнал для проверки, не решение об удалении. |",
+        "| DEBUG_EXISTING_TREE_CONFLICT_IDS | ID таких деревьев из existing_tree_audit.geojsonl и PDF; слой выключен по умолчанию. |",
+        "| DEBUG_EXISTING_TREE_CONFLICT_* | Отдельные выключенные слои по типу ограничения (например POWER_CABLE или HEAT_PIPE); включите нужный слой, чтобы отфильтровать деревья. |",
         "| DEBUG_PLANT_TREE | Принятые деревья: зелёные круги в координатах плана. |",
         "| DEBUG_PLANT_SHRUB_POINTS | Принятые кустарники: жёлтые круги; слой включён по умолчанию. |",
-        "| DEBUG_PLANT_SHRUB / DEBUG_PLANT_HERBACEOUS | Площадные посадки кустарников / травянистых растений, если они есть в плане. |",
+        "| DEBUG_PLANT_SHRUB_OUTLINE / DEBUG_PLANT_HERBACEOUS_OUTLINE | Контуры площадных посадок видны по умолчанию и не закрывают существующие деревья. |",
+        "| DEBUG_PLANT_SHRUB / DEBUG_PLANT_HERBACEOUS | Заливки площадных посадок; выключены по умолчанию, включайте при необходимости. |",
         "| DEBUG_PLANT_*_IDS | Идентификаторы принятых точек; слои выключены по умолчанию. |",
         "| DEBUG_PLANT_*_REASONS | Проверки принятых точек и ссылки на нормы; общий слой на тип растения, выключен по умолчанию. |",
         "| DEBUG_REASON_T_* | Проверки принятого дерева; включите слой с его ID. |",
@@ -478,6 +482,8 @@ def export_dxf(
     rejected_points: dict[str, list[tuple[Point, dict[str, Any]]]] | None = None,
     active_rule_targets: set[str] | None = None,
     insunits: int | None = None,
+    existing_tree_audit: list[dict[str, Any]] | None = None,
+    units_per_meter: float = 1.0,
 ) -> Path:
     if base_dxf_path is not None and output_path.resolve() == base_dxf_path.resolve():
         raise ValueError("Diagnostic DXF must differ from the original input DXF")
@@ -506,11 +512,27 @@ def export_dxf(
         "DEBUG_TREE_ALLOWED_UNUSED": 5,
         "DEBUG_PLANT_SHRUB": 2,
         "DEBUG_PLANT_HERBACEOUS": 94,
+        "DEBUG_PLANT_SHRUB_OUTLINE": 2,
+        "DEBUG_PLANT_HERBACEOUS_OUTLINE": 94,
         "DEBUG_PLANT_TREE": 3,
         "DEBUG_PLANT_TREE_IDS": 7,
         "DEBUG_REJECTED_TREE": 1,
         "DEBUG_REJECTED_TREE_IDS": 1,
+        "DEBUG_EXISTING_TREE_CONFLICTS": 30,
+        "DEBUG_EXISTING_TREE_CONFLICT_IDS": 30,
     }
+    conflict_target_colors = {
+        "building": 8, "gas_pipe": 1, "heat_pipe": 30,
+        "power_cable": 200, "road_edge": 7, "sidewalk": 6,
+        "water_pipe": 4,
+    }
+    for feature in existing_tree_audit or []:
+        for check in feature.get("properties", {}).get("checks", []):
+            if check.get("status") != "conflict":
+                continue
+            target = str(check.get("target", "UNKNOWN"))
+            suffix = re.sub(r"[^A-Z0-9_]+", "_", target.upper())
+            layer_colors[f"DEBUG_EXISTING_TREE_CONFLICT_{suffix}"] = conflict_target_colors.get(target, 30)
     for layer, color in layer_colors.items():
         if layer in document.layers:
             layer_definition = document.layers.get(layer)
@@ -624,6 +646,7 @@ def export_dxf(
         geometry = planting_areas.get(plant_type)
         if geometry is None or geometry.is_empty:
             continue
+        outline_layer = f"{layer}_OUTLINE"
         for polygon in polygon_parts(geometry):
             add_zone_polygon(
                 modelspace,
@@ -633,6 +656,7 @@ def export_dxf(
                 0.42,
                 draw_interior_outlines=False,
             )
+            add_polygons(modelspace, polygon, outline_layer)
 
     for plant_type, items in sorted(planting_points.items()):
         if not items:
@@ -785,29 +809,88 @@ def export_dxf(
         for polygon in polygon_parts(geometry):
             add_zone_polygon(modelspace, polygon, layer, color, 0.58)
 
+    tree_markers = []
     tree_geometry = context_geometries.get("existing_tree")
     if tree_geometry is not None:
-        tree_markers = []
         for point in point_parts(tree_geometry):
             ring = modelspace.add_circle(
-                (point.x, point.y), 0.55,
-                dxfattribs={"layer": "DEBUG_EXISTING_TREES", "color": 6, "lineweight": 70},
+                (point.x, point.y), 0.75,
+                dxfattribs={"layer": "DEBUG_EXISTING_TREES", "color": 6, "lineweight": 100},
             )
             tree_markers.append(ring)
             for start, end in (
-                ((point.x - 0.18, point.y), (point.x + 0.18, point.y)),
-                ((point.x, point.y - 0.18), (point.x, point.y + 0.18)),
+                ((point.x - 0.28, point.y), (point.x + 0.28, point.y)),
+                ((point.x, point.y - 0.28), (point.x, point.y + 0.28)),
             ):
                 tree_markers.append(modelspace.add_line(
                     start, end,
-                    dxfattribs={"layer": "DEBUG_EXISTING_TREES", "color": 6, "lineweight": 70},
+                    dxfattribs={"layer": "DEBUG_EXISTING_TREES", "color": 6, "lineweight": 100},
                 ))
-        # Also record the draw order explicitly for CAD viewers that honour
-        # SORTENTS instead of relying on DXF entity order alone.
-        if tree_markers:
-            modelspace.set_redraw_order(
-                (entity.dxf.handle, "0") for entity in tree_markers
+    conflict_markers = []
+    for feature in existing_tree_audit or []:
+        properties = feature.get("properties", {})
+        if properties.get("status") != "conflict":
+            continue
+        coordinates = feature.get("geometry", {}).get("coordinates", [])
+        if len(coordinates) < 2:
+            continue
+        x, y = float(coordinates[0]), float(coordinates[1])
+        radius = 1.15 * units_per_meter
+        ring = modelspace.add_circle(
+            (x, y), radius,
+            dxfattribs={"layer": "DEBUG_EXISTING_TREE_CONFLICTS", "color": 30, "lineweight": 100},
+        )
+        tree_id = str(properties.get("existing_tree_id") or feature.get("id") or "ET-?")
+        conflict_checks = [
+            check for check in properties.get("checks", [])
+            if check.get("status") == "conflict"
+        ]
+        ring.set_xdata(GREEN_AI_APPID, [
+            (1000, f"id={tree_id}"[:250]),
+            (1000, "status=potential_existing_tree_conflict"),
+            *[
+                (1000, (
+                    f"{check.get('code')}: "
+                    f"{check.get('actual_distance_m'):.3f}/{check.get('required_distance_m'):.3f}m"
+                )[:250])
+                for check in conflict_checks
+                if isinstance(check.get("actual_distance_m"), (int, float))
+                and isinstance(check.get("required_distance_m"), (int, float))
+            ],
+        ])
+        conflict_markers.append(ring)
+        for target in sorted({str(check.get("target", "UNKNOWN")) for check in conflict_checks}):
+            suffix = re.sub(r"[^A-Z0-9_]+", "_", target.upper())
+            layer_name = f"DEBUG_EXISTING_TREE_CONFLICT_{suffix}"
+            target_ring = modelspace.add_circle(
+                (x, y), 1.35 * units_per_meter,
+                dxfattribs={"layer": layer_name, "lineweight": 80},
             )
+            target_ring.set_xdata(GREEN_AI_APPID, [
+                (1000, f"id={tree_id}"[:250]),
+                (1000, f"target={target}"[:250]),
+            ])
+        for start, end in (
+            ((x - radius * 0.4, y - radius * 0.4), (x + radius * 0.4, y + radius * 0.4)),
+            ((x - radius * 0.4, y + radius * 0.4), (x + radius * 0.4, y - radius * 0.4)),
+        ):
+            conflict_markers.append(modelspace.add_line(
+                start, end,
+                dxfattribs={"layer": "DEBUG_EXISTING_TREE_CONFLICTS", "color": 30, "lineweight": 100},
+            ))
+        label = modelspace.add_text(
+            tree_id,
+            height=0.38 * units_per_meter,
+            dxfattribs={"layer": "DEBUG_EXISTING_TREE_CONFLICT_IDS", "color": 30},
+        )
+        label.set_placement((x + radius, y + radius))
+    # Sort both symbol types above all area hatches in CAD viewers that
+    # honor SORTENTS; conflict rings are created last and remain prominent.
+    if tree_markers or conflict_markers:
+        modelspace.set_redraw_order(
+            (entity.dxf.handle, "0") for entity in (*tree_markers, *conflict_markers)
+        )
+    document.layers.get("DEBUG_EXISTING_TREE_CONFLICT_IDS").off()
 
     # Open the diagnostic drawing with the actual proposal visible.  The
     # explanation layers remain available in the layer manager and can be
@@ -817,10 +900,11 @@ def export_dxf(
         "DEBUG_ROAD_AREA",
         "DEBUG_SIDEWALKS",
         "DEBUG_HARD_SURFACES",
-        "DEBUG_PLANT_SHRUB",
-        "DEBUG_PLANT_HERBACEOUS",
+        "DEBUG_PLANT_SHRUB_OUTLINE",
+        "DEBUG_PLANT_HERBACEOUS_OUTLINE",
         "DEBUG_PLANT_TREE",
         "DEBUG_REJECTED_TREE",
+        "DEBUG_EXISTING_TREE_CONFLICTS",
     }
     for plant_type in (rejected_points or {}):
         suffix = re.sub(r"[^A-Z0-9_]+", "_", plant_type.upper()) or "PLANT"
@@ -983,6 +1067,7 @@ def build_debug_export(
     planting_decisions_path: Path | None = None,
     legend_output_path: Path | None = None,
     insunits: int | None = None,
+    existing_tree_audit_path: Path | None = None,
 ) -> None:
     zones = load_plant_zones(plant_zones_path)
     normalized_objects = load_normalized_objects(normalized_path)
@@ -1084,8 +1169,10 @@ def build_debug_export(
             context_geometries["building_source"] = source_building_lines
     rule_exclusions: dict[str, Polygonal] = {}
     active_rule_targets: set[str] | None = None
+    units_per_meter = 1.0
     if zone_report_path is not None:
         zone_report = json.loads(zone_report_path.read_text(encoding="utf-8"))
+        units_per_meter = float(zone_report.get("dxf_units_per_meter", 1.0))
         active_rule_targets = {
             str(rule["target_object_type"])
             for plant_report in zone_report.get("plant_types", {}).values()
@@ -1110,6 +1197,20 @@ def build_debug_export(
             rule_geometries,
         )
 
+    existing_tree_audit: list[dict[str, Any]] = []
+    if existing_tree_audit_path is not None:
+        with existing_tree_audit_path.open(encoding="utf-8-sig") as source:
+            for line_number, line in enumerate(source, start=1):
+                if not line.strip():
+                    continue
+                feature = json.loads(line)
+                if feature.get("type") != "Feature":
+                    raise ValueError(
+                        f"{existing_tree_audit_path}:{line_number}: expected GeoJSON Feature"
+                    )
+                if feature.get("properties", {}).get("status") == "conflict":
+                    existing_tree_audit.append(feature)
+
     actual_dxf_output = export_dxf(
         dxf_output,
         work_boundary,
@@ -1127,6 +1228,8 @@ def build_debug_export(
         rejected_points,
         active_rule_targets,
         insunits,
+        existing_tree_audit,
+        units_per_meter,
     )
     if png_output is not None:
         export_png(
@@ -1231,6 +1334,11 @@ def main() -> None:
         help="Optional plant-zone report used to export one layer per applied rule.",
     )
     parser.add_argument(
+        "--existing-tree-audit",
+        type=Path,
+        help="GeoJSONL screening of existing trees against active tree setbacks.",
+    )
+    parser.add_argument(
         "--reasons-output",
         type=Path,
         help="Optional Markdown report with checks for every point planting ID.",
@@ -1257,6 +1365,7 @@ def main() -> None:
             args.planting_decisions,
             args.legend_output,
             args.insunits,
+            args.existing_tree_audit,
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
         raise SystemExit(f"Plant-zone debug export error: {error}") from error

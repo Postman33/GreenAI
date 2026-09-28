@@ -362,6 +362,7 @@ class ExporterTests(unittest.TestCase):
             zones = root / "zones.jsonl"
             plan = root / "plan.geojsonl"
             report = root / "plan_report.json"
+            tree_audit = root / "existing_tree_audit.geojsonl"
             output = root / "overlay.dxf"
             original = ezdxf.new("R2018")
             original.modelspace().add_circle((10, 10), 1, dxfattribs={"layer": "SOURCE_TREE"})
@@ -380,13 +381,26 @@ class ExporterTests(unittest.TestCase):
                  "recommendation": "propose_removal_from_composition",
                  "coordinates": [15, 15], "reason": "Blocks a shrub mass"},
             ]}), encoding="utf-8")
+            write_jsonl(tree_audit, [{
+                "type": "Feature", "id": "ET-0001",
+                "geometry": {"type": "Point", "coordinates": [10, 10]},
+                "properties": {
+                    "object_type": "existing_tree_rule_screening",
+                    "existing_tree_id": "ET-0001", "status": "conflict",
+                    "checks": [{"code": "TREE_WATER_2", "status": "conflict"}],
+                },
+            }])
             dxf_exporter.export_zones(source, zones, output, 0.65,
                                       planting_plan_path=plan,
-                                      composition_report_path=report)
+                                      composition_report_path=report,
+                                      existing_tree_audit_path=tree_audit)
             result = ezdxf.readfile(output)
             self.assertEqual(len(result.modelspace().query('CIRCLE[layer=="SOURCE_TREE"]')), 1)
             self.assertEqual(len(result.modelspace().query('CIRCLE[layer=="GREEN_AI_REMOVE_TREE_REVIEW"]')), 1)
             self.assertEqual(len(result.modelspace().query('CIRCLE[layer=="GREEN_AI_REMOVE_SHRUB_REVIEW"]')), 1)
+            self.assertEqual(len(result.modelspace().query('CIRCLE[layer=="GREEN_AI_EXISTING_TREE_CONFLICT"]')), 1)
+            conflict = result.modelspace().query('CIRCLE[layer=="GREEN_AI_EXISTING_TREE_CONFLICT"]')[0]
+            self.assertIn("id=ET-0001", [value for code, value in conflict.get_xdata("GREEN_AI") if code == 1000])
             marker = result.modelspace().query('CIRCLE[layer=="GREEN_AI_REMOVE_TREE_REVIEW"]')[0]
             self.assertIn("id=tree-1", [value for code, value in marker.get_xdata("GREEN_AI")
                                         if code == 1000])
@@ -396,10 +410,12 @@ class ExporterTests(unittest.TestCase):
             dxf_exporter.export_zones(source, zones, overlay, 0.65,
                                       planting_plan_path=plan,
                                       composition_report_path=report,
+                                      existing_tree_audit_path=tree_audit,
                                       overlay_only=True, insunits=6)
             only = ezdxf.readfile(overlay)
             self.assertEqual(len(only.modelspace().query('CIRCLE[layer=="SOURCE_TREE"]')), 0)
             self.assertEqual(len(only.modelspace().query('CIRCLE[layer=="GREEN_AI_REMOVE_TREE_REVIEW"]')), 1)
+            self.assertEqual(len(only.modelspace().query('CIRCLE[layer=="GREEN_AI_EXISTING_TREE_CONFLICT"]')), 1)
             self.assertFalse(only.audit().errors)
 
     def test_planting_area_keeps_hatch_hole_without_visible_inner_outline(self) -> None:
@@ -469,6 +485,14 @@ class ExporterTests(unittest.TestCase):
                     "existing_tree": Point(3, 3),
                 },
                 {"tree": box(1, 1, 3, 3)},
+                existing_tree_audit=[{
+                    "type": "Feature", "id": "ET-0001",
+                    "geometry": {"type": "Point", "coordinates": [3, 3]},
+                    "properties": {
+                        "existing_tree_id": "ET-0001", "status": "conflict",
+                        "checks": [{"target": "water_pipe", "status": "conflict"}],
+                    },
+                }],
             )
             result = ezdxf.readfile(actual)
             self.assertTrue(result.layers.get("DEBUG_WATER_PIPE").is_off())
@@ -481,6 +505,22 @@ class ExporterTests(unittest.TestCase):
             self.assertTrue(all(redraw_order[entity.dxf.handle] == "0" for entity in tree_symbols))
             last_hatch = max(index for index, entity in enumerate(entities) if entity.dxftype() == "HATCH")
             self.assertTrue(all(entities.index(entity) > last_hatch for entity in tree_symbols))
+            self.assertFalse(result.layers.get("DEBUG_EXISTING_TREE_CONFLICTS").is_off())
+            self.assertTrue(result.layers.get("DEBUG_EXISTING_TREE_CONFLICT_IDS").is_off())
+            self.assertTrue(result.layers.get("DEBUG_EXISTING_TREE_CONFLICT_WATER_PIPE").is_off())
+            self.assertEqual(len(result.modelspace().query(
+                'CIRCLE[layer=="DEBUG_EXISTING_TREE_CONFLICT_WATER_PIPE"]'
+            )), 1)
+            conflict_symbols = list(result.modelspace().query(
+                'CIRCLE[layer=="DEBUG_EXISTING_TREE_CONFLICTS"]'
+            ))
+            self.assertEqual(len(conflict_symbols), 1)
+            self.assertEqual(conflict_symbols[0].dxf.radius, 1.15)
+            self.assertEqual(redraw_order[conflict_symbols[0].dxf.handle], "0")
+            self.assertIn(
+                "id=ET-0001",
+                [value for code, value in conflict_symbols[0].get_xdata("GREEN_AI") if code == 1000],
+            )
             self.assertEqual(
                 len(result.modelspace().query('HATCH[layer=="DEBUG_BUILDINGS"]')),
                 1,
@@ -501,7 +541,7 @@ class ExporterTests(unittest.TestCase):
                 Polygon(),
                 Polygon(),
                 LineString(),
-                {},
+                {"existing_tree": Point(5, 5)},
                 {
                     "tree": box(0, 0, 10, 10),
                     "shrub": box(0, 0, 10, 10),
@@ -538,7 +578,18 @@ class ExporterTests(unittest.TestCase):
                 len(modelspace.query('CIRCLE[layer=="DEBUG_PLANT_TREE"]')), 1
             )
             self.assertTrue(result.layers.get("DEBUG_SHRUB_UNCOVERED").is_off())
-            self.assertFalse(result.layers.get("DEBUG_PLANT_SHRUB").is_off())
+            self.assertTrue(result.layers.get("DEBUG_PLANT_SHRUB").is_off())
+            self.assertTrue(result.layers.get("DEBUG_PLANT_HERBACEOUS").is_off())
+            self.assertFalse(result.layers.get("DEBUG_PLANT_SHRUB_OUTLINE").is_off())
+            self.assertFalse(result.layers.get("DEBUG_PLANT_HERBACEOUS_OUTLINE").is_off())
+            self.assertGreater(
+                len(modelspace.query('LWPOLYLINE[layer=="DEBUG_PLANT_SHRUB_OUTLINE"]')),
+                0,
+            )
+            tree_markers = list(modelspace.query('CIRCLE[layer=="DEBUG_EXISTING_TREES"]'))
+            self.assertEqual(len(tree_markers), 1)
+            self.assertEqual(tree_markers[0].dxf.radius, 0.75)
+            self.assertFalse(result.layers.get("DEBUG_EXISTING_TREES").is_off())
 
     def test_diagnostic_export_preserves_all_planned_points_and_shrub_areas(self) -> None:
         for units_per_meter in (1.0, 1000.0):

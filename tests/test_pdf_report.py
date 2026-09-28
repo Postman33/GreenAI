@@ -19,6 +19,7 @@ class PdfReportTests(unittest.TestCase):
             plan_report = root / "plan.json"
             zone_report = root / "zones.json"
             verification = root / "verification.json"
+            existing_tree_audit = root / "existing_tree_audit.geojsonl"
             output = root / "report.pdf"
             rejected = {
                 "type": "Feature",
@@ -141,10 +142,24 @@ class PdfReportTests(unittest.TestCase):
             verification.write_text(
                 json.dumps({"status": "passed"}), encoding="utf-8"
             )
+            existing_tree_audit.write_text(json.dumps({
+                "type": "Feature", "id": "ET-0001",
+                "geometry": {"type": "Point", "coordinates": [13, 25]},
+                "properties": {
+                    "object_type": "existing_tree_rule_screening",
+                    "existing_tree_id": "ET-0001", "status": "conflict",
+                    "checks": [{
+                        "code": "TREE_WATER_2", "target": "water_pipe",
+                        "status": "conflict", "actual_distance_m": 0.8,
+                        "required_distance_m": 2.0,
+                        "norm_reference": "СП 42.13330.2026, таблица 6.3",
+                    }],
+                },
+            }, ensure_ascii=False) + "\n", encoding="utf-8")
 
             actual = build_pdf(
                 decisions, plan_report, zone_report, verification, output,
-                plan_path=plan,
+                plan_path=plan, existing_tree_audit_path=existing_tree_audit,
             )
 
             self.assertTrue(actual.is_file())
@@ -158,6 +173,8 @@ class PdfReportTests(unittest.TestCase):
             self.assertIn("H-0001", text)
             self.assertIn("SH-17", text)
             self.assertIn("tree-21", text)
+            self.assertIn("ET-0001", text)
+            self.assertIn("TREE_WATER_2", text)
             self.assertIn("Композиция: существующие растения", text)
             self.assertIn("таблица 6.3", text)
             self.assertIn("п. 2.1.13", " ".join(text.split()))

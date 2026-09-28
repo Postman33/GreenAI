@@ -84,6 +84,19 @@ def read_plan(path: Path) -> list[dict[str, Any]]:
     return features
 
 
+def read_existing_tree_audit(path: Path) -> list[dict[str, Any]]:
+    features: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8-sig") as source:
+        for line_number, line in enumerate(source, start=1):
+            if not line.strip():
+                continue
+            feature = json.loads(line)
+            if feature.get("type") != "Feature" or feature.get("properties", {}).get("object_type") != "existing_tree_rule_screening":
+                raise ValueError(f"{path}:{line_number}: expected existing tree screening Feature")
+            features.append(feature)
+    return features
+
+
 def normative_references(checks: list[dict[str, Any]]) -> list[str]:
     references: list[str] = []
     for check in checks:
@@ -102,6 +115,32 @@ def normative_link(reference: str) -> str:
         if marker in reference:
             return f'<link href="{html.escape(url, quote=True)}" color="#176B6A">{escaped}</link>'
     return escaped
+
+
+def existing_tree_conflict_rows(
+    features: Iterable[dict[str, Any]], cell_style: ParagraphStyle,
+) -> list[list[Any]]:
+    rows: list[list[Any]] = []
+    for feature in features:
+        properties = feature.get("properties", {})
+        if properties.get("status") != "conflict":
+            continue
+        failed = [check for check in properties.get("checks", []) if check.get("status") == "conflict"]
+        coordinates = feature.get("geometry", {}).get("coordinates", [])
+        if len(coordinates) < 2 or not failed:
+            continue
+        rows.append([
+            paragraph(html.escape(str(properties.get("existing_tree_id", feature.get("id", "-")))), cell_style),
+            paragraph(f"X {float(coordinates[0]):.2f}<br/>Y {float(coordinates[1]):.2f}", cell_style),
+            paragraph("<br/>".join(target_label(check) for check in failed), cell_style),
+            paragraph("<br/>".join(
+                f"{float(check['actual_distance_m']):.2f} / {float(check['required_distance_m']):.2f} м"
+                for check in failed
+            ), cell_style),
+            paragraph("<br/>".join(html.escape(str(check.get("code", "-"))) for check in failed), cell_style),
+            paragraph("<br/>".join(normative_link(str(check.get("norm_reference") or "-")) for check in failed), cell_style),
+        ])
+    return rows
 
 
 def target_label(check: dict[str, Any]) -> str:
@@ -327,6 +366,7 @@ def build_pdf(
     input_dxf: Path | None = None,
     preview_path: Path | None = None,
     plan_path: Path | None = None,
+    existing_tree_audit_path: Path | None = None,
 ) -> Path:
     regular_font, bold_font = register_fonts()
     decisions = read_decisions(decisions_path)
@@ -337,6 +377,10 @@ def build_pdf(
     if plan_path is None or not plan_path.is_file():
         raise ValueError("Planting plan is required for per-planting PDF explanations")
     plan = read_plan(plan_path)
+    existing_tree_audit = (
+        read_existing_tree_audit(existing_tree_audit_path)
+        if existing_tree_audit_path is not None else []
+    )
     reported_count = plan_report.get("feature_count")
     if reported_count is not None and int(reported_count) != len(plan):
         raise ValueError("Planting plan feature count differs from the plan report")
@@ -424,6 +468,76 @@ def build_pdf(
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
     ]))
     story.append(rejection_table)
+    if existing_tree_audit_path is not None:
+        story.append(Spacer(1, 4 * mm))
+        story.append(paragraph("Существующие деревья: потенциальные конфликты", heading))
+        conflict_count = sum(
+            feature.get("properties", {}).get("status") == "conflict"
+            for feature in existing_tree_audit
+        )
+        incomplete_count = sum(
+            feature.get("properties", {}).get("status") == "incomplete"
+            for feature in existing_tree_audit
+        )
+        story.append(paragraph(
+            f"Проверено существующих деревьев: {len(existing_tree_audit)}; "
+            f"с потенциальными конфликтами: {conflict_count}; "
+            f"с неполной проверкой: {incomplete_count}. "
+            "Сравниваются координаты стволов с действующими проектными отступами для новых деревьев. "
+            "Это перечень для натурной проверки положения деревьев и сетей, а не решение об удалении деревьев.",
+            body,
+        ))
+        unchecked_utilities = zone_report.get("plant_types", {}).get("tree", {}).get(
+            "unchecked_utility_object_types", []
+        )
+        if unchecked_utilities:
+            story.append(paragraph(
+                "Для части сетей нет активного правила отступа, поэтому они не входят в эту проверку: "
+                + ", ".join(
+                    html.escape(TARGET_LABELS.get(str(target), str(target)))
+                    for target in unchecked_utilities
+                ) + ".",
+                body,
+            ))
+        target_counts: Counter[str] = Counter(
+            target
+            for feature in existing_tree_audit
+            for target in {
+                str(check.get("target", "?"))
+                for check in feature.get("properties", {}).get("checks", [])
+                if check.get("status") == "conflict"
+            }
+        )
+        if target_counts:
+            story.append(paragraph(
+                "По типам ограничений (одно дерево может входить в несколько групп): "
+                + "; ".join(
+                    f"{html.escape(TARGET_LABELS.get(target, target))} — {count}"
+                    for target, count in sorted(target_counts.items())
+                ) + ".",
+                body,
+            ))
+        story.append(Spacer(1, 2 * mm))
+        tree_headers = ["ID", "Координаты", "Объект", "Факт / минимум", "Правило", "НПА и пункт"]
+        tree_rows = existing_tree_conflict_rows(existing_tree_audit, small)
+        tree_data = [[paragraph(item, table_header) for item in tree_headers], *tree_rows]
+        if not tree_rows:
+            tree_data.append([paragraph("Потенциальные конфликты не выявлены", small), *[""] * 5])
+        tree_table = LongTable(
+            tree_data, colWidths=[20 * mm, 31 * mm, 39 * mm, 34 * mm, 45 * mm, 95 * mm],
+            repeatRows=1, splitByRow=True,
+        )
+        tree_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#A65B16")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D6E2E7")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#FFF8F0")]),
+            ("LEFTPADDING", (0, 0), (-1, -1), 2.2),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 2.2),
+            ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+        ]))
+        story.append(tree_table)
     story.append(PageBreak())
 
     story.append(paragraph("2. Сводка результата", heading))
@@ -491,6 +605,8 @@ def build_pdf(
             action = (
                 f"Предложено удалить дерево: мешает {advisory.get('blocked_group_stations', '?')} "
                 f"из {advisory.get('group_size', '?')} мест новой группы. "
+                f"Баллы сохранения/замены: {advisory.get('keep_tree_design_score', '?')} / "
+                f"{advisory.get('remove_tree_design_score', '?')}. "
                 "Проверить дерево и согласовать решение"
                 if is_tree else
                 "Убрать одиночный куст из композиции: пересадка или удаление после проверки"
@@ -661,6 +777,7 @@ def main() -> None:
     parser.add_argument("--verification-report", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--input-dxf", type=Path)
+    parser.add_argument("--existing-tree-audit", type=Path)
     parser.add_argument("--preview", type=Path)
     args = parser.parse_args()
     result = build_pdf(
@@ -672,6 +789,7 @@ def main() -> None:
         args.input_dxf,
         args.preview,
         args.planting_plan,
+        args.existing_tree_audit,
     )
     print(f"PDF report: {result}")
 

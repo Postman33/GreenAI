@@ -31,6 +31,7 @@ class PlantingAtlasTests(unittest.TestCase):
             plan = root / "plan.geojsonl"
             pdf = root / "atlas.pdf"
             schedule = root / "schedule.json"
+            tree_audit = root / "existing_tree_audit.geojsonl"
             image_dir = root / "views"
             write_features(normalized, [
                 feature("work_boundary", box(0, 0, 200, 100)),
@@ -52,9 +53,14 @@ class PlantingAtlasTests(unittest.TestCase):
                 feature("proposed_planting_area", box(20, 20, 180, 40),
                         plant_type="herbaceous", species="Газон", dxf_units_per_meter=1),
             ])
+            write_features(tree_audit, [
+                feature("existing_tree_rule_screening", Point(50, 51),
+                        existing_tree_id="ET-0001", status="conflict"),
+            ])
 
             build_atlas(normalized, constraints, zones, plan, pdf, schedule,
-                        tile_size_m=100, preview_directory=image_dir)
+                        tile_size_m=100, preview_directory=image_dir,
+                        existing_tree_audit_path=tree_audit)
 
             data = json.loads(schedule.read_text(encoding="utf-8"))
             self.assertEqual(len(data["sections"]), 2)
@@ -63,6 +69,7 @@ class PlantingAtlasTests(unittest.TestCase):
             self.assertAlmostEqual(sum(row["herbaceous_area_m2"] for row in data["sections"]), 3200)
             self.assertEqual({row["herbaceous_area_m2"] for row in data["sections"]}, {1600})
             self.assertEqual(data["totals"]["herbaceous_area_m2"], 3200)
+            self.assertEqual(data["totals"]["existing_tree_conflict_count"], 1)
             self.assertGreater(data["sections"][0]["tree_crown_projection_m2"], 25)
             self.assertGreater(data["sections"][1]["shrub_projection_m2"], 3)
             self.assertEqual(len(PdfReader(pdf).pages), 3)
