@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 .gocache/
 .gotmp/
+*.md
 .test-cache/
 .validation/
 .tools/
