@@ -3,7 +3,7 @@
   "maxPlacementsPerType": 5000,
   "dxfUnitsPerMeter": 1.0,
   "diagnosticRejectedMaxCount": 1000,
-  "treeLayoutMode": "composition",
+  "treeLayoutMode": "cp_sat",
   "plantingProfiles": [
     {
       "plantType": "tree",
@@ -25,6 +25,7 @@
       "spacingM": 1.5,
       "footprintRadiusM": 0.75,
       "symbolRadiusM": 0.5,
+      "maxCount": 10000,
       "avoidOtherPlantingsM": 0.5,
       "allowUnderTreeCanopy": true,
       "existingTreeClearanceM": 1.5,

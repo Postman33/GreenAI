@@ -142,6 +142,29 @@ class DesignModeTests(unittest.TestCase):
         self.assertGreaterEqual(len(points), 2)
         self.assertTrue(all(strip.covers(Point(x, y)) for x, y in points))
 
+    def test_cp_sat_mode_selects_and_audits_tree_schemes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            area = self.prepare(root, box(0, 0, 65, 12))
+            config_path = root / "config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["treeLayoutMode"] = "cp_sat"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            features, report = self.run_plan(root, [{
+                "id": "optimized_trees", "plant_type": "tree", "species": "Tree",
+                "mode": "fill_area", "design_style": "auto",
+            }])
+            points = [shape(item["geometry"]) for item in features]
+            self.assertGreater(len(points), 2)
+            self.assertTrue(all(area.covers(point) for point in points))
+            self.assertTrue(all(left.distance(right) >= 3 - 1e-8
+                                for left, right in combinations(points, 2)))
+            run = report["layout_optimizer_runs"]["optimized_trees"]
+            self.assertEqual(run["solver"], "cp_sat")
+            self.assertEqual(run["status"], "OPTIMAL")
+            self.assertGreaterEqual(run["option_count"], 2)
+            self.assertEqual(run["selected_count"], len(points))
+
     def test_tree_score_uses_canopy_overlap_only_with_a_shade_target(self):
         profile = PlantingProfile("tree", "Tree", 6, 3, 2, 2, 10, "catalog", ())
         bed = box(0, 0, 30, 20)

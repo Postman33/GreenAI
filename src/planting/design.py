@@ -309,6 +309,7 @@ def choose_tree_composition(
     occupied: list[tuple[str, float, float]], maximum: int,
     existing_trees: Any | None = None, *, profile_key: str | None = None,
     shade_target: Any | None = None, trace: dict[str, Any] | None = None,
+    include_alternatives: bool = False,
 ) -> tuple[list[tuple[float, float]], str]:
     """Compare complete, rule-safe tree arrangements for one planting bed."""
     if maximum <= 0 or scope.is_empty:
@@ -317,9 +318,12 @@ def choose_tree_composition(
                           "winning_grid_rejections": []})
         return [], "composition"
     variants: list[dict[str, Any]] = []
+    seen_layouts: set[tuple[tuple[float, float], ...]] = set()
 
     def add(style: str, points: list[tuple[float, float]], detail: dict[str, Any]):
-        if points:
+        signature = tuple(points)
+        if points and signature not in seen_layouts:
+            seen_layouts.add(signature)
             variants.append({"style": style, "points": points, "detail": detail,
                              "quality": score_tree_composition(
                                  points, reference, profile, style, existing_trees,
@@ -328,8 +332,13 @@ def choose_tree_composition(
 
     linear_trace: dict[str, Any] = {}
     linear = best_linear_layout(scope, reference, profile, profiles, occupied,
-                                maximum, trace=linear_trace)
+                                maximum, trace=linear_trace,
+                                collect_alternatives=include_alternatives)
     add("linear", linear or [], linear_trace)
+    if include_alternatives:
+        for item in linear_trace.get("candidate_layouts", []):
+            add("linear", item["points"], {"method": "linear", "phase_u": item["phase_u"],
+                                              "phase_v": item["phase_v"]})
 
     grove_points: list[tuple[float, float]] = []
     grove_details = []
@@ -449,8 +458,9 @@ def choose_shrub_composition(
             "score_weights": {"shrub": 1.0, "adjacent_pair_capped": 0.12,
                               "isolated_shrub": -2.0},
             "minimum_count_retention_ratio": 0.9,
-            "variants": [{key: item[key] for key in
-                          ("style", "score", "count", "adjacent_pairs", "isolated", "site_fit")}
+            "variants": [{**{key: item[key] for key in
+                             ("style", "score", "count", "adjacent_pairs", "isolated", "site_fit")},
+                          "coordinates": [[x, y] for x, y in item["points"]]}
                          for item in candidates],
             "winner": {key: winner[key] for key in
                        ("style", "score", "count", "adjacent_pairs", "isolated", "site_fit")},

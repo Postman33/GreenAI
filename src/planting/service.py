@@ -24,6 +24,7 @@ from shapely.validation import make_valid
 from ..domain.models import PlantingProfile, PlantingSelection
 from .composition_review import load_shrub_survey, review_shrub_composition, review_tree_composition
 from .design import STYLE_CONTRACTS, alley_layout, choose_shrub_composition, choose_tree_composition, free_group_layout, hedge_coverage, flowerbed_patches
+from .layout_optimizer import optimize_layouts
 from .spatial import PlantingPointIndex
 from .placement_generator import (
     best_component_layout,
@@ -991,9 +992,9 @@ def plan(
     )
     if diagnostic_rejected_max < 0:
         raise ValueError("diagnosticRejectedMaxCount must be non-negative")
-    tree_layout_mode = str(config.get("treeLayoutMode", "linear_preferred"))
-    if tree_layout_mode not in {"composition", "linear_preferred", "area_fill"}:
-        raise ValueError("treeLayoutMode must be composition, linear_preferred or area_fill")
+    tree_layout_mode = str(config.get("treeLayoutMode", "cp_sat"))
+    if tree_layout_mode not in {"cp_sat", "composition", "linear_preferred", "area_fill"}:
+        raise ValueError("treeLayoutMode must be cp_sat, composition, linear_preferred or area_fill")
 
     resolved = {
         selection.request_id: resolve_profile(selection, base_profiles, config, zone_report)
@@ -1026,6 +1027,7 @@ def plan(
     features: list[dict[str, Any]] = []
     decisions: list[dict[str, Any]] = []
     layout_traces: list[dict[str, Any]] = []
+    optimizer_runs: dict[str, dict[str, Any]] = {}
     if layout_trace_path is None:
         layout_trace_path = output_path.with_name("planting_layout_trace.jsonl")
     occupied: list[tuple[str, float, float]] = []
@@ -1093,10 +1095,13 @@ def plan(
         else:
             generated: list[tuple[float, float, str, str]] = []
             use_linear = selection.plant_type == "tree" and tree_layout_mode in {
-                "composition", "linear_preferred",
+                "cp_sat", "composition", "linear_preferred",
             }
             use_shrub_beds = selection.plant_type == "shrub" and selection.design_style == "auto"
-            use_composition = selection.plant_type == "tree" and tree_layout_mode == "composition"
+            use_composition = selection.plant_type == "tree" and tree_layout_mode in {"cp_sat", "composition"}
+            use_optimizer = (selection.plant_type == "tree" and tree_layout_mode == "cp_sat") or use_shrub_beds
+            layout_options: list[dict[str, Any]] = []
+            layout_option_traces: dict[str, dict[str, Any]] = {}
             parents = (
                 sorted(polygon_parts(selected_zone), key=lambda item: item.area, reverse=True)
                 if use_linear or use_shrub_beds else [scope]
@@ -1121,6 +1126,7 @@ def plan(
                         occupied_now, remaining, normalized.get("existing_tree"),
                         profile_key=selection.request_id,
                         shade_target=constraints.get("sidewalk_area"), trace=design_trace,
+                        include_alternatives=use_optimizer,
                     )
                     trace_id = f"{selection.request_id}:layout_{len(layout_traces) + 1:04d}"
                     design_trace.update({"trace_id": trace_id, "request_id": selection.request_id,
@@ -1128,7 +1134,17 @@ def plan(
                                          "spacing_m": profile.spacing_m,
                                          "max_count_for_component": remaining})
                     layout_traces.append(design_trace)
-                    generated.extend((x, y, style, trace_id) for x, y in designed)
+                    if use_optimizer:
+                        layout_option_traces[trace_id] = design_trace
+                        for variant in design_trace.get("variants", []):
+                            layout_options.append({
+                                "bed": len(layout_option_traces) - 1,
+                                "points": [tuple(pair) for pair in variant["coordinates"]],
+                                "score": variant["score"], "style": variant["style"],
+                                "trace_id": trace_id, "variant": variant,
+                            })
+                    else:
+                        generated.extend((x, y, style, trace_id) for x, y in designed)
                     continue
                 if use_shrub_beds:
                     bed_trace: dict[str, Any] = {}
@@ -1142,7 +1158,17 @@ def plan(
                                       "spacing_m": profile.spacing_m,
                                       "max_count_for_component": remaining})
                     layout_traces.append(bed_trace)
-                    generated.extend((x, y, bed_style, trace_id) for x, y in bed_points)
+                    if use_optimizer:
+                        layout_option_traces[trace_id] = bed_trace
+                        for variant in bed_trace.get("variants", []):
+                            layout_options.append({
+                                "bed": len(layout_option_traces) - 1,
+                                "points": [tuple(pair) for pair in variant["coordinates"]],
+                                "score": variant["score"], "style": variant["style"],
+                                "trace_id": trace_id, "variant": variant,
+                            })
+                    else:
+                        generated.extend((x, y, bed_style, trace_id) for x, y in bed_points)
                     continue
                 linear_trace: dict[str, Any] = {}
                 linear = (
@@ -1177,6 +1203,43 @@ def plan(
                                        "max_count_for_component": remaining})
                     layout_traces.append(area_trace)
                     generated.extend((x, y, area_trace["method"], trace_id) for x, y in area_points)
+            if use_optimizer:
+                chosen, optimization = optimize_layouts(
+                    layout_options, layout_profile, profile.max_count,
+                    time_limit_s=10.0 if selection.plant_type == "tree" else 20.0,
+                )
+                optimizer_runs[selection.request_id] = {
+                    key: value for key, value in optimization.items()
+                    if key != "selected_option_indices"
+                }
+                optimizer_runs[selection.request_id]["no_candidate_bed_count"] = (
+                    len(layout_option_traces) - optimization["bed_count"]
+                )
+                optimizer_runs[selection.request_id]["total_bed_count"] = len(layout_option_traces)
+                chosen_by_trace = {layout_options[i]["trace_id"]: layout_options[i] for i in chosen}
+                for trace_id, design_trace in layout_option_traces.items():
+                    option = chosen_by_trace.get(trace_id)
+                    design_trace["optimizer"] = optimization
+                    design_trace["optimizer_disposition"] = (
+                        "selected" if option is not None else
+                        "not_selected" if design_trace.get("variants") else "no_candidate"
+                    )
+                    design_trace["candidate_generator_grid_rejections"] = (
+                        design_trace.pop("winning_grid_rejections", [])
+                    )
+                    design_trace["winning_grid_rejections"] = []
+                    design_trace["audit_scope"] = (
+                        "enumerated whole-bed schemes; generator grid rejections refer to "
+                        "candidate generation, not the CP-SAT-selected scheme"
+                    )
+                    design_trace["winner"] = (
+                        {key: value for key, value in option["variant"].items() if key != "coordinates"}
+                        if option is not None else None
+                    )
+                for i in chosen:
+                    option = layout_options[i]
+                    generated.extend((x, y, option["style"], option["trace_id"])
+                                     for x, y in option["points"])
             candidates = [(Point(x, y), style, trace_id) for x, y, style, trace_id in generated]
 
         if selection.mode == "points" or selection.design_style in {"alley", "free_group"}:
@@ -1299,7 +1362,8 @@ def plan(
             "footprint_boundary": profile.footprint_boundary,
         }
         if (selection.plant_type == "tree" and selection.mode == "fill_area"
-                and selection.design_style == "auto" and tree_layout_mode == "composition"):
+                and selection.design_style == "auto"
+                and tree_layout_mode in {"cp_sat", "composition"}):
             alternative_scope = safe_scope(
                 selected_zone, profile, None,
                 normalized.get("existing_tree_belt"), existing_tree_clearance,
@@ -1615,9 +1679,10 @@ def plan(
         "layout_trace_output": str(layout_trace_path),
         "layout_trace_count": len(layout_traces),
         "layout_audit_scope": (
-            "Only enumerated layout variants and points in their winning safe-scope grid are audited. "
+            "Only enumerated layout variants and generator grid points are audited. "
             "Diagnostic rejections sample other coordinates; arbitrary coordinates are not exhaustively tested."
         ),
+        "layout_optimizer_runs": optimizer_runs,
         "species_selection_method": "configured_species_not_ranked",
         "explanations_output": (
             str(explanations_path) if explanations_path is not None else None
@@ -1627,7 +1692,7 @@ def plan(
         "summary": summary,
         "composition_review_status": composition_review_status,
         "tree_composition_review_status": (
-            "evaluated" if tree_layout_mode == "composition" else "not_evaluated"
+            "evaluated" if tree_layout_mode in {"cp_sat", "composition"} else "not_evaluated"
         ),
         "existing_shrub_survey": str(existing_shrub_survey_path) if existing_shrub_survey_path else None,
         "composition_advisories": composition_advisories,

@@ -22,7 +22,7 @@ output/*
 !output/pdf/
 output/pdf/*
 !output/pdf/GreenAI_documentation.pdf
-!output/pdf/greenai_v2.pdf
+!output/pdf/greenai.pdf
 output_*/
 config/openai.env
 archive/

@@ -78,8 +78,10 @@ class PlantingServiceTests(unittest.TestCase):
             traces = [json.loads(line) for line in
                       (root / "planting_layout_trace.jsonl").read_text(encoding="utf-8").splitlines()]
             self.assertEqual(len(traces), 1)
-            self.assertEqual(traces[0]["method"], "linear")
-            self.assertEqual(len(traces[0]["variants"]), 32)
+            self.assertEqual(traces[0]["method"], "composition")
+            self.assertEqual(traces[0]["optimizer"]["solver"], "cp_sat")
+            self.assertEqual(traces[0]["optimizer"]["status"], "OPTIMAL")
+            self.assertGreaterEqual(len(traces[0]["variants"]), 2)
             self.assertEqual({item["properties"]["layout_trace_id"] for item in points},
                              {traces[0]["trace_id"]})
             self.assertEqual({item["properties"]["species_selection"]["source"]

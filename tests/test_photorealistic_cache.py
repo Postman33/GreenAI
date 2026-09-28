@@ -72,7 +72,7 @@ class PhotoCacheTests(unittest.TestCase):
         self.assertEqual(len(self.requests), 3)
         self.assertEqual(len(report["images"]), 3)
         self.assertAlmostEqual(sum(i["cost_usd"] for i in report["images"]), 0.03)
-        self.assertNotIn(report["current_images"]["overview_after_paired_v4"], originals)
+        self.assertNotIn(report["current_images"]["overview_after"], originals)
         for name, content in originals.items():
             self.assertEqual((self.photo_dir / name).read_bytes(), content)
         # Returning to an earlier scene reuses its previous valid version.
@@ -82,11 +82,11 @@ class PhotoCacheTests(unittest.TestCase):
 
     def test_missing_cached_file_gets_new_version(self) -> None:
         self.run_photos()
-        missing = self.report()["current_images"]["overview_after_paired_v4"]
+        missing = self.report()["current_images"]["overview_after"]
         (self.photo_dir / missing).unlink()
         self.assertEqual(self.run_photos(), 0)
         self.assertEqual(len(self.requests), 3)
-        self.assertNotEqual(self.report()["current_images"]["overview_after_paired_v4"], missing)
+        self.assertNotEqual(self.report()["current_images"]["overview_after"], missing)
 
     def test_exhausted_budget_preserves_ledger_and_makes_no_requests(self) -> None:
         self.run_photos()
@@ -113,6 +113,26 @@ class PhotoCacheTests(unittest.TestCase):
         self.assertEqual(self.run_photos(), 0)
         self.assertEqual(len(self.requests), 2)
         self.assertTrue(all(i["source_hash_version"] == CONTENT_HASH_VERSION for i in self.report()["images"]))
+
+    def test_numbered_photo_names_are_migrated_without_new_charge(self) -> None:
+        self.assertEqual(self.run_photos(), 0)
+        report = self.report()
+        old_names = {"overview_before": "overview_before_context_v3",
+                     "overview_after": "overview_after_paired_v4"}
+        for entry in report["images"]:
+            old_name = old_names[entry["name"]]
+            old_file = old_name + ".png"
+            (self.photo_dir / entry["file"]).rename(self.photo_dir / old_file)
+            entry["name"] = old_name
+            entry["file"] = old_file
+        report["images"][1]["references"][-1] = str(self.photo_dir / "overview_before_context_v3.png")
+        self.report_path.write_text(json.dumps(report), encoding="utf-8")
+        self.assertEqual(self.run_photos(), 0)
+        self.assertEqual(len(self.requests), 2)
+        migrated = self.report()
+        self.assertEqual(set(migrated["current_images"]), {"overview_before", "overview_after"})
+        self.assertTrue(all("_v" not in entry["file"] for entry in migrated["images"]))
+        self.assertIn(migrated["images"][0]["file"], migrated["images"][1]["references"][-1])
 
     def test_hash_detects_pixels_and_display_metadata_but_ignores_timestamps(self) -> None:
         path = self.renders / "overview_before.png"

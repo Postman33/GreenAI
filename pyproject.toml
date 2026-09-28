@@ -17,6 +17,7 @@ dependencies = [
     "skl2onnx>=1.18,<2",
     "reportlab>=4.2,<5",
     "pypdf>=6,<7",
+    "ortools>=9.12,<10",
 ]
 
 [tool.poetry]

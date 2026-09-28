@@ -1,7 +1,7 @@
 {
-  "version": "20260919_power_corrected_v4",
-  "bundle": "F:\\Пилотный проект 20 улиц\\models\\utility_detector\\20260919_power_corrected_v4",
-  "metadata": "F:\\Пилотный проект 20 улиц\\models\\utility_detector\\20260919_power_corrected_v4\\metadata.json",
+  "version": "trained_2026-09-19",
+  "bundle": "F:\\Пилотный проект 20 улиц\\models\\utility_detector\\trained_2026-09-19",
+  "metadata": "F:\\Пилотный проект 20 улиц\\models\\utility_detector\\trained_2026-09-19\\metadata.json",
   "training_sources_by_type": {
     "gas_pipe": [
       "F:\\Пилотный проект 20 улиц\\ml\\train\\gas\\3-я_Парковая_gas_train.dxf",

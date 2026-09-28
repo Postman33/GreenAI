@@ -385,6 +385,8 @@ def best_linear_layout(
     occupied: list[tuple[str, float, float]],
     max_count: int,
     trace: dict[str, Any] | None = None,
+    *,
+    collect_alternatives: bool = False,
 ) -> list[tuple[float, float]] | None:
     """Prefer long, aligned runs over a few extra staggered trees."""
     frame = linear_reference(reference, profile.spacing_m)
@@ -467,6 +469,27 @@ def best_linear_layout(
             "winning_grid_rejections": rejected,
             "audit_scope": "grid points inside the winning safe-scope band",
         })
+        if collect_alternatives:
+            ranked = sorted(
+                (item for item in variants
+                 if len(item[0]) >= math.ceil(best_count * LINEAR_COUNT_RETENTION)),
+                key=lambda item: (item[1], -item[2], -item[3], len(item[0])),
+                reverse=True,
+            )
+            seen: set[tuple[tuple[float, float], ...]] = set()
+            alternatives = []
+            for item in ranked:
+                signature = tuple(item[0])
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                alternatives.append({
+                    "points": item[0], "phase_u": item[4], "phase_v": item[5],
+                    "adjacent_pairs": item[1], "isolated_rows": item[2],
+                })
+                if len(alternatives) == 6:
+                    break
+            trace["candidate_layouts"] = alternatives
     return winner[0]
 
 

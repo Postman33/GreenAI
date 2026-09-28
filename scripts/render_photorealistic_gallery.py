@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -70,7 +71,7 @@ def cached_image(report: dict, photo_dir: Path, name: str, digest: str,
     return None
 
 
-def versioned_stem(photo_dir: Path, name: str, digest: str, report: dict) -> Path:
+def image_stem(photo_dir: Path, name: str, digest: str, report: dict) -> Path:
     stem = f"{name}__{digest[:12]}"
     used = {Path(entry["file"]).stem for entry in report["images"]}
     candidate = stem
@@ -79,6 +80,43 @@ def versioned_stem(photo_dir: Path, name: str, digest: str, report: dict) -> Pat
         version += 1
         candidate = f"{stem}_{version}"
     return photo_dir / candidate
+
+
+def normalize_image_names(report: dict, photo_dir: Path) -> bool:
+    """Keep paid images while replacing old numbered labels with stable names."""
+    changed = False
+    renamed: dict[str, str] = {}
+    for entry in report.get("images", []):
+        old_name = entry["name"]
+        match = re.fullmatch(r"(overview|pedestrian)_(before|after)(?:_[a-z]+)?_v\d+", old_name)
+        if match is None:
+            continue
+        name = f"{match[1]}_{match[2]}"
+        old_file = photo_dir / entry["file"]
+        if not old_file.is_file():
+            continue
+        stem = f"{name}__{entry['source_sha256'][:12]}"
+        target = photo_dir / f"{stem}{old_file.suffix}"
+        suffix = 2
+        while target.exists() and target != old_file:
+            target = photo_dir / f"{stem}_{suffix}{old_file.suffix}"
+            suffix += 1
+        old_file.rename(target)
+        renamed[old_file.name] = target.name
+        entry["name"] = name
+        entry["file"] = target.name
+        changed = True
+    if renamed:
+        for entry in report["images"]:
+            entry["references"] = [
+                next((reference.replace(old, new) for old, new in renamed.items() if old in reference), reference)
+                for reference in entry.get("references", [])
+            ]
+        report["current_images"] = {
+            re.sub(r"_(?:context|ground|paired|species)_v\d+$", "", name): renamed.get(file, file)
+            for name, file in report.get("current_images", {}).items()
+        }
+    return changed
 
 
 def main() -> int:
@@ -132,6 +170,8 @@ def main() -> int:
         }
         if report["model"] != args.model:
             raise ValueError(f"{report_path}: model changed; choose another output directory")
+        if normalize_image_names(report, photo_dir):
+            _write_json(report_path, report)
         # The ledger keeps every paid version. Only matching files from this
         # invocation are advertised as current; old images remain untouched.
         report["current_images"] = {}
@@ -153,7 +193,7 @@ def main() -> int:
                 references = [before_source] if phase == "before" else [after_source, mask_source, before_photo]
                 assert all(isinstance(path, Path) for path in references)
                 digest = content_hash(*references, prompt=prompt, model=args.model)
-                name = f"{view}_after_paired_v4" if phase == "after" else f"{view}_before_context_v3"
+                name = f"{view}_{phase}"
                 cached = cached_image(report, photo_dir, name, digest, references, prompt, args.model)
                 if cached:
                     cached_path = photo_dir / cached["file"]
@@ -179,7 +219,7 @@ def main() -> int:
                 print(f"Generating {place['id']} {name} with {args.model} (low quality)...", flush=True)
                 output, cost = generate_image(
                     key=key, model=args.model, prompt=prompt, references=references,
-                    output_stem=versioned_stem(photo_dir, name, digest, report),
+                    output_stem=image_stem(photo_dir, name, digest, report),
                 )
                 sent += 1
                 spent += cost if cost is not None else 0.04

@@ -1,0 +1,18 @@
+{
+  "input": "output\\power_cable_model_example\\comparison_v2_unseen_03.dxf",
+  "output": "ml\\train\\power\\3-я_Парковая_power_cable_corrected_03.dxf",
+  "training_layer": "Кабель электрический",
+  "positive_color": 3,
+  "counts": {
+    "negative": 205,
+    "positive": 299,
+    "skip": 1
+  },
+  "interpretation": {
+    "explicit_green": "positive",
+    "explicit_white": "negative",
+    "untouched_green_layer": "positive",
+    "untouched_gray_layer": "negative",
+    "untouched_yellow_layer": "excluded"
+  }
+}
