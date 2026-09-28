@@ -9,6 +9,7 @@ __pycache__/
 .tools/
 .idea/
 .venv/
+.venv-linux/
 .cleanup-trash/
 *.dwl
 *.dwl2
@@ -24,6 +25,7 @@ output/pdf/*
 !output/pdf/GreenAI_documentation.pdf
 !output/pdf/greenai.pdf
 output_*/
+docker-data/
 config/openai.env
 archive/
 tmp/

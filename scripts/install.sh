@@ -55,13 +55,6 @@ if [[ -z "$python" ]]; then
   python="$(command -v python3)"
   "$python" -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] < (3,13) else 1)' || die 'Python 3.10–3.12 is required.'
 fi
-if [[ ! -x "$ROOT/.tools/poetry/bin/poetry" ]]; then
-  if ! "$python" -m venv "$ROOT/.tools/poetry" >/dev/null 2>&1; then
-    apt_install python3-venv python3-pip
-    "$python" -m venv "$ROOT/.tools/poetry"
-  fi
-fi
-
 if [[ "$NO_SYSTEM_INSTALL" -eq 0 && ( "$os_id" == ubuntu || "$os_id" == debian ) ]]; then
   apt_install libgomp1 fonts-dejavu-core ca-certificates curl
 fi
@@ -75,12 +68,11 @@ fi
 go_usable=0
 if have go; then
   current_go="$(go version | sed -n 's/.* go\([0-9][0-9.]*\) .*/\1/p')"
-  if [[ -n "$current_go" ]] && "$python" -c 'import sys; a=tuple(map(int,sys.argv[1].split("."))); sys.exit(0 if a >= (1,21) else 1)' "$current_go"; then
+  if [[ -n "$current_go" ]] && "$python" -c 'import sys; a=tuple(map(int,sys.argv[1].split("."))); b=tuple(map(int,sys.argv[2].split("."))); sys.exit(0 if a >= b else 1)' "$current_go" "$go_version"; then
     go_usable=1
   fi
 fi
 if [[ "$go_usable" -eq 0 ]]; then
-  [[ "$NO_SYSTEM_INSTALL" -eq 0 ]] || die 'Go is missing. Install it and rerun.'
   case "$(uname -m)" in
     x86_64) go_arch=amd64 ;;
     aarch64) go_arch=arm64 ;;
@@ -101,16 +93,16 @@ fi
 echo "Python: $python"
 go version
 
-poetry_env="$ROOT/.tools/poetry"
-poetry="$poetry_env/bin/poetry"
-if [[ ! -x "$poetry" ]]; then
-  echo 'Installing Poetry in .tools/poetry...'
-  "$poetry_env/bin/python" -m pip install 'poetry>=2.0,<3'
+venv="$ROOT/.venv-linux"
+if [[ ! -x "$venv/bin/python" ]]; then
+  if ! "$python" -m venv "$venv" >/dev/null 2>&1; then
+    apt_install python3-venv python3-pip
+    "$python" -m venv "$venv"
+  fi
 fi
-export POETRY_VIRTUALENVS_IN_PROJECT=true
-"$poetry" check --lock
-"$poetry" env use "$python"
-"$poetry" install --no-root --no-interaction
+"$venv/bin/python" -m pip install --upgrade pip
+"$venv/bin/python" -m pip install -r requirements.txt
+"$venv/bin/python" -c 'import ezdxf, shapely, onnxruntime, ortools, reportlab'
 
 mkdir -p .gotmp .gocache
 export GOCACHE="$ROOT/.gocache"
@@ -129,7 +121,7 @@ if [[ "$SKIP_DOCKER" -eq 0 ]]; then
     apt_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     if have systemctl; then "${sudo_cmd[@]}" systemctl enable --now docker; fi
   fi
-  docker compose config --quiet
+  docker compose config >/dev/null
   if docker info >/dev/null 2>&1; then
     docker compose pull postgis
   else
@@ -141,4 +133,4 @@ if [[ "$WITH_BLENDER" -eq 1 ]] && ! have blender; then
   apt_install blender
 fi
 
-echo 'Installation complete. Python dependencies and Go parser are ready.'
+echo 'Installation complete. Run scripts/run_pipeline_interactive.sh or scripts/run_pipeline.sh.'

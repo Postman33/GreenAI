@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -69,6 +71,51 @@ class PipelineLauncherTests(unittest.TestCase):
                 result = self.validate(drawing, output)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(b"OutputDirectory must be inside the workspace", result.stderr)
+
+
+class LinuxPipelineLauncherTests(unittest.TestCase):
+    """Validate the Linux entry point's paths and optional survey contract."""
+
+    def validate(self, drawing: Path, output: Path, *options: str):
+        environment = dict(os.environ, PYTHONIOENCODING="utf-8")
+        return subprocess.run(
+            [sys.executable, str(ROOT / "scripts/run_pipeline.py"),
+             str(drawing), str(output), *options, "--validate-only"],
+            cwd=ROOT, env=environment, capture_output=True, timeout=30,
+        )
+
+    def test_relative_and_absolute_paths_and_survey_only(self):
+        with tempfile.TemporaryDirectory(prefix=".linux-launcher-test-", dir=ROOT) as directory:
+            folder = Path(directory)
+            drawing = folder / "Исходный чертёж.dxf"
+            drawing.write_text("path-validation fixture", encoding="utf-8")
+            survey = folder / "shrubs.geojson"
+            survey.write_text("{}", encoding="utf-8")
+            output = folder / "Результат с пробелами"
+            reports = []
+            for relative in (True, False):
+                result = self.validate(
+                    drawing.relative_to(ROOT) if relative else drawing,
+                    output.relative_to(ROOT) if relative else output,
+                    "--existing-shrub-survey", str(survey.relative_to(ROOT) if relative else survey),
+                    "--mode", "full",
+                )
+                self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8"))
+                reports.append(json.loads(result.stdout.decode("utf-8")))
+                self.assertFalse(output.exists(), "Validation must not create output artifacts")
+            self.assertEqual(reports[0], reports[1])
+            self.assertEqual(reports[0]["existing_shrub_survey"], str(survey))
+            self.assertEqual(reports[0]["planting_request"], None)
+
+    def test_invalid_request_or_model_is_rejected_before_running(self):
+        with tempfile.TemporaryDirectory(prefix=".linux-launcher-test-", dir=ROOT) as directory:
+            folder = Path(directory)
+            drawing = folder / "input.dxf"
+            drawing.write_text("path-validation fixture", encoding="utf-8")
+            output = folder / "result"
+            result = self.validate(drawing, output, "--request", str(folder / "missing.json"))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":
