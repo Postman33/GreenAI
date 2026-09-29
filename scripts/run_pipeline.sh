@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [[ -n "${GREENAI_PYTHON:-}" ]]; then
-  PYTHON="$GREENAI_PYTHON"
+if [[ -n "${SYLVITECT_PYTHON:-}" ]]; then
+  PYTHON="$SYLVITECT_PYTHON"
 elif [[ -x "$ROOT/.venv-linux/bin/python" ]]; then
   PYTHON="$ROOT/.venv-linux/bin/python"
 elif [[ -x "$ROOT/.venv/bin/python" ]]; then

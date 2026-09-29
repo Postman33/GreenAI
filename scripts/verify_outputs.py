@@ -828,7 +828,7 @@ def main() -> None:
         output_entities = Counter(
             (record["handle"], record["type"], record["layer"])
             for record in output_records
-            if not record["layer"].startswith("GREEN_AI_")
+            if not record["layer"].startswith("SYLVITECT_")
         )
         missing_source_entities = sum((input_entities - output_entities).values())
         changed_source_entities = sum((output_entities - input_entities).values())
@@ -847,12 +847,12 @@ def main() -> None:
         result_layer_counts = Counter(
             record["layer"]
             for record in output_records
-            if record["layer"].startswith("GREEN_AI_")
+            if record["layer"].startswith("SYLVITECT_")
         )
         result_layer_type_counts = Counter(
             (record["layer"], record["type"])
             for record in output_records
-            if record["layer"].startswith("GREEN_AI_")
+            if record["layer"].startswith("SYLVITECT_")
         )
         dxf_checks = {
             "input_modelspace_entity_count": input_manifest[
@@ -861,7 +861,7 @@ def main() -> None:
             "preserved_source_entity_count": sum(
                 record["type"] not in {"ATTRIB", "SEQEND", "VERTEX"}
                 and record["owner"] == output_manifest["modelspace_owner_handle"]
-                and not record["layer"].startswith("GREEN_AI_")
+                and not record["layer"].startswith("SYLVITECT_")
                 for record in output_records
             ),
             "input_raw_entity_record_count": len(input_records),
@@ -878,7 +878,7 @@ def main() -> None:
             "sample_missing_source_handles": missing_source_handles[:20],
             "sample_changed_source_content_handles": changed_source_content_handles[:20],
             "result_layer_entity_counts": dict(sorted(result_layer_counts.items())),
-            "green_ai_layer_states": output_manifest["green_ai_layer_states"],
+            "sylvitect_layer_states": output_manifest["sylvitect_layer_states"],
         }
         if missing_source_entities or changed_source_entities:
             failures.append(
@@ -890,9 +890,9 @@ def main() -> None:
         required_result_layers: set[str] = set()
         if args.planting_plan is not None:
             layer_by_plant_type = {
-                "tree": "GREEN_AI_PLANT_TREE",
-                "shrub": "GREEN_AI_PLANT_SHRUB",
-                "herbaceous": "GREEN_AI_HERBACEOUS",
+                "tree": "SYLVITECT_PLANT_TREE",
+                "shrub": "SYLVITECT_PLANT_SHRUB",
+                "herbaceous": "SYLVITECT_HERBACEOUS",
             }
             expected_point_counts = Counter(
                 str(properties.get("plant_type"))
@@ -920,7 +920,7 @@ def main() -> None:
                 set(expected_point_counts) | set(expected_polygon_counts)
             ):
                 layer_name = layer_by_plant_type.get(
-                    plant_type, f"GREEN_AI_PLANT_{plant_type.upper()}"
+                    plant_type, f"SYLVITECT_PLANT_{plant_type.upper()}"
                 )
                 required_result_layers.add(layer_name)
                 layer_entities = [
@@ -953,7 +953,7 @@ def main() -> None:
                 for record in layer_entities:
                     if record["type"] not in {"CIRCLE", "HATCH"}:
                         continue
-                    planting_id = record.get("green_ai_id")
+                    planting_id = record.get("sylvitect_id")
                     if record["type"] == "CIRCLE":
                         if planting_id:
                             actual_point_ids.add(str(planting_id))
@@ -1004,10 +1004,10 @@ def main() -> None:
         hidden_result_layers = sorted(
             layer_name
             for layer_name in required_result_layers
-            if output_manifest["green_ai_layer_states"].get(layer_name, {}).get(
+            if output_manifest["sylvitect_layer_states"].get(layer_name, {}).get(
                 "is_off", True
             )
-            or output_manifest["green_ai_layer_states"].get(layer_name, {}).get(
+            or output_manifest["sylvitect_layer_states"].get(layer_name, {}).get(
                 "is_frozen", True
             )
         )

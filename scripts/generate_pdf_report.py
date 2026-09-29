@@ -158,7 +158,7 @@ def target_label(check: dict[str, Any]) -> str:
 
 
 def find_font_files() -> tuple[Path, Path]:
-    custom_dir = os.getenv("GREENAI_PDF_FONT_DIR")
+    custom_dir = os.getenv("SYLVITECT_PDF_FONT_DIR")
     candidates: list[tuple[Path, Path]] = []
     if custom_dir:
         root = Path(custom_dir)
@@ -181,15 +181,15 @@ def find_font_files() -> tuple[Path, Path]:
             return regular, bold
     raise RuntimeError(
         "No Cyrillic TrueType font found. Install DejaVu Sans or set "
-        "GREENAI_PDF_FONT_DIR."
+        "SYLVITECT_PDF_FONT_DIR."
     )
 
 
 def register_fonts() -> tuple[str, str]:
     regular, bold = find_font_files()
-    pdfmetrics.registerFont(TTFont("GreenAI", regular))
-    pdfmetrics.registerFont(TTFont("GreenAI-Bold", bold))
-    return "GreenAI", "GreenAI-Bold"
+    pdfmetrics.registerFont(TTFont("Sylvitect-core", regular))
+    pdfmetrics.registerFont(TTFont("Sylvitect-core-Bold", bold))
+    return "Sylvitect-core", "Sylvitect-core-Bold"
 
 
 def paragraph(text: Any, style: ParagraphStyle) -> Paragraph:
@@ -350,9 +350,9 @@ def page_decorator(canvas: Any, document: Any) -> None:
     canvas.setStrokeColor(colors.HexColor("#B8C8D8"))
     canvas.setLineWidth(0.5)
     canvas.line(14 * mm, height - 11 * mm, width - 14 * mm, height - 11 * mm)
-    canvas.setFont("GreenAI", 7)
+    canvas.setFont("Sylvitect-core", 7)
     canvas.setFillColor(colors.HexColor("#526579"))
-    canvas.drawString(14 * mm, 7 * mm, "GreenAI - отчёт по плану озеленения")
+    canvas.drawString(14 * mm, 7 * mm, "Sylvitect-core - отчёт по плану озеленения")
     canvas.drawRightString(width - 14 * mm, 7 * mm, f"Страница {document.page}")
     canvas.restoreState()
 
@@ -426,8 +426,8 @@ def build_pdf(
         str(output_path), pagesize=PAGE_SIZE,
         leftMargin=14 * mm, rightMargin=14 * mm,
         topMargin=16 * mm, bottomMargin=13 * mm,
-        title="GreenAI - отчёт по плану озеленения",
-        author="GreenAI",
+        title="Sylvitect-core - отчёт по плану озеленения",
+        author="Sylvitect-core",
     )
     story: list[Any] = []
     story.append(paragraph("Отчёт по плану озеленения", title))
@@ -769,7 +769,7 @@ def build_pdf(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate the GreenAI PDF report.")
+    parser = argparse.ArgumentParser(description="Generate the Sylvitect-core PDF report.")
     parser.add_argument("--decisions", type=Path, required=True)
     parser.add_argument("--planting-plan", type=Path, required=True)
     parser.add_argument("--plan-report", type=Path, required=True)

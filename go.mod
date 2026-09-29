@@ -1,4 +1,4 @@
-module green-dxf
+module sylvitect-core
 
 go 1.25.5
 

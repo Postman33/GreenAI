@@ -1,7 +1,7 @@
 [project]
-name = "green-cad-planner"
+name = "sylvitect-core"
 version = "0.1.0"
-description = "DXF-based utility detection and urban planting planner"
+description = "Core DXF pipeline for explainable urban planting design"
 authors = [{ name = "Hackathon Team" }]
 requires-python = ">=3.10,<3.13"
 dependencies = [

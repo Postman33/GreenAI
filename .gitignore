@@ -3,6 +3,9 @@ __pycache__/
 .gocache/
 .gotmp/
 *.md
+!/README.md
+!docs/README.md
+!docs/for_organizers.md
 !docs/planting_requirements_matrix.md
 .test-cache/
 .validation/
@@ -22,8 +25,8 @@ output/
 output/*
 !output/pdf/
 output/pdf/*
-!output/pdf/GreenAI_documentation.pdf
-!output/pdf/greenai.pdf
+!output/pdf/Sylvitect-core_documentation.pdf
+!output/pdf/sylvitect-core.pdf
 output_*/
 docker-data/
 config/openai.env

@@ -236,10 +236,10 @@ class ExporterTests(unittest.TestCase):
             dxf_exporter.export_zones(source, zones, output, 0.5, constraints)
             result = ezdxf.readfile(output)
             modelspace = result.modelspace()
-            self.assertIn("GREEN_AI_ZONE_TREE", result.layers)
-            self.assertIn("GREEN_AI_RECONSTRUCTED_ROAD", result.layers)
-            self.assertEqual(len(modelspace.query('HATCH[layer=="GREEN_AI_ZONE_TREE"]')), 1)
-            self.assertEqual(len(modelspace.query('HATCH[layer=="GREEN_AI_RECONSTRUCTED_ROAD"]')), 1)
+            self.assertIn("SYLVITECT_ZONE_TREE", result.layers)
+            self.assertIn("SYLVITECT_RECONSTRUCTED_ROAD", result.layers)
+            self.assertEqual(len(modelspace.query('HATCH[layer=="SYLVITECT_ZONE_TREE"]')), 1)
+            self.assertEqual(len(modelspace.query('HATCH[layer=="SYLVITECT_RECONSTRUCTED_ROAD"]')), 1)
 
     def test_final_dxf_export_adds_concrete_planting_with_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -286,16 +286,16 @@ class ExporterTests(unittest.TestCase):
             )
 
             result = ezdxf.readfile(output)
-            trees = list(result.modelspace().query('CIRCLE[layer=="GREEN_AI_PLANT_TREE"]'))
+            trees = list(result.modelspace().query('CIRCLE[layer=="SYLVITECT_PLANT_TREE"]'))
             self.assertEqual(len(trees), 1)
             self.assertAlmostEqual(trees[0].dxf.radius, 2.5)
-            self.assertTrue(result.layers.get("GREEN_AI_ZONE_TREE").is_off())
-            self.assertFalse(result.layers.get("GREEN_AI_PLANT_TREE").is_off())
-            metadata = trees[0].get_xdata("GREEN_AI")
+            self.assertTrue(result.layers.get("SYLVITECT_ZONE_TREE").is_off())
+            self.assertFalse(result.layers.get("SYLVITECT_PLANT_TREE").is_off())
+            metadata = trees[0].get_xdata("SYLVITECT")
             self.assertIn("id=T-0001", [value for code, value in metadata if code == 1000])
-            areas = list(result.modelspace().query('HATCH[layer=="GREEN_AI_HERBACEOUS"]'))
+            areas = list(result.modelspace().query('HATCH[layer=="SYLVITECT_HERBACEOUS"]'))
             self.assertEqual(len(areas), 1)
-            area_metadata = areas[0].get_xdata("GREEN_AI")
+            area_metadata = areas[0].get_xdata("SYLVITECT")
             self.assertIn("id=H-0001", [value for code, value in area_metadata if code == 1000])
 
     def test_overlay_export_contains_only_result_entities(self) -> None:
@@ -345,15 +345,15 @@ class ExporterTests(unittest.TestCase):
             self.assertEqual(result.header["$INSUNITS"], 6)
             self.assertEqual(len(result.modelspace().query('*[layer=="SOURCE"]')), 0)
             self.assertEqual(
-                len(result.modelspace().query('HATCH[layer=="GREEN_AI_RECONSTRUCTED_ROAD"]')),
+                len(result.modelspace().query('HATCH[layer=="SYLVITECT_RECONSTRUCTED_ROAD"]')),
                 1,
             )
-            self.assertFalse(result.layers.get("GREEN_AI_RECONSTRUCTED_ROAD").is_off())
+            self.assertFalse(result.layers.get("SYLVITECT_RECONSTRUCTED_ROAD").is_off())
             self.assertEqual(
-                len(result.modelspace().query('CIRCLE[layer=="GREEN_AI_PLANT_TREE"]')),
+                len(result.modelspace().query('CIRCLE[layer=="SYLVITECT_PLANT_TREE"]')),
                 1,
             )
-            self.assertNotIn("GREEN_AI_ZONE_TREE", result.layers)
+            self.assertNotIn("SYLVITECT_ZONE_TREE", result.layers)
 
     def test_composition_removal_proposals_are_separate_review_layers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -396,13 +396,13 @@ class ExporterTests(unittest.TestCase):
                                       existing_tree_audit_path=tree_audit)
             result = ezdxf.readfile(output)
             self.assertEqual(len(result.modelspace().query('CIRCLE[layer=="SOURCE_TREE"]')), 1)
-            self.assertEqual(len(result.modelspace().query('CIRCLE[layer=="GREEN_AI_REMOVE_TREE_REVIEW"]')), 1)
-            self.assertEqual(len(result.modelspace().query('CIRCLE[layer=="GREEN_AI_REMOVE_SHRUB_REVIEW"]')), 1)
-            self.assertEqual(len(result.modelspace().query('CIRCLE[layer=="GREEN_AI_EXISTING_TREE_CONFLICT"]')), 1)
-            conflict = result.modelspace().query('CIRCLE[layer=="GREEN_AI_EXISTING_TREE_CONFLICT"]')[0]
-            self.assertIn("id=ET-0001", [value for code, value in conflict.get_xdata("GREEN_AI") if code == 1000])
-            marker = result.modelspace().query('CIRCLE[layer=="GREEN_AI_REMOVE_TREE_REVIEW"]')[0]
-            self.assertIn("id=tree-1", [value for code, value in marker.get_xdata("GREEN_AI")
+            self.assertEqual(len(result.modelspace().query('CIRCLE[layer=="SYLVITECT_REMOVE_TREE_REVIEW"]')), 1)
+            self.assertEqual(len(result.modelspace().query('CIRCLE[layer=="SYLVITECT_REMOVE_SHRUB_REVIEW"]')), 1)
+            self.assertEqual(len(result.modelspace().query('CIRCLE[layer=="SYLVITECT_EXISTING_TREE_CONFLICT"]')), 1)
+            conflict = result.modelspace().query('CIRCLE[layer=="SYLVITECT_EXISTING_TREE_CONFLICT"]')[0]
+            self.assertIn("id=ET-0001", [value for code, value in conflict.get_xdata("SYLVITECT") if code == 1000])
+            marker = result.modelspace().query('CIRCLE[layer=="SYLVITECT_REMOVE_TREE_REVIEW"]')[0]
+            self.assertIn("id=tree-1", [value for code, value in marker.get_xdata("SYLVITECT")
                                         if code == 1000])
             self.assertFalse(result.audit().errors)
 
@@ -414,8 +414,8 @@ class ExporterTests(unittest.TestCase):
                                       overlay_only=True, insunits=6)
             only = ezdxf.readfile(overlay)
             self.assertEqual(len(only.modelspace().query('CIRCLE[layer=="SOURCE_TREE"]')), 0)
-            self.assertEqual(len(only.modelspace().query('CIRCLE[layer=="GREEN_AI_REMOVE_TREE_REVIEW"]')), 1)
-            self.assertEqual(len(only.modelspace().query('CIRCLE[layer=="GREEN_AI_EXISTING_TREE_CONFLICT"]')), 1)
+            self.assertEqual(len(only.modelspace().query('CIRCLE[layer=="SYLVITECT_REMOVE_TREE_REVIEW"]')), 1)
+            self.assertEqual(len(only.modelspace().query('CIRCLE[layer=="SYLVITECT_EXISTING_TREE_CONFLICT"]')), 1)
             self.assertFalse(only.audit().errors)
 
     def test_planting_area_keeps_hatch_hole_without_visible_inner_outline(self) -> None:
@@ -459,10 +459,10 @@ class ExporterTests(unittest.TestCase):
 
             result = ezdxf.readfile(output)
             hatches = list(
-                result.modelspace().query('HATCH[layer=="GREEN_AI_PLANT_SHRUB"]')
+                result.modelspace().query('HATCH[layer=="SYLVITECT_PLANT_SHRUB"]')
             )
             outlines = list(
-                result.modelspace().query('LWPOLYLINE[layer=="GREEN_AI_PLANT_SHRUB"]')
+                result.modelspace().query('LWPOLYLINE[layer=="SYLVITECT_PLANT_SHRUB"]')
             )
             self.assertEqual(len(hatches), 1)
             self.assertEqual(len(hatches[0].paths), 2)
@@ -519,7 +519,7 @@ class ExporterTests(unittest.TestCase):
             self.assertEqual(redraw_order[conflict_symbols[0].dxf.handle], "0")
             self.assertIn(
                 "id=ET-0001",
-                [value for code, value in conflict_symbols[0].get_xdata("GREEN_AI") if code == 1000],
+                [value for code, value in conflict_symbols[0].get_xdata("SYLVITECT") if code == 1000],
             )
             self.assertEqual(
                 len(result.modelspace().query('HATCH[layer=="DEBUG_BUILDINGS"]')),
@@ -661,7 +661,7 @@ class ExporterTests(unittest.TestCase):
                     for marker in markers:
                         metadata = dict(
                             str(tag.value).split("=", 1)
-                            for tag in marker.get_xdata("GREEN_AI") if tag.code == 1000
+                            for tag in marker.get_xdata("SYLVITECT") if tag.code == 1000
                         )
                         observed_ids.add(metadata["id"])
                         point = expected[metadata["id"]]
@@ -736,9 +736,9 @@ class ExporterTests(unittest.TestCase):
             )
             self.assertEqual(len(markers), 1)
             self.assertEqual(markers[0].dxf.color, 1)
-            self.assertTrue(markers[0].has_xdata("GREEN_AI"))
+            self.assertTrue(markers[0].has_xdata("SYLVITECT"))
             metadata_values = [
-                str(item.value) for item in markers[0].get_xdata("GREEN_AI")
+                str(item.value) for item in markers[0].get_xdata("SYLVITECT")
             ]
             self.assertIn(
                 "title_1=Крона растения не помещается в допустимой зоне",

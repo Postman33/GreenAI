@@ -8,7 +8,7 @@ $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
 
 $testTempRoot = Join-Path $root "tmp\test-runs"
-$testTemp = Join-Path $testTempRoot "green-dxf-tests-$PID"
+$testTemp = Join-Path $testTempRoot "sylvitect-core-tests-$PID"
 try {
     if (-not $SkipPython) {
         $python = Join-Path $root ".venv\Scripts\python.exe"

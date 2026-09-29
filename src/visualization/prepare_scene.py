@@ -626,7 +626,7 @@ def render_preview(manifest: dict[str, Any], output_path: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Prepare a cropped GreenAI scene for Blender")
+    parser = argparse.ArgumentParser(description="Prepare a cropped Sylvitect-core scene for Blender")
     parser.add_argument("normalized_objects", type=Path)
     parser.add_argument("constraint_map", type=Path)
     parser.add_argument("planting_plan", type=Path)

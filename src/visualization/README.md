@@ -1,4 +1,4 @@
-# GreenAI visualization
+# Sylvitect-core visualization
 
 The module converts the verified planting plan into a reproducible Blender
 scene.  It never changes planting coordinates.  A representative 120 x 120 m
@@ -48,7 +48,7 @@ Outputs:
 - `pedestrian_before.png` / `pedestrian_after.png`;
 - `top_after.png`;
 - `overview_plant_mask.png` / `pedestrian_plant_mask.png` (false colors per proposed species);
-- `greenai_scene.blend`;
+- `sylvitect_core_scene.blend`;
 - `render_manifest.json`.
 
 To append the Blender views to an existing planting atlas without changing the

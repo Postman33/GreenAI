@@ -20,7 +20,7 @@ from reportlab.platypus import (
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "docs" / "for_organizers.md"
-OUTPUT = ROOT / "output" / "pdf" / "GreenAI_documentation.pdf"
+OUTPUT = ROOT / "output" / "pdf" / "Sylvitect-core_documentation.pdf"
 PAGE_W, PAGE_H = landscape(A4)
 BLUE = colors.HexColor("#2676b3")
 NAVY = colors.HexColor("#142b43")
@@ -257,7 +257,7 @@ def footer(canvas, doc):
     canvas.line(42, 33, PAGE_W - 42, 33)
     canvas.setFont("Arial", 8)
     canvas.setFillColor(MUTED)
-    canvas.drawString(42, 21, "GreenAI  |  Архитектура и алгоритмы  |  27.09.2026")
+    canvas.drawString(42, 21, "Sylvitect-core  |  Архитектура и алгоритмы  |  27.09.2026")
     canvas.drawRightString(PAGE_W - 42, 21, str(doc.page))
     canvas.restoreState()
 
@@ -267,8 +267,8 @@ def main():
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     document = SimpleDocTemplate(str(OUTPUT), pagesize=(PAGE_W, PAGE_H),
         leftMargin=42, rightMargin=42, topMargin=38, bottomMargin=48,
-        title="GreenAI: архитектура и алгоритмы",
-        author="GreenAI team")
+        title="Sylvitect-core: архитектура и алгоритмы",
+        author="Sylvitect-core team")
     document.build(story_from_markdown(SOURCE.read_text(encoding="utf-8")),
         onFirstPage=footer, onLaterPages=footer)
     print(OUTPUT, OUTPUT.stat().st_size)

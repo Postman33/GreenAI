@@ -140,12 +140,12 @@ NORM_DOCUMENTS = (
 # assumptions rather than normative requirements. The invasive flags follow
 # Moscow Government Resolution No. 369-PP (2026).
 MVP_DIMENSION_SOURCE = (
-    "Проектное допущение MVP из greenai.plugin.json; "
+    "Проектное допущение MVP из профилей посадок; "
     "перед рабочим проектированием уточнить по данным питомника и дендролога"
 )
 
 HARDINESS_SOURCE = (
-    "Предварительный отбор GreenAI по диапазонам USDA/RHS Plant Finder; "
+    "Предварительный отбор Sylvitect-core по диапазонам USDA/RHS Plant Finder; "
     "для рабочей документации подтвердить конкретный сорт и партию у питомника"
 )
 

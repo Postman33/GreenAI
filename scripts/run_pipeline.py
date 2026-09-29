@@ -1,4 +1,4 @@
-"""Run the complete GreenAI DXF pipeline on Linux or in the planner container."""
+"""Run the complete Sylvitect-core DXF pipeline on Linux or in the planner container."""
 
 from __future__ import annotations
 
@@ -193,7 +193,7 @@ def main() -> None:
         "full_dxf": "result_with_planting_plan.dxf",
         "overlay_dxf": "planting_overlay.dxf",
         "verification": "verification_report.json",
-        "pdf": "greenai_planting_report.pdf",
+        "pdf": "sylvitect_planting_report.pdf",
         "atlas": "planting_plan_atlas.pdf",
         "schedule": "planting_area_schedule.json",
         "cache_manifest": "preprocessing_cache.json",

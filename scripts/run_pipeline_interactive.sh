@@ -103,8 +103,8 @@ run_plan() {
   "${COMMAND[@]}"
   if ((render_photo)); then
     local python
-    if [[ -n "${GREENAI_PYTHON:-}" ]]; then
-      python="$GREENAI_PYTHON"
+    if [[ -n "${SYLVITECT_PYTHON:-}" ]]; then
+      python="$SYLVITECT_PYTHON"
     elif [[ -x "$ROOT/.venv-linux/bin/python" ]]; then
       python="$ROOT/.venv-linux/bin/python"
     else
@@ -142,7 +142,7 @@ esac
 if ((DRY_RUN)); then run_plan; exit; fi
 
 while true; do
-  printf '\033[44;37m  GreenAI · проект озеленения на Linux  \033[0m\n'
+  printf '\033[44;37m  Sylvitect-core · проект озеленения на Linux  \033[0m\n'
   printf '  1. Исходный DXF: %s\n' "$INPUT"
   printf '  2. Режим: %s\n' "$MODE"
   printf '  3. Стиль посадки: %s\n' "$PRESET"

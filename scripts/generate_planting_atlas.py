@@ -295,9 +295,9 @@ def draw_page(canvas: Any, doc: Any) -> None:
     canvas.saveState()
     canvas.setStrokeColor(colors.HexColor("#B6C9CE"))
     canvas.line(13 * mm, PAGE[1] - 11 * mm, PAGE[0] - 13 * mm, PAGE[1] - 11 * mm)
-    canvas.setFont("GreenAI", 7)
+    canvas.setFont("Sylvitect-core", 7)
     canvas.setFillColor(colors.HexColor("#526579"))
-    canvas.drawString(13 * mm, 7 * mm, "GreenAI  |  Схематический план посадок")
+    canvas.drawString(13 * mm, 7 * mm, "Sylvitect-core  |  Схематический план посадок")
     canvas.drawRightString(PAGE[0] - 13 * mm, 7 * mm, f"Страница {doc.page}")
     canvas.restoreState()
 
@@ -367,7 +367,7 @@ def build_atlas(normalized_path: Path, constraints_path: Path, zones_path: Path,
     doc = SimpleDocTemplate(str(output_path), pagesize=PAGE,
                             leftMargin=13 * mm, rightMargin=13 * mm,
                             topMargin=16 * mm, bottomMargin=12 * mm,
-                            title="GreenAI - Схематический план посадок", author="GreenAI")
+                            title="Sylvitect-core - Схематический план посадок", author="Sylvitect-core")
     story: list[Any] = []
     story.append(Paragraph("План посадок по участкам", title))
     source_name = escape(input_dxf.name) if input_dxf else "не указан"

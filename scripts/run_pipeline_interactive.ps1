@@ -68,7 +68,7 @@ function Read-MenuChoice {
         $script:renderLineCount = 0
         $compact = $height -lt 16
         if (-not $compact) { Write-MenuLine }
-        Write-MenuLine "  GreenAI  ·  проект озеленения" Cyan
+        Write-MenuLine "  Sylvitect-core  ·  проект озеленения" Cyan
         if (-not $compact) {
             Write-MenuLine ("  " + ("─" * [Math]::Min(58, [Math]::Max(1, $width - 5)))) DarkCyan
         }
@@ -146,7 +146,7 @@ function Ask-Value {
             $script:lastRenderLines = 0
             $script:renderLineCount = 0
             Write-MenuLine
-            Write-MenuLine "  GreenAI  ·  проект озеленения" Cyan
+            Write-MenuLine "  Sylvitect-core  ·  проект озеленения" Cyan
             Write-MenuLine "  Ввод параметра" White
             Write-MenuLine
             if ($script:inputNotice) {
@@ -408,7 +408,7 @@ try {
     }
 
     if (-not $script:interactiveUi) {
-        Write-Host "GreenAI — меню запуска пайплайна" -ForegroundColor Cyan
+        Write-Host "Sylvitect-core — меню запуска пайплайна" -ForegroundColor Cyan
         Write-Host "Пути можно вводить целиком или относительно: $workspace"
     }
 

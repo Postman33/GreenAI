@@ -969,7 +969,7 @@ def main() -> None:
     parser.add_argument("normalized_objects", type=Path)
     parser.add_argument("constraint_map", type=Path)
     parser.add_argument("--utilities", type=Path, default=Path("reconstructed_utilities.geojsonl"))
-    parser.add_argument("--config", type=Path, default=Path("nanocad-plugin/config/greenai.plugin.json"))
+    parser.add_argument("--config", type=Path, default=Path("config/planting.json"))
     parser.add_argument("--output", type=Path, default=Path("planting_plan.geojsonl"))
     parser.add_argument("--report", type=Path, default=Path("planting_plan_report.json"))
     args = parser.parse_args()

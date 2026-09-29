@@ -1,4 +1,4 @@
-"""Locate Blender and launch the background GreenAI renderer."""
+"""Locate Blender and launch the background Sylvitect-core renderer."""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def run_blender(command: list[str], log_path: Path, timeout_seconds: float = 180
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Render a prepared GreenAI scene with Blender")
+    parser = argparse.ArgumentParser(description="Render a prepared Sylvitect-core scene with Blender")
     parser.add_argument("scene", type=Path)
     parser.add_argument("--output", type=Path, default=Path("output/visualization/renders"))
     parser.add_argument("--quality", choices=("draft", "final"), default="draft")

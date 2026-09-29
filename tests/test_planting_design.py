@@ -285,7 +285,7 @@ class DesignModeTests(unittest.TestCase):
                                       planting_plan_path=root / "plan.jsonl", overlay_only=True, insunits=6)
             doc = ezdxf.readfile(overlay)
             self.assertFalse(doc.audit().has_errors)
-            flower_hatches = [e for e in doc.modelspace().query("HATCH") if any(t.value == "design=mixed_flowerbed" for t in e.get_xdata("GREEN_AI"))]
+            flower_hatches = [e for e in doc.modelspace().query("HATCH") if any(t.value == "design=mixed_flowerbed" for t in e.get_xdata("SYLVITECT"))]
             self.assertEqual(len(flower_hatches), len(beds))
             self.assertEqual(len({e.dxf.color for e in flower_hatches}), 3)
 

@@ -20,23 +20,23 @@ from .dxf_document import read_dxf_document, save_dxf_atomic
 
 Polygonal = Polygon | MultiPolygon
 ZONE_LAYERS = {
-    "tree": ("GREEN_AI_ZONE_TREE", 3),
-    "shrub": ("GREEN_AI_ZONE_SHRUB", 2),
-    "herbaceous": ("GREEN_AI_ZONE_HERBACEOUS", 4),
-    "groundcover": ("GREEN_AI_ZONE_GROUNDCOVER", 6),
+    "tree": ("SYLVITECT_ZONE_TREE", 3),
+    "shrub": ("SYLVITECT_ZONE_SHRUB", 2),
+    "herbaceous": ("SYLVITECT_ZONE_HERBACEOUS", 4),
+    "groundcover": ("SYLVITECT_ZONE_GROUNDCOVER", 6),
 }
-ROAD_LAYER = ("GREEN_AI_RECONSTRUCTED_ROAD", 8)
+ROAD_LAYER = ("SYLVITECT_RECONSTRUCTED_ROAD", 8)
 PLANTING_LAYERS = {
-    "tree": ("GREEN_AI_PLANT_TREE", 3),
-    "shrub": ("GREEN_AI_PLANT_SHRUB", 2),
-    "herbaceous": ("GREEN_AI_HERBACEOUS", 94),
+    "tree": ("SYLVITECT_PLANT_TREE", 3),
+    "shrub": ("SYLVITECT_PLANT_SHRUB", 2),
+    "herbaceous": ("SYLVITECT_HERBACEOUS", 94),
 }
 REMOVAL_REVIEW_LAYERS = {
-    "tree": ("GREEN_AI_REMOVE_TREE_REVIEW", 1),
-    "shrub": ("GREEN_AI_REMOVE_SHRUB_REVIEW", 1),
+    "tree": ("SYLVITECT_REMOVE_TREE_REVIEW", 1),
+    "shrub": ("SYLVITECT_REMOVE_SHRUB_REVIEW", 1),
 }
-EXISTING_TREE_CONFLICT_LAYER = ("GREEN_AI_EXISTING_TREE_CONFLICT", 30)
-GREEN_AI_APPID = "GREEN_AI"
+EXISTING_TREE_CONFLICT_LAYER = ("SYLVITECT_EXISTING_TREE_CONFLICT", 30)
+SYLVITECT_APPID = "SYLVITECT"
 
 
 CHECK_TITLES = {
@@ -306,7 +306,7 @@ def add_zone_polygon(
 
 
 def attach_planting_metadata(entity: Any, properties: dict[str, Any]) -> None:
-    """Attach identity and complete rejection diagnostics for GREENAI_INSPECT."""
+    """Attach identity and complete rejection diagnostics to CAD entities."""
     failed_checks = ",".join(str(value) for value in properties.get("failed_checks", []))
     rejection_reasons = properties.get("rejection_reasons", [])
     specific_reasons = [
@@ -337,7 +337,7 @@ def attach_planting_metadata(entity: Any, properties: dict[str, Any]) -> None:
     ]
     if manual_checks:
         values.append((1000, f"manual={','.join(manual_checks)}"[:250]))
-    entity.set_xdata(GREEN_AI_APPID, values)
+    entity.set_xdata(SYLVITECT_APPID, values)
 
 
 def add_point_planting(
@@ -390,8 +390,8 @@ def export_zones(
         # supporting zones remain available in the layer manager.
         show_analysis_layers = planting_plan_path is None
     exported: dict[str, dict[str, Any]] = {}
-    if GREEN_AI_APPID not in document.appids:
-        document.appids.add(GREEN_AI_APPID)
+    if SYLVITECT_APPID not in document.appids:
+        document.appids.add(SYLVITECT_APPID)
 
     if constraint_map_path is not None:
         road_area = load_constraint_geometry(
@@ -430,7 +430,7 @@ def export_zones(
                 continue
             layer_name, color = ZONE_LAYERS.get(
                 plant_type,
-                (f"GREEN_AI_ZONE_{plant_type.upper()}", 3),
+                (f"SYLVITECT_ZONE_{plant_type.upper()}", 3),
             )
             ensure_layer(document, layer_name, color)
             removed = remove_previous_entities(modelspace, layer_name)
@@ -465,7 +465,7 @@ def export_zones(
         for plant_type, features in grouped.items():
             layer_name, color = PLANTING_LAYERS.get(
                 plant_type,
-                (f"GREEN_AI_PLANT_{plant_type.upper()}", 3),
+                (f"SYLVITECT_PLANT_{plant_type.upper()}", 3),
             )
             ensure_layer(document, layer_name, color)
             removed = remove_previous_entities(modelspace, layer_name)
@@ -526,7 +526,7 @@ def export_zones(
                 if not math.isfinite(x) or not math.isfinite(y):
                     raise ValueError("Composition removal has invalid coordinates")
                 marker = modelspace.add_circle((x, y), size, dxfattribs={"layer": layer_name})
-                marker.set_xdata(GREEN_AI_APPID, [
+                marker.set_xdata(SYLVITECT_APPID, [
                     (1000, f"id={item.get('existing_tree_id') or item.get('existing_shrub_id', '')}"[:250]),
                     (1000, f"type={plant_type}"),
                     (1000, "status=review_removal_proposal"),
@@ -580,7 +580,7 @@ def export_zones(
                     for check in properties.get("checks", [])
                     if check.get("status") == "conflict"
                 )
-                ring.set_xdata(GREEN_AI_APPID, [
+                ring.set_xdata(SYLVITECT_APPID, [
                     (1000, f"id={tree_id}"[:250]),
                     (1000, "status=potential_existing_tree_conflict"),
                     (1000, f"rules={codes}"[:250]),

@@ -22,15 +22,15 @@ from tests.helpers import feature, write_jsonl
 class ScriptTests(unittest.TestCase):
     def test_manifest_section_filter_preserves_all_compared_records(self) -> None:
         document = ezdxf.new("R2018")
-        document.layers.new("GREEN_AI_TEST", dxfattribs={"color": 3})
-        document.layers.get("GREEN_AI_TEST").off()
+        document.layers.new("SYLVITECT_TEST", dxfattribs={"color": 3})
+        document.layers.get("SYLVITECT_TEST").off()
         block = document.blocks.new("REFERENCE")
         block.add_line((1, 2, 3), (4, 5, 6))
         block.add_text("SECTION ENDSEC ENTITIES")
         model = document.modelspace()
         model.add_blockref("REFERENCE", (50, 70, 9))
         model.add_polyline3d([(0, 1, 2), (3, 4, 5), (6, 7, 8)])
-        model.add_circle((9, 8, 7), 2, dxfattribs={"layer": "GREEN_AI_TEST"})
+        model.add_circle((9, 8, 7), 2, dxfattribs={"layer": "SYLVITECT_TEST"})
         document.layout().add_text("Paper space")
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "manifest.dxf"
@@ -40,7 +40,7 @@ class ScriptTests(unittest.TestCase):
                 exhaustive = dxf_manifest.build_manifest(path)
         self.assertEqual(filtered, exhaustive)
         self.assertEqual(filtered["modelspace_entity_count"], 3)
-        self.assertTrue(filtered["green_ai_layer_states"]["GREEN_AI_TEST"]["is_off"])
+        self.assertTrue(filtered["sylvitect_layer_states"]["SYLVITECT_TEST"]["is_off"])
 
     def test_manifest_treats_explicit_default_attribute_width_as_unchanged(self) -> None:
         document = ezdxf.new("R2018")
@@ -552,20 +552,20 @@ class ScriptTests(unittest.TestCase):
             source.saveas(source_dxf)
 
             result = ezdxf.readfile(source_dxf)
-            result.layers.add("GREEN_AI_PLANT_SHRUB")
-            result.appids.add("GREEN_AI")
+            result.layers.add("SYLVITECT_PLANT_SHRUB")
+            result.appids.add("SYLVITECT")
             planting = result.modelspace().add_circle(
-                (3, 3), 0.25, dxfattribs={"layer": "GREEN_AI_PLANT_SHRUB"}
+                (3, 3), 0.25, dxfattribs={"layer": "SYLVITECT_PLANT_SHRUB"}
             )
-            planting.set_xdata("GREEN_AI", [(1000, "id=shrub-point-1")])
+            planting.set_xdata("SYLVITECT", [(1000, "id=shrub-point-1")])
             area = result.modelspace().add_hatch(
-                dxfattribs={"layer": "GREEN_AI_PLANT_SHRUB"}
+                dxfattribs={"layer": "SYLVITECT_PLANT_SHRUB"}
             )
             area.set_solid_fill(color=3)
             area.paths.add_polyline_path(
                 [(4, 4), (6, 4), (6, 6), (4, 6)], is_closed=True
             )
-            area.set_xdata("GREEN_AI", [(1000, "id=shrub-area-1")])
+            area.set_xdata("SYLVITECT", [(1000, "id=shrub-area-1")])
             result.saveas(result_dxf)
 
             plan = root / "plan.jsonl"
@@ -629,9 +629,9 @@ class ScriptTests(unittest.TestCase):
 
             missing_area_metadata = ezdxf.readfile(result_dxf)
             area = missing_area_metadata.modelspace().query(
-                'HATCH[layer=="GREEN_AI_PLANT_SHRUB"]'
+                'HATCH[layer=="SYLVITECT_PLANT_SHRUB"]'
             )[0]
-            area.discard_xdata("GREEN_AI")
+            area.discard_xdata("SYLVITECT")
             missing_area_metadata.saveas(result_dxf)
             with patch.object(sys, "argv", argv):
                 with self.assertRaises(SystemExit):
@@ -646,9 +646,9 @@ class ScriptTests(unittest.TestCase):
 
             changed = ezdxf.readfile(result_dxf)
             area = changed.modelspace().query(
-                'HATCH[layer=="GREEN_AI_PLANT_SHRUB"]'
+                'HATCH[layer=="SYLVITECT_PLANT_SHRUB"]'
             )[0]
-            area.set_xdata("GREEN_AI", [(1000, "id=shrub-area-1")])
+            area.set_xdata("SYLVITECT", [(1000, "id=shrub-area-1")])
             changed.modelspace().query('LINE[layer=="BASE"]')[0].dxf.end = (9, 0, 0)
             changed.saveas(result_dxf)
             with patch.object(sys, "argv", argv):

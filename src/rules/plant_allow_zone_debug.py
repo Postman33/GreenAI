@@ -37,7 +37,7 @@ from ..geometry.parts import polygon_parts
 from ..geometry.constraint_builder import as_polygonal, read_object_geometry
 from ..cad_io.dxf_document import read_dxf_document, save_dxf_atomic
 from ..cad_io.dxf_exporter import (
-    GREEN_AI_APPID,
+    SYLVITECT_APPID,
     add_zone_polygon,
     attach_planting_metadata,
     build_failure_details,
@@ -280,7 +280,7 @@ def export_diagnostic_legend(
         "| DEBUG_BASE_ALLOWED | Базовая область после абсолютных исключений. |",
         "| DEBUG_ALLOW_TREE / DEBUG_ALLOW_SHRUB | Область после применённых правил отступа. |",
         "| DEBUG_EXISTING_TREES | Существующие деревья: крупные пурпурные кольца с крестом; центр символа соответствует стволу. |",
-        "| DEBUG_EXISTING_TREE_CONFLICTS | Оранжевые кольца вокруг существующих деревьев с потенциальным конфликтом по действующим отступам для новых деревьев; ID и расстояния сохранены в GREEN_AI объекта. Это сигнал для проверки, не решение об удалении. |",
+        "| DEBUG_EXISTING_TREE_CONFLICTS | Оранжевые кольца вокруг существующих деревьев с потенциальным конфликтом по действующим отступам для новых деревьев; ID и расстояния сохранены в SYLVITECT объекта. Это сигнал для проверки, не решение об удалении. |",
         "| DEBUG_EXISTING_TREE_CONFLICT_IDS | ID таких деревьев из existing_tree_audit.geojsonl и PDF; слой выключен по умолчанию. |",
         "| DEBUG_EXISTING_TREE_CONFLICT_* | Отдельные выключенные слои по типу ограничения (например POWER_CABLE или HEAT_PIPE); включите нужный слой, чтобы отфильтровать деревья. |",
         "| DEBUG_PLANT_TREE | Принятые деревья: зелёные круги в координатах плана. |",
@@ -290,7 +290,7 @@ def export_diagnostic_legend(
         "| DEBUG_PLANT_*_IDS | Идентификаторы принятых точек; слои выключены по умолчанию. |",
         "| DEBUG_PLANT_*_REASONS | Проверки принятых точек и ссылки на нормы; общий слой на тип растения, выключен по умолчанию. |",
         "| DEBUG_REASON_T_* | Проверки принятого дерева; включите слой с его ID. |",
-        "| DEBUG_REJECTED_* | Отклонённые точки; полная причина хранится в метаданных GREEN_AI объекта. |",
+        "| DEBUG_REJECTED_* | Отклонённые точки; полная причина хранится в метаданных SYLVITECT объекта. |",
         "| DEBUG_REJECT_REASONS | Общий отключённый слой с выносками причин; отдельных слоёв на каждую точку нет. |",
         "",
         "| Тип посадки | Правило | Статус | Слой DXF | Отступ, единицы DXF | Причина / источник |",
@@ -494,8 +494,8 @@ def export_dxf(
     )
     if base_dxf_path is None:
         document.header["$INSUNITS"] = insunits if insunits is not None else 0
-    if GREEN_AI_APPID not in document.appids:
-        document.appids.add(GREEN_AI_APPID)
+    if SYLVITECT_APPID not in document.appids:
+        document.appids.add(SYLVITECT_APPID)
     layer_colors = {
         "DEBUG_WORK_BOUNDARY": 5,
         "DEBUG_HARD_SURFACES": 1,
@@ -845,7 +845,7 @@ def export_dxf(
             check for check in properties.get("checks", [])
             if check.get("status") == "conflict"
         ]
-        ring.set_xdata(GREEN_AI_APPID, [
+        ring.set_xdata(SYLVITECT_APPID, [
             (1000, f"id={tree_id}"[:250]),
             (1000, "status=potential_existing_tree_conflict"),
             *[
@@ -866,7 +866,7 @@ def export_dxf(
                 (x, y), 1.35 * units_per_meter,
                 dxfattribs={"layer": layer_name, "lineweight": 80},
             )
-            target_ring.set_xdata(GREEN_AI_APPID, [
+            target_ring.set_xdata(SYLVITECT_APPID, [
                 (1000, f"id={tree_id}"[:250]),
                 (1000, f"target={target}"[:250]),
             ])

@@ -1,4 +1,4 @@
-name: greenai
+name: sylvitect-core
 
 services:
   postgis:
@@ -37,7 +37,7 @@ services:
       DATABASE_URL: postgresql://admin:admin@postgis:5432/admin
       DXF_UNITS_PER_METER: ${DXF_UNITS_PER_METER:-}
     volumes:
-      - ${GREENAI_DATA_DIR:-./docker-data}:/data
+      - ${SYLVITECT_DATA_DIR:-./docker-data}:/data
     depends_on:
       postgis:
         condition: service_healthy

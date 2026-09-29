@@ -17,7 +17,7 @@ from skl2onnx import convert_sklearn
 from skl2onnx.common.data_types import FloatTensorType
 
 
-FORMAT_NAME = "green-cad-utility-onnx-bundle"
+FORMAT_NAME = "sylvitect-utility-onnx-bundle"
 FORMAT_VERSION = 1
 DEFAULT_OPSET = 18
 

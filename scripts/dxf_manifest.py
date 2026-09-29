@@ -112,13 +112,13 @@ def first_value(tags: list[Any], code: int, default: Any = None) -> Any:
     return default
 
 
-def green_ai_id(tags: list[Any]) -> str | None:
-    in_green_ai = False
+def sylvitect_id(tags: list[Any]) -> str | None:
+    in_sylvitect = False
     for tag in tags:
         if tag.code == 1001:
-            in_green_ai = str(tag.value) == "GREEN_AI"
+            in_sylvitect = str(tag.value) == "SYLVITECT"
             continue
-        if in_green_ai and tag.code == 1000:
+        if in_sylvitect and tag.code == 1000:
             value = str(tag.value)
             if value.startswith("id="):
                 return value[3:]
@@ -157,12 +157,12 @@ def entity_record(
         "owner": owner_value(tags),
         "fingerprint": semantic_fingerprint(entity_type, tags, dxfversion),
     }
-    if layer.startswith("GREEN_AI_") and entity_type in {
+    if layer.startswith("SYLVITECT_") and entity_type in {
         "CIRCLE",
         "HATCH",
         "LWPOLYLINE",
     }:
-        record["green_ai_id"] = green_ai_id(tags)
+        record["sylvitect_id"] = sylvitect_id(tags)
     return record
 
 
@@ -211,7 +211,7 @@ def build_manifest(path: Path) -> dict[str, Any]:
             )
         elif section == "TABLES" and current_type == "LAYER":
             name = str(first_value(current_tags, 2, ""))
-            if name.startswith("GREEN_AI_"):
+            if name.startswith("SYLVITECT_"):
                 flags = int(first_value(current_tags, 70, 0))
                 color = int(first_value(current_tags, 62, 7))
                 layer_states[name] = {
@@ -262,7 +262,7 @@ def build_manifest(path: Path) -> dict[str, Any]:
         ),
         "raw_entity_record_count": len(entities),
         "entities": entities,
-        "green_ai_layer_states": layer_states,
+        "sylvitect_layer_states": layer_states,
     }
 
 
