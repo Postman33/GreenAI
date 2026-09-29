@@ -415,7 +415,7 @@ def _scope_check(point: Point, scope: Any, profile: PlantingProfile, units: floa
             f"Центр находится в безопасной области; полный габарит радиусом {clearance:g} м "
             "остаётся внутри выбранной допустимой зоны."
             if passed
-            else "Не пройдена проверка положения центра, размещения кроны или существующей растительности."
+            else "Точка вне итоговой допустимой области; конкретные причины указаны в проверках ниже."
         ),
     }
 
@@ -593,6 +593,9 @@ def _decision_feature(
 ) -> dict[str, Any]:
     failed = [str(item["code"]) for item in checks if item["status"] == "failed"]
     manual = [str(item["code"]) for item in checks if item["status"] == "manual_review"]
+    reason_checks = [item for item in checks if item.get("status") == "failed"]
+    if any(item.get("code") != "ALLOWED_ZONE" for item in reason_checks):
+        reason_checks = [item for item in reason_checks if item.get("code") != "ALLOWED_ZONE"]
     return {
         "type": "Feature",
         "id": f"decision_{candidate_id}",
@@ -612,8 +615,7 @@ def _decision_feature(
             "manual_review_checks": manual,
             "rejection_reasons": [
                 str(item.get("explanation") or item.get("code"))
-                for item in checks
-                if item.get("status") == "failed"
+                for item in reason_checks
             ],
             "checks": checks,
         },

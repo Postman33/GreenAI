@@ -16,7 +16,9 @@ try {
             $python = "python"
         }
         Write-Host "[1/2] Python unit tests"
+        $ErrorActionPreference = 'Continue'
         & $python -m unittest discover -s tests -v
+        $ErrorActionPreference = 'Stop'
         if ($LASTEXITCODE -ne 0) { throw "Python tests failed" }
     }
 
@@ -28,7 +30,9 @@ try {
         $env:GOTMPDIR = New-Item -ItemType Directory -Force -Path (Join-Path $testTemp "tmp") | Select-Object -ExpandProperty FullName
         $env:GOCACHE = New-Item -ItemType Directory -Force -Path (Join-Path $testTemp "cache") | Select-Object -ExpandProperty FullName
         Write-Host "[2/2] Go unit tests"
+        $ErrorActionPreference = 'Continue'
         & $go test ./...
+        $ErrorActionPreference = 'Stop'
         if ($LASTEXITCODE -ne 0) { throw "Go tests failed" }
     }
 

@@ -62,7 +62,7 @@ choose() {
 }
 
 build_command() {
-  COMMAND=("$RUNNER" "$INPUT" "$OUTPUT" "--mode" "$MODE")
+  COMMAND=(bash "$RUNNER" "$INPUT" "$OUTPUT" "--mode" "$MODE")
   if [[ -n "$REQUEST" ]]; then
     COMMAND+=("--request" "$REQUEST")
   fi

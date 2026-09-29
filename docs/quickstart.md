@@ -1,11 +1,11 @@
 # Первый прогон
 
-Этот сценарий создаёт полный DXF на контрольной подоснове 3-й Парковой. Запускайте команды из корня репозитория. Для расчёта нужны Python 3.10–3.12, Go и Docker с Compose; nanoCAD нужен только для просмотра результата. Данные и модель лежат в репозитории.
+Этот сценарий создаёт полный DXF на контрольной подоснове 3-й Парковой. Запускайте команды из корня репозитория. Для расчёта нужны Python 3.10–3.12, Go и Docker с Compose; nanoCAD нужен только для просмотра результата. `init.ps1` / `init.sh` готовят окружение и скачивают контрольный DXF из Google Drive. Скачанный файл проверяется по размеру и SHA-256, уже проверенный файл не загружается повторно.
 
 ## Windows
 
 ```powershell
-& .\scripts\install.ps1
+& .\init.ps1
 docker compose up -d --wait postgis
 .\.venv\Scripts\python.exe .\scripts\seed.py
 .\scripts\run_pipeline.ps1 `
@@ -65,7 +65,7 @@ Windows-пайплайн также создаёт `planting_diagnostics.dxf` �
 Для обычного Linux-хоста установите Python 3.10–3.12, Go и Docker Compose одной командой (автоматическая установка системных пакетов поддерживается на Debian/Ubuntu):
 
 ```bash
-bash scripts/install.sh
+bash init.sh
 bash scripts/run_pipeline_interactive.sh
 ```
 

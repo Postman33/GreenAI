@@ -521,6 +521,17 @@ class PlantingServiceTests(unittest.TestCase):
                 )
             )
             self.assertTrue(diagnostic[0]["properties"]["rejection_reasons"])
+            for row in diagnostic:
+                properties = row["properties"]
+                specific = [
+                    check for check in properties["checks"]
+                    if check["status"] == "failed" and check["code"] != "ALLOWED_ZONE"
+                ]
+                if specific:
+                    self.assertEqual(
+                        properties["rejection_reasons"],
+                        [str(check.get("explanation") or check["code"]) for check in specific],
+                    )
 
 if __name__ == "__main__":
     unittest.main()

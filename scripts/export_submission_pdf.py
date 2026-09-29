@@ -257,7 +257,7 @@ def footer(canvas, doc):
     canvas.line(42, 33, PAGE_W - 42, 33)
     canvas.setFont("Arial", 8)
     canvas.setFillColor(MUTED)
-    canvas.drawString(42, 21, "Sylvitect-core  |  Архитектура и алгоритмы  |  27.09.2026")
+    canvas.drawString(42, 21, "Sylvitect-core  |  Архитектура и алгоритмы  |  29.09.2026")
     canvas.drawRightString(PAGE_W - 42, 21, str(doc.page))
     canvas.restoreState()
 

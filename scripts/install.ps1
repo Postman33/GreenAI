@@ -87,9 +87,20 @@ if (-not (Test-Path -LiteralPath $poetry)) {
     Invoke-Checked $poetryPython @('-m', 'pip', 'install', 'poetry>=2.0,<3')
 }
 $env:POETRY_VIRTUALENVS_IN_PROJECT = 'true'
-Invoke-Checked $poetry @('check', '--lock')
-Invoke-Checked $poetry @('env', 'use', $python)
-Invoke-Checked $poetry @('install', '--no-root', '--no-interaction')
+$env:POETRY_VIRTUALENVS_CREATE = 'true'
+# Poetry otherwise reuses an activated environment from another checkout.
+$previousVirtualEnv = $env:VIRTUAL_ENV
+$previousCondaPrefix = $env:CONDA_PREFIX
+try {
+    $env:VIRTUAL_ENV = $null
+    $env:CONDA_PREFIX = $null
+    Invoke-Checked $poetry @('check', '--lock')
+    Invoke-Checked $poetry @('env', 'use', $python)
+    Invoke-Checked $poetry @('install', '--no-root', '--no-interaction')
+} finally {
+    $env:VIRTUAL_ENV = $previousVirtualEnv
+    $env:CONDA_PREFIX = $previousCondaPrefix
+}
 
 $extractorDir = Join-Path $root '.gotmp'
 New-Item -ItemType Directory -Path $extractorDir -Force | Out-Null

@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+from check_postgis import is_postgis_ready
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PRESETS = (
@@ -265,7 +267,12 @@ def main() -> None:
         if not reuse:
             database_host = urlparse(environment["DATABASE_URL"]).hostname
             if not args.skip_database_start and database_host in (None, "localhost", "127.0.0.1", "::1"):
-                stage("01", "Start PostGIS", ["docker", "compose", "up", "-d", "--wait", "postgis"])
+                if is_postgis_ready(environment["DATABASE_URL"]):
+                    print("[01] Reusing the available PostGIS database", flush=True)
+                else:
+                    stage("01", "Start PostGIS", ["docker", "compose", "up", "-d", "--wait", "postgis"])
+                    if not is_postgis_ready(environment["DATABASE_URL"]):
+                        raise RuntimeError("PostGIS started but the pipeline database is not ready")
             unit_args: list[str | Path] = ["scripts/detect_dxf_units.py", input_dxf, "--output", f("units")]
             if args.dxf_units_per_meter is not None:
                 unit_args += ["--dxf-units-per-meter", str(args.dxf_units_per_meter)]

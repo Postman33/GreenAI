@@ -35,13 +35,15 @@
 
 ## Быстрый запуск
 
-Все команды выполняются **из корня репозитория**. Для локального запуска нужны Python 3.10–3.12, Go и Docker Compose; установщики помогают подготовить окружение. Контрольный входной файл: `Пилотный проект 20 улиц/input_10001759_bound.dxf`.
+Первый запуск: [START_HERE.md](START_HERE.md). На Windows выполните `init.ps1`, затем `run.ps1`; на Linux — `bash init.sh`, затем `bash run.sh`. Эти команды строят полный план демо-улицы без платной генерации изображений. Архив проекта для передачи собирается командой `python scripts/package_project.py`.
+
+Все команды выполняются **из корня репозитория**. Для локального запуска нужны Python 3.10–3.12, Go и Docker Compose; установщики помогают подготовить окружение. `init.ps1` и `init.sh` скачивают контрольный DXF 3-й Парковой в `Пилотный проект 20 улиц/input_10001759_bound.dxf`, проверяют его размер и SHA-256. Если файл уже проверен, повторной загрузки нет.
 
 <details open>
 <summary><strong>Windows · интерактивное меню</strong></summary>
 
 ```powershell
-.\scripts\install.ps1
+.\init.ps1
 .\scripts\run_pipeline_interactive.ps1
 ```
 
@@ -53,7 +55,7 @@
 <summary><strong>Linux · интерактивное меню или одна команда</strong></summary>
 
 ```bash
-bash scripts/install.sh
+bash init.sh
 bash scripts/run_pipeline_interactive.sh
 ```
 

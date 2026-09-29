@@ -502,14 +502,22 @@ try {
         Add-SkippedPipelineStage -Id "01" -Name "PostGIS startup" -Status "cached"
     }
     elseif (-not $SkipDatabaseStart) {
-        Write-Host "[1/16] Starting PostGIS"
-        Invoke-TimedPipelineStage -Id "01" -Name "PostGIS startup" -Action {
-            if ($null -ne $dockerComposeCommand) {
-                & $dockerComposeCommand.Source up -d --wait
-            } else {
-                docker compose up -d --wait
+        & $python .\scripts\check_postgis.py
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "[1/16] Reusing the available PostGIS database"
+            Add-SkippedPipelineStage -Id "01" -Name "PostGIS startup" -Status "skipped"
+        } else {
+            Write-Host "[1/16] Starting PostGIS"
+            Invoke-TimedPipelineStage -Id "01" -Name "PostGIS startup" -Action {
+                if ($null -ne $dockerComposeCommand) {
+                    & $dockerComposeCommand.Source up -d --wait postgis
+                } else {
+                    docker compose up -d --wait postgis
+                }
+                if ($LASTEXITCODE -ne 0) { throw "PostGIS startup failed" }
+                & $python .\scripts\check_postgis.py
+                if ($LASTEXITCODE -ne 0) { throw "PostGIS started but the pipeline database is not ready" }
             }
-            if ($LASTEXITCODE -ne 0) { throw "PostGIS startup failed" }
         }
     } else {
         Write-Host "[1/16] PostGIS start skipped"

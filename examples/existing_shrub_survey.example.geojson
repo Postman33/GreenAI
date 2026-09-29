@@ -1,0 +1,20 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "id": "shrub-001",
+      "properties": {"object_type": "existing_shrub", "species": "Сирень обыкновенная"},
+      "geometry": {"type": "Point", "coordinates": [5.0, 5.0]}
+    },
+    {
+      "type": "Feature",
+      "id": "mass-001",
+      "properties": {"object_type": "existing_shrub_mass"},
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[20.0, 0.0], [30.0, 0.0], [30.0, 10.0], [20.0, 10.0], [20.0, 0.0]]]
+      }
+    }
+  ]
+}

@@ -205,11 +205,14 @@ def format_distance(value: Any) -> str:
 
 
 def failed_checks(properties: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
+    failures = [
         check
         for check in properties.get("checks", [])
         if check.get("status") == "failed"
     ]
+    if any(check.get("code") != "ALLOWED_ZONE" for check in failures):
+        return [check for check in failures if check.get("code") != "ALLOWED_ZONE"]
+    return failures
 
 
 def rejection_rows(
@@ -241,9 +244,10 @@ def rejection_rows(
                 )
                 deficit = f"не хватает {missing:.2f} м" if missing > 0 else "граница зоны"
             metrics.append(f"{check.get('code', '?')}: {actual} / {required}; {deficit}")
-        reasons = properties.get("rejection_reasons") or [
-            str(item.get("explanation", "Причина не указана")) for item in failures
-        ]
+        reasons = [
+            str(item.get("explanation") or item.get("code") or "Причина не указана")
+            for item in failures
+        ] or properties.get("rejection_reasons") or []
         coordinates = feature.get("geometry", {}).get("coordinates", [None, None])
         coordinate_text = (
             f"X {float(coordinates[0]):.2f}<br/>Y {float(coordinates[1]):.2f}"

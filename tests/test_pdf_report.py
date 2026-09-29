@@ -7,10 +7,20 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
-from scripts.generate_pdf_report import build_pdf
+from scripts.generate_pdf_report import build_pdf, failed_checks
 
 
 class PdfReportTests(unittest.TestCase):
+    def test_aggregate_zone_failure_is_not_counted_as_a_second_cause(self) -> None:
+        checks = [
+            {"code": "ALLOWED_ZONE", "status": "failed"},
+            {"code": "EXISTING_TREE_CLEARANCE", "status": "failed"},
+        ]
+        self.assertEqual(
+            [check["code"] for check in failed_checks({"checks": checks})],
+            ["EXISTING_TREE_CLEARANCE"],
+        )
+
     def test_builds_rejection_table_and_summary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -28,8 +38,12 @@ class PdfReportTests(unittest.TestCase):
                     "plant_type": "tree",
                     "species": "Test tree",
                     "status": "rejected",
-                    "rejection_reasons": ["Too close to an existing tree."],
+                    "rejection_reasons": ["Aggregate zone failure.", "Too close to an existing tree."],
                     "checks": [{
+                        "code": "ALLOWED_ZONE",
+                        "status": "failed",
+                        "explanation": "Aggregate zone failure.",
+                    }, {
                         "code": "EXISTING_TREE_CLEARANCE",
                         "status": "failed",
                         "actual_distance_m": 2.0,
@@ -169,6 +183,7 @@ class PdfReportTests(unittest.TestCase):
             text = "\n".join(page.extract_text() or "" for page in reader.pages)
             self.assertIn("R-T-0042", text)
             self.assertIn("EXISTING_TREE_CLEARANCE", text)
+            self.assertNotIn("Aggregate zone failure", text)
             self.assertIn("T-0001", text)
             self.assertIn("H-0001", text)
             self.assertIn("SH-17", text)
@@ -188,7 +203,8 @@ class PdfReportTests(unittest.TestCase):
             self.assertIn("активные правила без пригодной геометрии", text)
             self.assertIn("газопровод (TREE_GAS_1_5)", text)
             self.assertIn("сети без активного правила - силовой кабель", text)
-            self.assertIn("Требуется ручная проверка: газопровод (TREE_GAS_1_5)", text)
+            self.assertIn("Требуется ручная проверка: газопровод (TREE_GAS_1_5)",
+                          " ".join(text.split()))
             links = [annotation.get_object().get("/A", {}).get("/URI")
                      for page in reader.pages for annotation in page.get("/Annots", [])]
             self.assertIn("https://protect.gost.ru/sp/details/f6917ab4-63d8-4ecb-9794-0b4990ba3b99", links)
