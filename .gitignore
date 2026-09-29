@@ -9,6 +9,7 @@ __pycache__/
 /Sylvitect-core.zip.sha256
 !docs/README.md
 !docs/for_organizers.md
+!docs/tz_compliance.md
 !docs/planting_requirements_matrix.md
 !docs/DEMO_20260929.md
 !docs/DEMO_WINDOWS.md
